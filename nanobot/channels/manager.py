@@ -34,6 +34,17 @@ class ChannelManager:
     def _init_channels(self) -> None:
         """Initialize channels based on config."""
 
+        # Generic bridge channel
+        if self.config.channels.bridge.enabled:
+            try:
+                from nanobot.channels.bridge import BridgeChannel
+                self.channels["bridge"] = BridgeChannel(
+                    self.config.channels.bridge, self.bus
+                )
+                logger.info("Bridge channel enabled")
+            except ImportError as e:
+                logger.warning("Bridge channel not available: {}", e)
+
         # Telegram channel
         if self.config.channels.telegram.enabled:
             try:

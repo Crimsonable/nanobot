@@ -687,6 +687,13 @@ def channels_status():
         wa.bridge_url
     )
 
+    bridge = config.channels.bridge
+    table.add_row(
+        "Bridge",
+        "✓" if bridge.enabled else "✗",
+        bridge.bridge_url
+    )
+
     dc = config.channels.discord
     table.add_row(
         "Discord",

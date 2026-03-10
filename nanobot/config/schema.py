@@ -23,6 +23,15 @@ class WhatsAppConfig(Base):
     allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
 
 
+class BridgeConfig(Base):
+    """Generic remote bridge channel configuration."""
+
+    enabled: bool = False
+    bridge_url: str = "ws://localhost:8766"
+    bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
+    allow_from: list[str] = Field(default_factory=list)  # Allowed remote sender IDs
+
+
 class TelegramConfig(Base):
     """Telegram channel configuration."""
 
@@ -207,6 +216,7 @@ class ChannelsConfig(Base):
 
     send_progress: bool = True  # stream agent's text progress to the channel
     send_tool_hints: bool = False  # stream tool-call hints (e.g. read_file("…"))
+    bridge: BridgeConfig = Field(default_factory=BridgeConfig)
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
