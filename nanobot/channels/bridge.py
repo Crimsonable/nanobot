@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 from loguru import logger
@@ -18,12 +19,15 @@ class BridgeChannel(BaseChannel):
     """Channel that connects nanobot to an external bridge over WebSocket."""
 
     name = "bridge"
+    _PROTOCOL_VERSION = 2
 
     def __init__(self, config: BridgeConfig, bus: MessageBus):
         super().__init__(config, bus)
         self.config: BridgeConfig = config
         self._ws = None
         self._connected = False
+        self._session_id = os.getenv("BRIDGE_SESSION_ID", "").strip()
+        self._container_name = os.getenv("BRIDGE_CONTAINER_NAME", "").strip()
 
     async def start(self) -> None:
         """Connect to the bridge and consume inbound packets forever."""
@@ -36,8 +40,8 @@ class BridgeChannel(BaseChannel):
             try:
                 async with websockets.connect(self.config.bridge_url, proxy=None) as ws:
                     self._ws = ws
-                    if self.config.bridge_token:
-                        await ws.send(json.dumps({"type": "auth", "token": self.config.bridge_token}))
+                    if packet := self._build_handshake_packet():
+                        await ws.send(json.dumps(packet, ensure_ascii=False))
                     self._connected = True
                     logger.info("Connected to bridge")
 
@@ -89,8 +93,10 @@ class BridgeChannel(BaseChannel):
             await self._publish_bridge_inbound(packet)
         elif msg_type == "cancel":
             await self._publish_bridge_cancel(packet)
-        elif msg_type in {"auth_ok", "pong"}:
+        elif msg_type in {"auth_ok", "register_ok", "pong"}:
             return
+        elif msg_type == "register_reject":
+            logger.error("Bridge registration rejected: {}", packet.get("error") or packet.get("content"))
         elif msg_type == "error":
             logger.error("Bridge error: {}", packet.get("content") or packet.get("error"))
 
@@ -151,3 +157,20 @@ class BridgeChannel(BaseChannel):
         if msg.content == "Sorry, I encountered an error.":
             return "error"
         return "final"
+
+    def _build_handshake_packet(self) -> dict[str, Any] | None:
+        if self._session_id and self._container_name:
+            packet: dict[str, Any] = {
+                "type": "register",
+                "version": self._PROTOCOL_VERSION,
+                "session_id": self._session_id,
+                "container_name": self._container_name,
+            }
+            if self.config.bridge_token:
+                packet["token"] = self.config.bridge_token
+            return packet
+
+        if self.config.bridge_token:
+            return {"type": "auth", "token": self.config.bridge_token}
+
+        return None

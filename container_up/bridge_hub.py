@@ -1,4 +1,4 @@
-"""Minimal bridge state for HTTP users and nanobot bot-side WebSocket."""
+"""Session-bound bridge state manager for container_up."""
 
 from __future__ import annotations
 
@@ -6,13 +6,20 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
-from bridge_service.protocol import PROTOCOL_VERSION, make_request_id, make_session_key
-
-TERMINAL_EVENT_TYPES = {"final", "error", "cancelled"}
+from container_up.bridge_protocol import (
+    PROTOCOL_VERSION,
+    REGISTER_OK_PACKET_TYPE,
+    is_terminal_event,
+    make_pending_key,
+    make_request_id,
+    make_session_key,
+    parse_register_packet,
+)
 
 
 @dataclass
 class PendingRequest:
+    session_id: str
     request_id: str
     conversation_id: str
     tenant_id: str
@@ -24,36 +31,63 @@ class PendingRequest:
             self.done = asyncio.get_running_loop().create_future()
 
 
-class BridgeCore:
-    """Minimal state manager for the bridge service."""
+@dataclass
+class ChildConnection:
+    session_id: str
+    container_name: str
+    websocket: Any
+
+
+class BridgeHub:
+    """Minimal session-aware bridge hub for container_up."""
 
     def __init__(self, token: str | None = None) -> None:
         self.token = token or None
-        self._bots: set[Any] = set()
-        self._pending: dict[str, PendingRequest] = {}
+        self._children: dict[str, ChildConnection] = {}
+        self._pending: dict[tuple[str, str], PendingRequest] = {}
 
     @property
-    def bot_count(self) -> int:
-        return len(self._bots)
+    def child_count(self) -> int:
+        return len(self._children)
 
-    async def authenticate_ws(self, websocket: Any, packet: dict[str, Any]) -> bool:
-        if not self.token:
-            return True
-        if packet.get("type") != "auth" or packet.get("token") != self.token:
+    def child_for_session(self, session_id: str) -> ChildConnection | None:
+        return self._children.get(session_id)
+
+    async def register_child(self, websocket: Any, packet: dict[str, Any]) -> str | None:
+        try:
+            session_id, container_name = parse_register_packet(packet)
+        except ValueError:
+            await websocket.close(code=4002, reason="invalid register packet")
+            return None
+
+        if self.token and packet.get("token") != self.token:
             await websocket.close(code=4003, reason="invalid token")
-            return False
-        await websocket.send_json({"type": "auth_ok"})
-        return True
+            return None
 
-    def register_bot(self, websocket: Any) -> None:
-        self._bots.add(websocket)
+        self._children[session_id] = ChildConnection(
+            session_id=session_id,
+            container_name=container_name,
+            websocket=websocket,
+        )
+        await websocket.send_json(
+            {
+                "type": REGISTER_OK_PACKET_TYPE,
+                "version": PROTOCOL_VERSION,
+                "session_id": session_id,
+                "container_name": container_name,
+            }
+        )
+        return session_id
 
-    def unregister_bot(self, websocket: Any) -> None:
-        self._bots.discard(websocket)
+    def unregister_child(self, session_id: str, websocket: Any) -> None:
+        current = self._children.get(session_id)
+        if current is not None and current.websocket is websocket:
+            self._children.pop(session_id, None)
 
     async def submit_message(
         self,
         *,
+        session_id: str,
         conversation_id: str,
         user_id: str,
         tenant_id: str,
@@ -63,19 +97,21 @@ class BridgeCore:
         request_id: str | None,
         timeout: float,
     ) -> dict[str, Any]:
-        bot = self._pick_bot()
-        if bot is None:
-            raise RuntimeError("No nanobot bridge channel connected")
+        child = self.child_for_session(session_id)
+        if child is None:
+            raise RuntimeError(f"No bridge channel connected for session {session_id}")
 
         request_id = request_id or make_request_id()
         pending = PendingRequest(
+            session_id=session_id,
             request_id=request_id,
             conversation_id=conversation_id,
             tenant_id=tenant_id,
         )
-        self._pending[request_id] = pending
+        pending_key = make_pending_key(session_id, request_id)
+        self._pending[pending_key] = pending
         try:
-            await bot.send_json(
+            await child.websocket.send_json(
                 {
                     "type": "inbound_message",
                     "version": PROTOCOL_VERSION,
@@ -93,6 +129,7 @@ class BridgeCore:
             )
             result = await asyncio.wait_for(pending.done, timeout=timeout)
             return {
+                "session_id": session_id,
                 "request_id": request_id,
                 "conversation_id": conversation_id,
                 "tenant_id": tenant_id,
@@ -100,21 +137,22 @@ class BridgeCore:
                 "result": result,
             }
         finally:
-            self._pending.pop(request_id, None)
+            self._pending.pop(pending_key, None)
 
     async def submit_cancel(
         self,
         *,
+        session_id: str,
         conversation_id: str,
         user_id: str,
         tenant_id: str,
         request_id: str,
     ) -> dict[str, Any]:
-        bot = self._pick_bot()
-        if bot is None:
-            raise RuntimeError("No nanobot bridge channel connected")
+        child = self.child_for_session(session_id)
+        if child is None:
+            raise RuntimeError(f"No bridge channel connected for session {session_id}")
 
-        await bot.send_json(
+        await child.websocket.send_json(
             {
                 "type": "cancel",
                 "version": PROTOCOL_VERSION,
@@ -127,23 +165,21 @@ class BridgeCore:
         )
         return {
             "status": "accepted",
+            "session_id": session_id,
             "request_id": request_id,
             "conversation_id": conversation_id,
             "tenant_id": tenant_id,
         }
 
-    async def handle_bot_packet(self, packet: dict[str, Any]) -> None:
+    async def handle_child_packet(self, session_id: str, packet: dict[str, Any]) -> None:
         request_id = str(packet.get("request_id") or "")
         if not request_id:
             return
 
-        pending = self._pending.get(request_id)
+        pending = self._pending.get(make_pending_key(session_id, request_id))
         if pending is None:
             return
 
         pending.events.append(packet)
-        if packet.get("type") in TERMINAL_EVENT_TYPES and not pending.done.done():
+        if is_terminal_event(packet) and not pending.done.done():
             pending.done.set_result(packet)
-
-    def _pick_bot(self) -> Any | None:
-        return next(iter(self._bots), None)

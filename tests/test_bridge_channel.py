@@ -94,3 +94,24 @@ async def test_bridge_send_encodes_progress_packet() -> None:
     assert sent["request_id"] == "req-3"
     assert sent["conversation_id"] == "conv-1"
     assert sent["content"] == "thinking"
+
+
+def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BRIDGE_SESSION_ID", "session-a")
+    monkeypatch.setenv("BRIDGE_CONTAINER_NAME", "nanobot-session-a")
+
+    channel = BridgeChannel(
+        BridgeConfig(bridge_url="ws://bridge", bridge_token="secret", allow_from=["*"]),
+        MessageBus(),
+    )
+
+    assert channel._build_handshake_packet() == {
+        "type": "register",
+        "version": 2,
+        "session_id": "session-a",
+        "container_name": "nanobot-session-a",
+        "token": "secret",
+    }
+
+    monkeypatch.delenv("BRIDGE_SESSION_ID")
+    monkeypatch.delenv("BRIDGE_CONTAINER_NAME")

@@ -6,8 +6,8 @@
 
 - 接收用户请求：`session_id`、`user_id`/`usr_id`、`content`
 - 用 SQLite 记录 `session_id -> child container`
-- 如果会话容器已存在且可用，就把请求转发到该容器的 bridge HTTP 接口
-- 如果不存在，就启动新的 `nanobot-bridge` 容器，等它就绪后再转发
+- 如果会话容器已存在且可用，就通过内置的 FastAPI WebSocket bridge hub 把请求分发给该 child
+- 如果不存在，就启动新的 `nanobot-bridge` 容器，等待 child 的 `BridgeChannel` 注册到 hub 后再分发
 
 ## API
 
@@ -106,18 +106,18 @@ curl http://127.0.0.1:8080/healthz
 
 ## 子容器端口策略
 
-`container_up` 创建出来的 `nanobot-bridge` 子容器，当前不是随机分配端口。
+`container_up` 创建出来的 `nanobot-bridge` 子容器，当前只需要暴露 `nanobot gateway` 端口。
 
-- 子容器内部 bridge 端口固定为 `CHILD_BRIDGE_PORT`，默认 `8766`
 - 子容器内部 gateway 端口固定为 `CHILD_GATEWAY_PORT`，默认 `18790`
-- `container_up` 不通过宿主机端口访问子容器
-- `container_up` 和子容器都加入同一个 Docker network，然后通过 `http://<container_name>:<bridge_port>` 转发
+- 子容器不会再起本地 `bridge_service`
+- child 内的 `BridgeChannel` 会主动连接 `container_up` 的 `WS /ws/bridge`
+- `container_up` 以 `session_id -> child websocket` 路由请求
 
 也就是说，当前是：
 
-- 端口固定
+- parent WebSocket 固定
 - 容器名动态
-- 路由靠 `session_id -> container_name`
+- 路由靠 `session_id -> websocket`
 
 ## 环境变量
 
@@ -134,9 +134,9 @@ curl http://127.0.0.1:8080/healthz
 3. 子容器运行：
 - `CHILD_IMAGE`
 - `CHILD_NETWORK`
-- `CHILD_BRIDGE_PORT`
 - `CHILD_GATEWAY_PORT`
 - `CHILD_BRIDGE_TOKEN`
+- `PARENT_BRIDGE_URL`
 - `IDLE_TIMEOUT_SECONDS`
 - `CLEANUP_SCAN_INTERVAL`
 
@@ -162,7 +162,7 @@ curl http://127.0.0.1:8080/healthz
 
 3. 如果某个 session 对应的子容器正在运行，且配置发生变化：
 - 自动重启该子容器
-- 等待 bridge ready 后继续服务
+- 等待 child 重新注册到 `container_up` 的 bridge hub 后继续服务
 
 这意味着：
 

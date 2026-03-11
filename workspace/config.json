@@ -4,7 +4,7 @@
         "sendToolHints": false,
         "bridge": {
             "enabled": true,
-            "bridgeUrl": "ws://127.0.0.1:8766",
+            "bridgeUrl": "ws://container-up:8080/ws/bridge",
             "bridgeToken": "my-shared-token",
             "allowFrom": [
                 "user-1",

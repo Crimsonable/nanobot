@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -15,10 +16,11 @@ from pathlib import Path
 from typing import Any
 
 import docker
-import httpx
 import uvicorn
+from container_up.bridge_hub import BridgeHub
 from docker.errors import APIError, DockerException, NotFound
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from pydantic import AliasChoices, BaseModel, Field
 
 APP_HOST = os.getenv("CONTAINER_UP_HOST", "0.0.0.0")
@@ -32,7 +34,6 @@ ROOT_TEMPLATE_CONFIG = HOST_WORKSPACE_ROOT / "config.json"
 CHILD_IMAGE = os.getenv("CHILD_IMAGE", "nanobot-bridge:latest")
 CHILD_NETWORK = os.getenv("CHILD_NETWORK", "nanobot-stack")
 CHILD_WORKSPACE_TARGET = os.getenv("CHILD_WORKSPACE_TARGET", "/app/workspace")
-CHILD_BRIDGE_PORT = int(os.getenv("CHILD_BRIDGE_PORT", "8766"))
 CHILD_GATEWAY_PORT = int(os.getenv("CHILD_GATEWAY_PORT", "18790"))
 CHILD_BRIDGE_TOKEN = os.getenv("CHILD_BRIDGE_TOKEN", "")
 CHILD_READY_TIMEOUT = int(os.getenv("CHILD_READY_TIMEOUT", "90"))
@@ -44,6 +45,7 @@ MODEL_API_BASE = os.getenv("MODEL_API_BASE", "")
 MODEL_NAME = os.getenv("MODEL_NAME", "")
 HOST_SKILLS_SOURCE = os.getenv("HOST_SKILLS_SOURCE", "")
 CHILD_SKILLS_DIR = os.getenv("CHILD_SKILLS_DIR", "")
+PARENT_BRIDGE_URL = os.getenv("PARENT_BRIDGE_URL", f"ws://container-up:{APP_PORT}/ws/bridge")
 IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "3600"))
 CLEANUP_SCAN_INTERVAL = int(os.getenv("CLEANUP_SCAN_INTERVAL", "300"))
 
@@ -218,7 +220,7 @@ def apply_managed_config(config: dict[str, Any]) -> tuple[dict[str, Any], str]:
     channels = config.setdefault("channels", {})
     bridge = channels.setdefault("bridge", {})
     bridge["enabled"] = True
-    bridge["bridgeUrl"] = f"ws://127.0.0.1:{CHILD_BRIDGE_PORT}"
+    bridge["bridgeUrl"] = PARENT_BRIDGE_URL
 
     token = CHILD_BRIDGE_TOKEN or str(bridge.get("bridgeToken") or "")
     bridge["bridgeToken"] = token
@@ -292,24 +294,17 @@ def container_running(container: Any) -> bool:
     return container.status == "running"
 
 
-def bridge_healthy(bridge_url: str, token: str) -> bool:
-    headers = {"X-Bridge-Token": token} if token else {}
-    try:
-        response = httpx.get(f"{bridge_url}/healthz", headers=headers, timeout=3.0)
-        response.raise_for_status()
-        payload = response.json()
-        return int(payload.get("bots_connected") or 0) >= 1
-    except Exception:
-        return False
+def bridge_connected(session_id: str) -> bool:
+    return get_bridge_hub().child_for_session(session_id) is not None
 
 
-def wait_until_ready(bridge_url: str, token: str) -> None:
+def wait_until_ready(session_id: str) -> None:
     deadline = time.time() + CHILD_READY_TIMEOUT
     while time.time() < deadline:
-        if bridge_healthy(bridge_url, token):
+        if bridge_connected(session_id):
             return
         time.sleep(1)
-    raise RuntimeError(f"container bridge not ready before timeout: {bridge_url}")
+    raise RuntimeError(f"bridge channel did not register before timeout: {session_id}")
 
 
 def remove_container(container: Any) -> None:
@@ -319,9 +314,9 @@ def remove_container(container: Any) -> None:
         return
 
 
-def restart_container(container: Any, bridge_url: str, token: str) -> None:
+def restart_container(container: Any, session_id: str) -> None:
     container.restart(timeout=20)
-    wait_until_ready(bridge_url, token)
+    wait_until_ready(session_id)
 
 
 def build_child_volumes(workspace_path: Path) -> dict[str, dict[str, str]]:
@@ -350,8 +345,8 @@ def ensure_child_network() -> None:
 
 def create_child_container(session_id: str, container_name: str, workspace_path: Path, token: str) -> dict[str, Any]:
     environment = {
-        "BRIDGE_BIND_HOST": "0.0.0.0",
-        "BRIDGE_BIND_PORT": str(CHILD_BRIDGE_PORT),
+        "BRIDGE_SESSION_ID": session_id,
+        "BRIDGE_CONTAINER_NAME": container_name,
         "GATEWAY_PORT": str(CHILD_GATEWAY_PORT),
     }
     if token:
@@ -371,8 +366,8 @@ def create_child_container(session_id: str, container_name: str, workspace_path:
     except APIError as exc:
         raise RuntimeError(f"failed to create child container: {exc.explanation}") from exc
 
-    bridge_url = f"http://{container_name}:{CHILD_BRIDGE_PORT}"
-    wait_until_ready(bridge_url, token)
+    bridge_url = PARENT_BRIDGE_URL
+    wait_until_ready(session_id)
     record = {
         "session_id": session_id,
         "container_name": container_name,
@@ -429,7 +424,7 @@ def sync_existing_sessions() -> None:
     for record in list_session_records():
         session_id = record["session_id"]
         workspace_path, token, changed = ensure_session_workspace(session_id)
-        bridge_url = f"http://{record['container_name']}:{CHILD_BRIDGE_PORT}"
+        bridge_url = PARENT_BRIDGE_URL
         updated_record = {
             **record,
             "bridge_url": bridge_url,
@@ -443,9 +438,7 @@ def sync_existing_sessions() -> None:
         container = get_container(record["container_name"])
         if container and container_running(container):
             if changed:
-                restart_container(container, bridge_url, token)
-            else:
-                wait_until_ready(bridge_url, token)
+                container.restart(timeout=20)
 
 
 def ensure_session_container(session_id: str) -> dict[str, Any]:
@@ -453,14 +446,14 @@ def ensure_session_container(session_id: str) -> dict[str, Any]:
         record = session_record(session_id)
         if record:
             workspace_path, token, changed = ensure_session_workspace(session_id)
-            bridge_url = f"http://{record['container_name']}:{CHILD_BRIDGE_PORT}"
+            bridge_url = PARENT_BRIDGE_URL
             container = get_container(record["container_name"])
             if container and container_running(container):
                 try:
                     if changed:
-                        restart_container(container, bridge_url, token)
+                        restart_container(container, session_id)
                     else:
-                        wait_until_ready(bridge_url, token)
+                        wait_until_ready(session_id)
                     updated = {
                         **record,
                         "bridge_url": bridge_url,
@@ -483,8 +476,8 @@ def ensure_session_container(session_id: str) -> dict[str, Any]:
         existing = get_container(container_name)
         if existing is not None:
             if container_running(existing):
-                bridge_url = f"http://{container_name}:{CHILD_BRIDGE_PORT}"
-                wait_until_ready(bridge_url, token)
+                bridge_url = PARENT_BRIDGE_URL
+                wait_until_ready(session_id)
                 record = {
                     "session_id": session_id,
                     "container_name": container_name,
@@ -499,15 +492,6 @@ def ensure_session_container(session_id: str) -> dict[str, Any]:
                 return record
             remove_container(existing)
         return create_child_container(session_id, container_name, workspace_path, token)
-
-
-def forward_json(method: str, url: str, token: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-    headers = {"X-Bridge-Token": token} if token else {}
-    with httpx.Client(timeout=timeout) as client:
-        response = client.request(method, url, json=payload, headers=headers)
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-        return response.json()
 
 
 @asynccontextmanager
@@ -527,6 +511,11 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="container_up", version="0.1.0", lifespan=lifespan)
+app.state.bridge_hub = BridgeHub(token=CHILD_BRIDGE_TOKEN or None)
+
+
+def get_bridge_hub() -> BridgeHub:
+    return app.state.bridge_hub
 
 
 @app.get("/healthz")
@@ -538,7 +527,36 @@ def healthz() -> dict[str, Any]:
         docker_ok = False
     with db_lock, db_conn() as conn:
         count = conn.execute("SELECT COUNT(*) FROM session_routes").fetchone()[0]
-    return {"status": "ok" if docker_ok else "degraded", "docker": docker_ok, "tracked_sessions": count}
+    bridge_hub = get_bridge_hub()
+    return {
+        "status": "ok" if docker_ok else "degraded",
+        "docker": docker_ok,
+        "tracked_sessions": count,
+        "connected_bridge_sessions": bridge_hub.child_count,
+    }
+
+
+@app.websocket("/ws/bridge")
+async def bridge_ws(websocket: WebSocket) -> None:
+    await websocket.accept()
+    bridge_hub = get_bridge_hub()
+    session_id: str | None = None
+    try:
+        raw = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+        session_id = await bridge_hub.register_child(websocket, raw)
+        if session_id is None:
+            return
+
+        while True:
+            packet = await websocket.receive_json()
+            await bridge_hub.handle_child_packet(session_id, packet)
+    except WebSocketDisconnect:
+        pass
+    except asyncio.TimeoutError:
+        await websocket.close(code=4001, reason="register timeout")
+    finally:
+        if session_id is not None:
+            bridge_hub.unregister_child(session_id, websocket)
 
 
 @app.get("/api/session/{session_id}")
@@ -547,57 +565,57 @@ def get_session(session_id: str) -> dict[str, Any]:
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
     container = get_container(record["container_name"])
+    child = get_bridge_hub().child_for_session(session_id)
     return {
         "session_id": session_id,
         "record": record,
         "container_status": getattr(container, "status", "missing") if container else "missing",
+        "bridge_connected": child is not None,
     }
 
 
 @app.post("/api/message")
-def post_message(payload: MessageRequest) -> dict[str, Any]:
+async def post_message(payload: MessageRequest) -> dict[str, Any]:
     try:
-        record = ensure_session_container(payload.session_id)
+        await run_in_threadpool(ensure_session_container, payload.session_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    touch_session(payload.session_id)
+    await run_in_threadpool(touch_session, payload.session_id)
 
-    return forward_json(
-        "POST",
-        f"{record['bridge_url']}/api/messages",
-        record["bridge_token"],
-        {
-            "conversation_id": payload.session_id,
-            "user_id": payload.user_id,
-            "tenant_id": payload.tenant_id,
-            "content": payload.content,
-            "request_id": payload.request_id,
-            "attachments": payload.attachments,
-            "metadata": payload.metadata,
-            "timeout_seconds": payload.timeout_seconds,
-        },
-        timeout=max(payload.timeout_seconds + 10, FORWARD_TIMEOUT),
-    )
+    try:
+        return await get_bridge_hub().submit_message(
+            session_id=payload.session_id,
+            conversation_id=payload.session_id,
+            user_id=payload.user_id,
+            tenant_id=payload.tenant_id,
+            content=payload.content,
+            request_id=payload.request_id,
+            attachments=payload.attachments,
+            metadata=payload.metadata,
+            timeout=payload.timeout_seconds,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="bridge response timeout") from exc
 
 
 @app.post("/api/cancel")
-def post_cancel(payload: CancelRequest) -> dict[str, Any]:
-    record = session_record(payload.session_id)
+async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
+    record = await run_in_threadpool(session_record, payload.session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
-    touch_session(payload.session_id)
-    return forward_json(
-        "POST",
-        f"{record['bridge_url']}/api/cancel",
-        record["bridge_token"],
-        {
-            "conversation_id": payload.session_id,
-            "user_id": payload.user_id,
-            "tenant_id": payload.tenant_id,
-            "request_id": payload.request_id,
-        },
-        timeout=30.0,
-    )
+    await run_in_threadpool(touch_session, payload.session_id)
+    try:
+        return await get_bridge_hub().submit_cancel(
+            session_id=payload.session_id,
+            conversation_id=payload.session_id,
+            user_id=payload.user_id,
+            tenant_id=payload.tenant_id,
+            request_id=payload.request_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def main() -> None:
