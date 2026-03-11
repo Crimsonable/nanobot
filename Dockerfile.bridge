@@ -1,0 +1,29 @@
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    BRIDGE_BIND_HOST=0.0.0.0 \
+    BRIDGE_BIND_PORT=8766 \
+    GATEWAY_PORT=18790
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy source code. workspace/ is excluded by .dockerignore and should be mounted at runtime.
+COPY pyproject.toml README.md LICENSE ./
+COPY nanobot/ nanobot/
+COPY bridge/ bridge/
+COPY bridge_service/ bridge_service/
+COPY start_nanobot_bridge.sh ./
+
+RUN uv pip install --system --no-cache . ./bridge_service && \
+    chmod +x /app/start_nanobot_bridge.sh
+
+EXPOSE 8766 18790
+
+ENTRYPOINT ["/app/start_nanobot_bridge.sh"]
+CMD ["/app/workspace/config.json"]

@@ -1,74 +1,24 @@
 # Bridge Service
 
-这是 `nanobot/channels/bridge.py` 对应的独立服务端实现，放在 `nanobot/` 包外。
+`bridge_service/` 现在只保留最核心的桥接能力:
 
-## 目录
-
-- `server.py`
-  独立 bridge 服务。接收用户侧 client 消息，转发给 nanobot 的 `bridge` channel。
-- `client_demo.py`
-  最小客户端示例。
-- `protocol.py`
-  协议辅助函数。
-
-## 协议
-
-client -> bridge:
-
-```json
-{
-  "type": "message",
-  "request_id": "req_xxx",
-  "conversation_id": "conv_1",
-  "user_id": "u_1",
-  "tenant_id": "default",
-  "content": "hello",
-  "attachments": [],
-  "metadata": {}
-}
-```
-
-bridge -> nanobot:
-
-```json
-{
-  "type": "inbound_message",
-  "version": 1,
-  "request_id": "req_xxx",
-  "tenant_id": "default",
-  "conversation_id": "conv_1",
-  "session_key": "remote:default:conv_1",
-  "channel": "bridge",
-  "sender_id": "u_1",
-  "chat_id": "conv_1",
-  "content": "hello",
-  "attachments": [],
-  "metadata": {}
-}
-```
-
-nanobot -> bridge -> client:
-
-- `progress`
-- `final`
-- `error`
-- `cancelled`
+- 用户侧 HTTP:
+  - `POST /api/messages`
+  - `POST /api/cancel`
+- `nanobot` 侧 WebSocket:
+  - `WS /`
+- 健康检查:
+  - `GET /healthz`
 
 ## 运行
 
-1. 启动 bridge 服务：
-
 ```bash
-python -m bridge_service.server
+cd bridge_service
+uv sync
+uv run nanobot-bridge-service --host 127.0.0.1 --port 8766 --token my-shared-token
 ```
 
-2. 启动 nanobot，并启用 `bridge` channel：
-
-```bash
-nanobot gateway --config ~/.nanobot/config.json
-```
-
-配置示例：
+## nanobot 配置
 
 ```json
 {
@@ -76,22 +26,41 @@ nanobot gateway --config ~/.nanobot/config.json
     "bridge": {
       "enabled": true,
       "bridgeUrl": "ws://127.0.0.1:8766",
-      "bridgeToken": "",
+      "bridgeToken": "my-shared-token",
       "allowFrom": ["*"]
     }
   }
 }
 ```
 
-3. 发送测试消息：
+## HTTP 示例
 
 ```bash
-python -m bridge_service.client_demo --content "帮我分析一下这个异常"
+curl -X POST http://127.0.0.1:8766/api/messages \
+  -H 'Content-Type: application/json' \
+  -H 'X-Bridge-Token: my-shared-token' \
+  -d '{
+    "conversation_id": "conv-1",
+    "user_id": "user-1",
+    "tenant_id": "default",
+    "content": "hello"
+  }'
 ```
 
-## 说明
+```bash
+curl -X POST http://127.0.0.1:8766/api/cancel \
+  -H 'Content-Type: application/json' \
+  -H 'X-Bridge-Token: my-shared-token' \
+  -d '{
+    "conversation_id": "conv-1",
+    "user_id": "user-1",
+    "tenant_id": "default",
+    "request_id": "req_xxx"
+  }'
+```
 
-- `client-port` 默认 `8765`，面向业务侧 client。
-- `bot-port` 默认 `8766`，面向 nanobot 的 `bridge` channel。
-- 如果设置了 `--token`，client 和 nanobot 两端都要先发 `{"type":"auth","token":"..."}`。
-- `cancel` 请求建议带上原始 `user_id`，这样 nanobot 侧 `/stop` 也能通过 `allowFrom`。
+## Demo
+
+```bash
+uv run nanobot-bridge-demo --content "hello"
+```

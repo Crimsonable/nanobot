@@ -1,0 +1,17 @@
+services:
+  nanobot-bridge:
+    container_name: nanobot-bridge
+    image: nanobot-bridge:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    restart: unless-stopped
+    environment:
+      BRIDGE_BIND_HOST: ${BRIDGE_BIND_HOST:-0.0.0.0}
+      BRIDGE_BIND_PORT: ${BRIDGE_BIND_PORT:-8766}
+      GATEWAY_PORT: ${GATEWAY_PORT:-18790}
+    ports:
+      - "${BRIDGE_PUBLIC_PORT:-8766}:${BRIDGE_BIND_PORT:-8766}"
+      - "${GATEWAY_PUBLIC_PORT:-18790}:${GATEWAY_PORT:-18790}"
+    volumes:
+      - ./workspace:/app/workspace

@@ -1,13 +1,11 @@
-"""Minimal client demo for the standalone bridge service."""
+"""Minimal HTTP client demo for bridge_service."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 
-import websockets
-
-from bridge_service.protocol import decode_packet, encode_packet, make_request_id
+import httpx
 
 
 async def run_client(
@@ -17,45 +15,38 @@ async def run_client(
     tenant_id: str,
     content: str,
     token: str | None = None,
+    timeout_seconds: float = 60.0,
 ) -> None:
-    request_id = make_request_id()
-    async with websockets.connect(url, proxy=None) as ws:
-        if token:
-            await ws.send(encode_packet({"type": "auth", "token": token}))
-            print(await ws.recv())
+    headers: dict[str, str] = {}
+    if token:
+        headers["X-Bridge-Token"] = token
 
-        await ws.send(
-            encode_packet(
-                {
-                    "type": "message",
-                    "request_id": request_id,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "tenant_id": tenant_id,
-                    "content": content,
-                    "attachments": [],
-                    "metadata": {"client": "demo"},
-                }
-            )
+    async with httpx.AsyncClient(timeout=timeout_seconds + 5) as client:
+        response = await client.post(
+            url,
+            json={
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "tenant_id": tenant_id,
+                "content": content,
+                "timeout_seconds": timeout_seconds,
+                "metadata": {"client": "demo-http"},
+            },
+            headers=headers,
         )
-
-        async for raw in ws:
-            packet = decode_packet(raw)
-            if packet.get("request_id") not in {"", request_id} and packet.get("type") != "ack":
-                continue
-            print(packet)
-            if packet.get("type") in {"final", "error", "cancelled"}:
-                break
+        response.raise_for_status()
+        print(response.json())
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Client demo for the standalone bridge service")
-    parser.add_argument("--url", default="ws://127.0.0.1:8765")
+    parser = argparse.ArgumentParser(description="HTTP client demo for the standalone bridge service")
+    parser.add_argument("--url", default="http://127.0.0.1:8766/api/messages")
     parser.add_argument("--conversation-id", default="conv-1")
     parser.add_argument("--user-id", default="user-1")
     parser.add_argument("--tenant-id", default="default")
     parser.add_argument("--content", required=True)
     parser.add_argument("--token", default="")
+    parser.add_argument("--timeout-seconds", type=float, default=60.0)
     return parser.parse_args()
 
 
@@ -69,6 +60,7 @@ def main() -> None:
             tenant_id=args.tenant_id,
             content=args.content,
             token=args.token or None,
+            timeout_seconds=args.timeout_seconds,
         )
     )
 
