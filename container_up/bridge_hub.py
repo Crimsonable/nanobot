@@ -1,4 +1,4 @@
-"""Session-bound bridge state manager for container_up."""
+"""Org-bound bridge state manager for container_up."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from container_up.bridge_protocol import (
 
 @dataclass
 class PendingRequest:
-    session_id: str
+    org_id: str
     request_id: str
     conversation_id: str
     tenant_id: str
@@ -33,13 +33,13 @@ class PendingRequest:
 
 @dataclass
 class ChildConnection:
-    session_id: str
+    org_id: str
     container_name: str
     websocket: Any
 
 
 class BridgeHub:
-    """Minimal session-aware bridge hub for container_up."""
+    """Minimal org-aware bridge hub for container_up."""
 
     def __init__(self, token: str | None = None) -> None:
         self.token = token or None
@@ -50,12 +50,12 @@ class BridgeHub:
     def child_count(self) -> int:
         return len(self._children)
 
-    def child_for_session(self, session_id: str) -> ChildConnection | None:
-        return self._children.get(session_id)
+    def child_for_org(self, org_id: str) -> ChildConnection | None:
+        return self._children.get(org_id)
 
     async def register_child(self, websocket: Any, packet: dict[str, Any]) -> str | None:
         try:
-            session_id, container_name = parse_register_packet(packet)
+            org_id, container_name = parse_register_packet(packet)
         except ValueError:
             await websocket.close(code=4002, reason="invalid register packet")
             return None
@@ -64,8 +64,8 @@ class BridgeHub:
             await websocket.close(code=4003, reason="invalid token")
             return None
 
-        self._children[session_id] = ChildConnection(
-            session_id=session_id,
+        self._children[org_id] = ChildConnection(
+            org_id=org_id,
             container_name=container_name,
             websocket=websocket,
         )
@@ -73,21 +73,21 @@ class BridgeHub:
             {
                 "type": REGISTER_OK_PACKET_TYPE,
                 "version": PROTOCOL_VERSION,
-                "session_id": session_id,
+                "org_id": org_id,
                 "container_name": container_name,
             }
         )
-        return session_id
+        return org_id
 
-    def unregister_child(self, session_id: str, websocket: Any) -> None:
-        current = self._children.get(session_id)
+    def unregister_child(self, org_id: str, websocket: Any) -> None:
+        current = self._children.get(org_id)
         if current is not None and current.websocket is websocket:
-            self._children.pop(session_id, None)
+            self._children.pop(org_id, None)
 
     async def submit_message(
         self,
         *,
-        session_id: str,
+        org_id: str,
         conversation_id: str,
         user_id: str,
         tenant_id: str,
@@ -97,18 +97,18 @@ class BridgeHub:
         request_id: str | None,
         timeout: float,
     ) -> dict[str, Any]:
-        child = self.child_for_session(session_id)
+        child = self.child_for_org(org_id)
         if child is None:
-            raise RuntimeError(f"No bridge channel connected for session {session_id}")
+            raise RuntimeError(f"No bridge channel connected for org {org_id}")
 
         request_id = request_id or make_request_id()
         pending = PendingRequest(
-            session_id=session_id,
+            org_id=org_id,
             request_id=request_id,
             conversation_id=conversation_id,
             tenant_id=tenant_id,
         )
-        pending_key = make_pending_key(session_id, request_id)
+        pending_key = make_pending_key(org_id, request_id)
         self._pending[pending_key] = pending
         try:
             await child.websocket.send_json(
@@ -129,7 +129,7 @@ class BridgeHub:
             )
             result = await asyncio.wait_for(pending.done, timeout=timeout)
             return {
-                "session_id": session_id,
+                "org_id": org_id,
                 "request_id": request_id,
                 "conversation_id": conversation_id,
                 "tenant_id": tenant_id,
@@ -142,15 +142,15 @@ class BridgeHub:
     async def submit_cancel(
         self,
         *,
-        session_id: str,
+        org_id: str,
         conversation_id: str,
         user_id: str,
         tenant_id: str,
         request_id: str,
     ) -> dict[str, Any]:
-        child = self.child_for_session(session_id)
+        child = self.child_for_org(org_id)
         if child is None:
-            raise RuntimeError(f"No bridge channel connected for session {session_id}")
+            raise RuntimeError(f"No bridge channel connected for org {org_id}")
 
         await child.websocket.send_json(
             {
@@ -165,18 +165,18 @@ class BridgeHub:
         )
         return {
             "status": "accepted",
-            "session_id": session_id,
+            "org_id": org_id,
             "request_id": request_id,
             "conversation_id": conversation_id,
             "tenant_id": tenant_id,
         }
 
-    async def handle_child_packet(self, session_id: str, packet: dict[str, Any]) -> None:
+    async def handle_child_packet(self, org_id: str, packet: dict[str, Any]) -> None:
         request_id = str(packet.get("request_id") or "")
         if not request_id:
             return
 
-        pending = self._pending.get(make_pending_key(session_id, request_id))
+        pending = self._pending.get(make_pending_key(org_id, request_id))
         if pending is None:
             return
 

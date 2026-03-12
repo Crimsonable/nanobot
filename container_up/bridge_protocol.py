@@ -1,4 +1,4 @@
-"""Shared bridge protocol helpers for container_up <-> child nanobot sessions."""
+"""Shared bridge protocol helpers for container_up <-> child org containers."""
 
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ def make_session_key(tenant_id: str, conversation_id: str) -> str:
     return f"remote:{tenant}:{conversation_id}"
 
 
-def make_pending_key(session_id: str, request_id: str) -> tuple[str, str]:
+def make_pending_key(org_id: str, request_id: str) -> tuple[str, str]:
     """Build a collision-safe key for pending requests inside container_up."""
-    return session_id, request_id
+    return org_id, request_id
 
 
 def build_register_packet(
     *,
-    session_id: str,
+    org_id: str,
     container_name: str,
     token: str | None = None,
 ) -> dict[str, Any]:
@@ -41,7 +41,7 @@ def build_register_packet(
     packet: dict[str, Any] = {
         "type": REGISTER_PACKET_TYPE,
         "version": PROTOCOL_VERSION,
-        "session_id": session_id,
+        "org_id": org_id,
         "container_name": container_name,
     }
     if token:
@@ -54,15 +54,15 @@ def parse_register_packet(packet: Mapping[str, Any]) -> tuple[str, str]:
     if packet.get("type") != REGISTER_PACKET_TYPE:
         raise ValueError("expected register packet")
 
-    session_id = str(packet.get("session_id") or "").strip()
-    if not session_id:
-        raise ValueError("missing session_id")
+    org_id = str(packet.get("org_id") or packet.get("session_id") or "").strip()
+    if not org_id:
+        raise ValueError("missing org_id")
 
     container_name = str(packet.get("container_name") or "").strip()
     if not container_name:
         raise ValueError("missing container_name")
 
-    return session_id, container_name
+    return org_id, container_name
 
 
 def is_terminal_event(packet: Mapping[str, Any]) -> bool:

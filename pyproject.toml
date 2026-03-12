@@ -98,6 +98,9 @@ include = [
 [tool.hatch.build.targets.wheel.force-include]
 "bridge" = "nanobot/bridge"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
