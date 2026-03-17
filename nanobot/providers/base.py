@@ -1,6 +1,7 @@
 """Base LLM provider interface."""
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,6 +15,24 @@ class ToolCallRequest:
     id: str
     name: str
     arguments: dict[str, Any]
+    provider_specific_fields: dict[str, Any] | None = None
+    function_provider_specific_fields: dict[str, Any] | None = None
+
+    def to_openai_tool_call(self) -> dict[str, Any]:
+        """Serialize to an OpenAI-style tool_call payload."""
+        tool_call = {
+            "id": self.id,
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "arguments": json.dumps(self.arguments, ensure_ascii=False),
+            },
+        }
+        if self.provider_specific_fields:
+            tool_call["provider_specific_fields"] = self.provider_specific_fields
+        if self.function_provider_specific_fields:
+            tool_call["function"]["provider_specific_fields"] = self.function_provider_specific_fields
+        return tool_call
 
 
 @dataclass
@@ -69,6 +88,14 @@ class LLMProvider(ABC):
         "connection",
         "server error",
         "temporarily unavailable",
+    )
+    _IMAGE_UNSUPPORTED_MARKERS = (
+        "image_url is only supported",
+        "does not support image",
+        "images are not supported",
+        "image input is not supported",
+        "image_url is not supported",
+        "unsupported image input",
     )
 
     _SENTINEL = object()
@@ -147,6 +174,7 @@ class LLMProvider(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -157,6 +185,7 @@ class LLMProvider(ABC):
             model: Model identifier (provider-specific).
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
+            tool_choice: Tool selection strategy ("auto", "required", or specific tool dict).
         
         Returns:
             LLMResponse with content and/or tool calls.
@@ -168,6 +197,40 @@ class LLMProvider(ABC):
         err = (content or "").lower()
         return any(marker in err for marker in cls._TRANSIENT_ERROR_MARKERS)
 
+    @classmethod
+    def _is_image_unsupported_error(cls, content: str | None) -> bool:
+        err = (content or "").lower()
+        return any(marker in err for marker in cls._IMAGE_UNSUPPORTED_MARKERS)
+
+    @staticmethod
+    def _strip_image_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        """Replace image_url blocks with text placeholder. Returns None if no images found."""
+        found = False
+        result = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                new_content = []
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "image_url":
+                        new_content.append({"type": "text", "text": "[image omitted]"})
+                        found = True
+                    else:
+                        new_content.append(b)
+                result.append({**msg, "content": new_content})
+            else:
+                result.append(msg)
+        return result if found else None
+
+    async def _safe_chat(self, **kwargs: Any) -> LLMResponse:
+        """Call chat() and convert unexpected exceptions to error responses."""
+        try:
+            return await self.chat(**kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+
     async def chat_with_retry(
         self,
         messages: list[dict[str, Any]],
@@ -176,6 +239,7 @@ class LLMProvider(ABC):
         max_tokens: object = _SENTINEL,
         temperature: object = _SENTINEL,
         reasoning_effort: object = _SENTINEL,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Call chat() with retry on transient provider failures.
 
@@ -190,55 +254,34 @@ class LLMProvider(ABC):
         if reasoning_effort is self._SENTINEL:
             reasoning_effort = self.generation.reasoning_effort
 
+        kw: dict[str, Any] = dict(
+            messages=messages, tools=tools, model=model,
+            max_tokens=max_tokens, temperature=temperature,
+            reasoning_effort=reasoning_effort, tool_choice=tool_choice,
+        )
+
         for attempt, delay in enumerate(self._CHAT_RETRY_DELAYS, start=1):
-            try:
-                response = await self.chat(
-                    messages=messages,
-                    tools=tools,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    reasoning_effort=reasoning_effort,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                response = LLMResponse(
-                    content=f"Error calling LLM: {exc}",
-                    finish_reason="error",
-                )
+            response = await self._safe_chat(**kw)
 
             if response.finish_reason != "error":
                 return response
+
             if not self._is_transient_error(response.content):
+                if self._is_image_unsupported_error(response.content):
+                    stripped = self._strip_image_content(messages)
+                    if stripped is not None:
+                        logger.warning("Model does not support image input, retrying without images")
+                        return await self._safe_chat(**{**kw, "messages": stripped})
                 return response
 
-            err = (response.content or "").lower()
             logger.warning(
                 "LLM transient error (attempt {}/{}), retrying in {}s: {}",
-                attempt,
-                len(self._CHAT_RETRY_DELAYS),
-                delay,
-                err[:120],
+                attempt, len(self._CHAT_RETRY_DELAYS), delay,
+                (response.content or "")[:120].lower(),
             )
             await asyncio.sleep(delay)
 
-        try:
-            return await self.chat(
-                messages=messages,
-                tools=tools,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            return LLMResponse(
-                content=f"Error calling LLM: {exc}",
-                finish_reason="error",
-            )
+        return await self._safe_chat(**kw)
 
     @abstractmethod
     def get_default_model(self) -> str:
