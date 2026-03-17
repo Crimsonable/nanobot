@@ -1,0 +1,4 @@
+interface:
+  display_name: "PowerChina Meeting Room"
+  short_description: "Login once, cache state, and query available meeting rooms"
+  default_prompt: "Use the PowerChina meeting-room automation script in this workspace to log in, persist state, or query idle rooms from meeting form data."

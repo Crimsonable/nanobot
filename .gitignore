@@ -22,3 +22,4 @@ poetry.lock
 botpy.log
 .venv_bridge_test
 nano.*.save
+container_up_runtime/

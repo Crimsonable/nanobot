@@ -14,9 +14,11 @@ from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
+from attr import dataclass
 import docker
 import uvicorn
 from container_up.bridge_hub import BridgeHub
+from container_up.crypt_tools import ecrypt,decrypt
 from docker.errors import APIError, DockerException, NotFound
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
@@ -24,23 +26,35 @@ from pydantic import AliasChoices, BaseModel, Field
 
 APP_HOST = os.getenv("CONTAINER_UP_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("CONTAINER_UP_PORT", "8080"))
-DB_PATH = Path(os.getenv("CONTAINER_UP_DB_PATH", "/var/lib/container_up/container_up.db"))
+DB_PATH = Path(
+    os.getenv("CONTAINER_UP_DB_PATH", "/var/lib/container_up/container_up.db")
+)
 HOST_WORKSPACE_ROOT = Path(os.getenv("HOST_WORKSPACE_ROOT", "/opt/nanobot/workspaces"))
-HOST_SHARED_CONFIG = Path(os.getenv("HOST_SHARED_CONFIG", "/opt/nanobot/shared/config.json"))
+HOST_SHARED_CONFIG = Path(
+    os.getenv("HOST_SHARED_CONFIG", "/opt/nanobot/shared/config.json")
+)
 HOST_SHARED_SKILLS = Path(os.getenv("HOST_SHARED_SKILLS", "/opt/nanobot/shared/skills"))
 CHILD_IMAGE = os.getenv("CHILD_IMAGE", "nanobot-bridge:latest")
 CHILD_NETWORK = os.getenv("CHILD_NETWORK", "nanobot-stack")
+CHILD_NETWORK_MODE = os.getenv("CHILD_NETWORK_MODE", "").strip()
 CHILD_WORKSPACE_TARGET = os.getenv("CHILD_WORKSPACE_TARGET", "/app/nanobot_workspaces")
-CHILD_SHARED_CONFIG_TARGET = os.getenv("CHILD_SHARED_CONFIG_TARGET", "/app/nanobot_workspaces/config.json")
-CHILD_BUILTIN_SKILLS_TARGET = os.getenv("CHILD_BUILTIN_SKILLS_TARGET", "/app/nanobot/skills")
+CHILD_SHARED_CONFIG_TARGET = os.getenv(
+    "CHILD_SHARED_CONFIG_TARGET", "/app/nanobot_workspaces/config.json"
+)
+CHILD_BUILTIN_SKILLS_TARGET = os.getenv(
+    "CHILD_BUILTIN_SKILLS_TARGET", "/app/nanobot/skills"
+)
 CHILD_BRIDGE_TOKEN = os.getenv("CHILD_BRIDGE_TOKEN", "")
 CHILD_READY_TIMEOUT = int(os.getenv("CHILD_READY_TIMEOUT", "90"))
 FORWARD_TIMEOUT = float(os.getenv("FORWARD_TIMEOUT", "300"))
 CONTAINER_PREFIX = os.getenv("CHILD_CONTAINER_PREFIX", "nanobot-org")
-PARENT_BRIDGE_URL = os.getenv("PARENT_BRIDGE_URL", f"ws://container-up:{APP_PORT}/ws/bridge")
+PARENT_BRIDGE_URL = os.getenv(
+    "PARENT_BRIDGE_URL", f"ws://container-up:{APP_PORT}/ws/bridge"
+)
 IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "3600"))
 CLEANUP_SCAN_INTERVAL = int(os.getenv("CLEANUP_SCAN_INTERVAL", "300"))
 INSTANCE_IDLE_TIMEOUT_SECONDS = int(os.getenv("INSTANCE_IDLE_TIMEOUT_SECONDS", "1800"))
+LOG_LLM_REQUESTS = os.getenv("NANOBOT_LOG_LLM_REQUESTS", "").strip()
 
 docker_client = docker.from_env()
 db_lock = threading.Lock()
@@ -285,6 +299,8 @@ def build_child_volumes(workspace_path: Path) -> dict[str, dict[str, str]]:
 
 
 def ensure_child_network() -> None:
+    if CHILD_NETWORK_MODE:
+        return
     if not CHILD_NETWORK:
         raise RuntimeError("CHILD_NETWORK must be configured")
     try:
@@ -293,28 +309,42 @@ def ensure_child_network() -> None:
         docker_client.networks.create(CHILD_NETWORK, driver="bridge")
 
 
-def create_child_container(org_id: str, container_name: str, workspace_path: Path, token: str) -> dict[str, Any]:
+def create_child_container(
+    org_id: str, container_name: str, workspace_path: Path, token: str
+) -> dict[str, Any]:
     environment = {
         "BRIDGE_ORG_ID": org_id,
         "BRIDGE_CONTAINER_NAME": container_name,
+        "PARENT_BRIDGE_URL": PARENT_BRIDGE_URL,
         "INSTANCE_IDLE_TIMEOUT_SECONDS": str(INSTANCE_IDLE_TIMEOUT_SECONDS),
     }
+    if LOG_LLM_REQUESTS:
+        environment["NANOBOT_LOG_LLM_REQUESTS"] = LOG_LLM_REQUESTS
     if token:
         environment["BRIDGE_TOKEN_OVERRIDE"] = token
+
+    run_kwargs: dict[str, Any] = {
+        "name": container_name,
+        "detach": True,
+        "restart_policy": {"Name": "unless-stopped"},
+        "labels": {"managed-by": "container_up", "org-id": org_id},
+        "environment": environment,
+        "volumes": build_child_volumes(workspace_path),
+    }
+    if CHILD_NETWORK_MODE:
+        run_kwargs["network_mode"] = CHILD_NETWORK_MODE
+    else:
+        run_kwargs["network"] = CHILD_NETWORK
 
     try:
         container = docker_client.containers.run(
             CHILD_IMAGE,
-            name=container_name,
-            detach=True,
-            network=CHILD_NETWORK,
-            restart_policy={"Name": "unless-stopped"},
-            labels={"managed-by": "container_up", "org-id": org_id},
-            environment=environment,
-            volumes=build_child_volumes(workspace_path),
+            **run_kwargs,
         )
     except APIError as exc:
-        raise RuntimeError(f"failed to create child container: {exc.explanation}") from exc
+        raise RuntimeError(
+            f"failed to create child container: {exc.explanation}"
+        ) from exc
 
     bridge_url = PARENT_BRIDGE_URL
     wait_until_ready(org_id)
@@ -436,7 +466,9 @@ def ensure_org_container(org_id: str) -> dict[str, Any]:
                     "bridge_token": token,
                     "workspace_path": str(workspace_path),
                     "status": "running",
-                    "last_active_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "last_active_at": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                    ),
                 }
                 upsert_org_record(record)
                 return record
@@ -452,7 +484,9 @@ async def lifespan(_: FastAPI):
     sync_existing_orgs()
     cleanup_stop_event.clear()
     global cleanup_thread
-    cleanup_thread = threading.Thread(target=cleanup_loop, name="container-up-cleanup", daemon=True)
+    cleanup_thread = threading.Thread(
+        target=cleanup_loop, name="container-up-cleanup", daemon=True
+    )
     cleanup_thread.start()
     yield
     cleanup_stop_event.set()
@@ -508,6 +542,7 @@ async def bridge_ws(websocket: WebSocket) -> None:
         if org_id is not None:
             bridge_hub.unregister_child(org_id, websocket)
 
+
 @app.get("/api/org/{org_id}")
 def get_org(org_id: str) -> dict[str, Any]:
     record = org_record(org_id)
@@ -518,10 +553,24 @@ def get_org(org_id: str) -> dict[str, Any]:
     return {
         "org_id": org_id,
         "record": record,
-        "container_status": getattr(container, "status", "missing") if container else "missing",
+        "container_status": (
+            getattr(container, "status", "missing") if container else "missing"
+        ),
         "bridge_connected": child is not None,
     }
 
+
+@dataclass
+class SubForm:
+    msgSignature: str
+    encrypt: str
+    timeStamp: int
+    nonce: str
+
+
+@app.get("/subscribe")
+async def subscribe(sub_form: SubForm):
+    
 
 @app.post("/api/message")
 async def post_message(payload: MessageRequest) -> dict[str, Any]:

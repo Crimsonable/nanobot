@@ -127,7 +127,22 @@ class BridgeHub:
                     "metadata": metadata or {},
                 }
             )
-            result = await asyncio.wait_for(pending.done, timeout=timeout)
+            try:
+                result = await asyncio.wait_for(pending.done, timeout=timeout)
+            except asyncio.TimeoutError:
+                try:
+                    await self.submit_cancel(
+                        org_id=org_id,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        tenant_id=tenant_id,
+                        request_id=request_id,
+                    )
+                except RuntimeError:
+                    # The child may already be gone; preserve the timeout as the
+                    # primary failure surfaced to the caller.
+                    pass
+                raise
             return {
                 "org_id": org_id,
                 "request_id": request_id,

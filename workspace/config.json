@@ -15,12 +15,12 @@
     "providers": {
         "vllm": {
             "apiKey": "3c19057182a675301cccf9f59b8463a5",
-            "apiBase": "http://169.254.202.33:8724/api/v1"
+            "apiBase": "http://169.254.202.33:8724/v1"
         }
     },
     "agents": {
         "defaults": {
-            "model": "Qwen/Qwen3.5-122B-A10B"
+            "model": "qwen35122be1parf"
         }
     }
 }

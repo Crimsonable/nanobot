@@ -141,6 +141,7 @@ curl http://127.0.0.1:8080/healthz
 3. 组织容器调度：
 - `CHILD_IMAGE`
 - `CHILD_NETWORK`
+- `CHILD_NETWORK_MODE`
 - `CHILD_BRIDGE_TOKEN`
 - `PARENT_BRIDGE_URL`
 - `CHILD_READY_TIMEOUT`
@@ -181,10 +182,17 @@ curl http://127.0.0.1:8080/healthz
   - 动态拉起的组织容器镜像
 - `CHILD_NETWORK`
   - 组织容器加入的 Docker 网络
+  - 仅在未设置 `CHILD_NETWORK_MODE` 时生效
+- `CHILD_NETWORK_MODE`
+  - 可选的 Docker `network_mode`
+  - 留空时走默认 bridge 网络，也就是原先的容器网络模式
+  - 例如设为 `host` 时，child 会直接使用宿主机网络栈
 - `CHILD_BRIDGE_TOKEN`
   - `container_up` 和组织容器之间的 websocket bridge 鉴权 token
 - `PARENT_BRIDGE_URL`
   - 组织容器内 `org_router` 回连 parent 的 websocket 地址
+  - 默认 bridge 网络下，通常保持 `ws://container-up:8080/ws/bridge`
+  - 如果 `CHILD_NETWORK_MODE=host`，则需要改成 `ws://127.0.0.1:8080/ws/bridge`
 - `CHILD_READY_TIMEOUT`
   - 等组织容器注册到 bridge hub 的超时时间
 - `FORWARD_TIMEOUT`
@@ -252,7 +260,7 @@ curl http://127.0.0.1:8080/healthz
 
 2. `container_up` 收到请求
 - 用 `HOST_WORKSPACE_ROOT` 找到或创建组织目录 `HOST_WORKSPACE_ROOT/<org_id>`
-- 用 `CHILD_IMAGE`、`CHILD_NETWORK`、`CHILD_BRIDGE_TOKEN`、`PARENT_BRIDGE_URL` 拉起组织容器
+- 用 `CHILD_IMAGE`、`CHILD_NETWORK` 或 `CHILD_NETWORK_MODE`、`CHILD_BRIDGE_TOKEN`、`PARENT_BRIDGE_URL` 拉起组织容器
 - 在 `CHILD_READY_TIMEOUT` 内等待组织容器注册成功
 
 3. 组织容器启动 `org_router`
@@ -289,6 +297,36 @@ curl http://127.0.0.1:8080/healthz
 
 同时，`HOST_WORKSPACE_ROOT`、`HOST_SHARED_CONFIG`、`HOST_SHARED_SKILLS` 都必须是宿主机绝对路径，并且挂载到 `container_up` 容器内相同路径。这样 `container_up` 才能把这些路径原样传给宿主机 Docker daemon 创建子容器。
 
+## 网络模式
+
+默认情况下，child 使用 bridge 网络：
+
+- `CHILD_NETWORK=nanobot-stack`
+- `CHILD_NETWORK_MODE` 留空
+- `PARENT_BRIDGE_URL=ws://container-up:8080/ws/bridge`
+
+这也是原先的容器网络模式，绝大多数情况下继续用这个就行。
+
+如果某些宿主机地址在 bridge 网络下不可达，例如 WSL/Docker 中 child 无法访问链路本地地址 `169.254.x.x`，可以切换到可选的 host 网络模式：
+
+```env
+CHILD_NETWORK_MODE=host
+PARENT_BRIDGE_URL=ws://127.0.0.1:8080/ws/bridge
+```
+
+此时：
+
+- child 不再加入 `CHILD_NETWORK`
+- child 直接使用宿主机网络栈
+- `org_router` 回连 parent 时不能再使用容器名 `container-up`，而要使用 `127.0.0.1`
+
+所以答案是：这个模式是可选的，你可以随时切回原先的容器网络路径。切回时只需要：
+
+```env
+CHILD_NETWORK_MODE=
+PARENT_BRIDGE_URL=ws://container-up:8080/ws/bridge
+```
+
 ## Compose
 
 根目录提供了 [docker-compose.container-up.yml](/mnt/d/codes/nanobot_modify/nanobot/docker-compose.container-up.yml) 和 [.env](/mnt/d/codes/nanobot_modify/nanobot/.env)。
@@ -319,7 +357,7 @@ curl http://127.0.0.1:8080/healthz
 启动前建议先确认：
 
 - `nanobot-bridge:latest` 已经构建完成
-- `.env` 中的模型配置是你想要的值
+- [workspace/config.json](/mnt/d/codes/nanobot_modify/nanobot/workspace/config.json) 中的模型配置是你想要的值
 
 启动：
 

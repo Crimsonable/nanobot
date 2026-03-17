@@ -19,30 +19,30 @@ class _FakeChild:
 
 
 @pytest.mark.asyncio
-async def test_register_child_and_submit_message_are_session_bound() -> None:
+async def test_register_child_and_submit_message_are_org_bound() -> None:
     hub = BridgeHub(token="secret")
     child = _FakeChild()
 
-    session_id = await hub.register_child(
+    org_id = await hub.register_child(
         child,
         build_register_packet(
-            session_id="session-a",
-            container_name="nanobot-session-a",
+            org_id="org-a",
+            container_name="nanobot-org-a",
             token="secret",
         ),
     )
 
-    assert session_id == "session-a"
+    assert org_id == "org-a"
     assert child.sent[0] == {
         "type": "register_ok",
         "version": PROTOCOL_VERSION,
-        "session_id": "session-a",
-        "container_name": "nanobot-session-a",
+        "org_id": "org-a",
+        "container_name": "nanobot-org-a",
     }
 
     task = asyncio.create_task(
         hub.submit_message(
-            session_id="session-a",
+            org_id="org-a",
             conversation_id="conv-1",
             user_id="user-1",
             tenant_id="tenant-a",
@@ -56,7 +56,7 @@ async def test_register_child_and_submit_message_are_session_bound() -> None:
     await asyncio.sleep(0)
 
     await hub.handle_child_packet(
-        "session-a",
+        "org-a",
         {
             "type": "progress",
             "request_id": "req-1",
@@ -66,7 +66,7 @@ async def test_register_child_and_submit_message_are_session_bound() -> None:
         },
     )
     await hub.handle_child_packet(
-        "session-a",
+        "org-a",
         {
             "type": "final",
             "request_id": "req-1",
@@ -92,28 +92,28 @@ async def test_register_child_and_submit_message_are_session_bound() -> None:
         "metadata": {"trace_id": "trace-1"},
     }
     assert [event["type"] for event in result["events"]] == ["progress", "final"]
-    assert result["session_id"] == "session-a"
+    assert result["org_id"] == "org-a"
     assert result["result"]["content"] == "done"
 
 
 @pytest.mark.asyncio
-async def test_same_request_id_across_sessions_does_not_collide() -> None:
+async def test_same_request_id_across_orgs_does_not_collide() -> None:
     hub = BridgeHub()
     child_a = _FakeChild()
     child_b = _FakeChild()
 
     await hub.register_child(
         child_a,
-        build_register_packet(session_id="session-a", container_name="nanobot-session-a"),
+        build_register_packet(org_id="org-a", container_name="nanobot-org-a"),
     )
     await hub.register_child(
         child_b,
-        build_register_packet(session_id="session-b", container_name="nanobot-session-b"),
+        build_register_packet(org_id="org-b", container_name="nanobot-org-b"),
     )
 
     task_a = asyncio.create_task(
         hub.submit_message(
-            session_id="session-a",
+            org_id="org-a",
             conversation_id="conv-a",
             user_id="user-a",
             tenant_id="tenant-a",
@@ -126,7 +126,7 @@ async def test_same_request_id_across_sessions_does_not_collide() -> None:
     )
     task_b = asyncio.create_task(
         hub.submit_message(
-            session_id="session-b",
+            org_id="org-b",
             conversation_id="conv-b",
             user_id="user-b",
             tenant_id="tenant-b",
@@ -140,7 +140,7 @@ async def test_same_request_id_across_sessions_does_not_collide() -> None:
     await asyncio.sleep(0)
 
     await hub.handle_child_packet(
-        "session-b",
+        "org-b",
         {
             "type": "final",
             "request_id": "req-1",
@@ -150,7 +150,7 @@ async def test_same_request_id_across_sessions_does_not_collide() -> None:
         },
     )
     await hub.handle_child_packet(
-        "session-a",
+        "org-a",
         {
             "type": "final",
             "request_id": "req-1",
@@ -167,16 +167,16 @@ async def test_same_request_id_across_sessions_does_not_collide() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_cancel_routes_to_bound_session() -> None:
+async def test_submit_cancel_routes_to_bound_org() -> None:
     hub = BridgeHub()
     child = _FakeChild()
     await hub.register_child(
         child,
-        build_register_packet(session_id="session-a", container_name="nanobot-session-a"),
+        build_register_packet(org_id="org-a", container_name="nanobot-org-a"),
     )
 
     result = await hub.submit_cancel(
-        session_id="session-a",
+        org_id="org-a",
         conversation_id="conv-2",
         user_id="user-1",
         tenant_id="tenant-a",
@@ -185,7 +185,7 @@ async def test_submit_cancel_routes_to_bound_session() -> None:
 
     assert result == {
         "status": "accepted",
-        "session_id": "session-a",
+        "org_id": "org-a",
         "request_id": "req-2",
         "conversation_id": "conv-2",
         "tenant_id": "tenant-a",
@@ -202,18 +202,52 @@ async def test_submit_cancel_routes_to_bound_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_message_timeout_sends_cancel() -> None:
+    hub = BridgeHub()
+    child = _FakeChild()
+    await hub.register_child(
+        child,
+        build_register_packet(org_id="org-a", container_name="nanobot-org-a"),
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        await hub.submit_message(
+            org_id="org-a",
+            conversation_id="conv-timeout",
+            user_id="user-1",
+            tenant_id="tenant-a",
+            content="hello",
+            attachments=[],
+            metadata={},
+            request_id="req-timeout",
+            timeout=0.01,
+        )
+
+    assert child.sent[1]["type"] == "inbound_message"
+    assert child.sent[2] == {
+        "type": "cancel",
+        "version": PROTOCOL_VERSION,
+        "request_id": "req-timeout",
+        "tenant_id": "tenant-a",
+        "conversation_id": "conv-timeout",
+        "session_key": "remote:tenant-a:conv-timeout",
+        "sender_id": "user-1",
+    }
+
+
+@pytest.mark.asyncio
 async def test_register_child_rejects_invalid_token() -> None:
     hub = BridgeHub(token="secret")
     child = _FakeChild()
 
-    session_id = await hub.register_child(
+    org_id = await hub.register_child(
         child,
         build_register_packet(
-            session_id="session-a",
-            container_name="nanobot-session-a",
+            org_id="org-a",
+            container_name="nanobot-org-a",
             token="wrong",
         ),
     )
 
-    assert session_id is None
+    assert org_id is None
     assert child.closed == (4003, "invalid token")

@@ -1,6 +1,7 @@
 """LiteLLM provider implementation for multi-provider support."""
 
 import hashlib
+import json
 import os
 import secrets
 import string
@@ -18,6 +19,12 @@ from nanobot.providers.registry import find_by_model, find_gateway
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"})
 _ANTHROPIC_EXTRA_KEYS = frozenset({"thinking_blocks"})
 _ALNUM = string.ascii_letters + string.digits
+_LOG_REQUESTS = os.getenv("NANOBOT_LOG_LLM_REQUESTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 def _short_tool_id() -> str:
     """Generate a 9-char alphanumeric ID compatible with all providers (incl. Mistral)."""
@@ -268,6 +275,20 @@ class LiteLLMProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+
+        if _LOG_REQUESTS:
+            debug_kwargs = dict(kwargs)
+            if "api_key" in debug_kwargs:
+                debug_kwargs["api_key"] = "***"
+            if "extra_headers" in debug_kwargs and isinstance(debug_kwargs["extra_headers"], dict):
+                debug_kwargs["extra_headers"] = {
+                    key: ("***" if "auth" in key.lower() or "key" in key.lower() else value)
+                    for key, value in debug_kwargs["extra_headers"].items()
+                }
+            logger.info(
+                "LLM request payload: {}",
+                json.dumps(debug_kwargs, ensure_ascii=False, default=str),
+            )
 
         try:
             response = await acompletion(**kwargs)
