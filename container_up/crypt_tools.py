@@ -1,89 +1,96 @@
-import hashlib
 import base64
+import hashlib
+import secrets
+import string
+import time
+
 from Crypto.Cipher import AES
 
+class CryptoParser:
+    def __init__(
+        self,
+        *,
+        appid: str = "",
+        appsecret: str = "",
+        corpid: str = "",
+        token: str = "",
+    ) -> None:
+        self.appid = appid
+        self.appsecret = appsecret
+        self.corpid = corpid
+        self.token = token
 
-def sha1(text):
-    sha1_hash = hashlib.sha1(text.encode()).hexdigest()
-    return sha1_hash
+    @staticmethod
+    def _sha1(text: str) -> str:
+        return hashlib.sha1(text.encode()).hexdigest()
 
+    @staticmethod
+    def _md5(text: str) -> str:
+        return hashlib.md5(text.encode()).hexdigest()
 
-def md5(text):
-    md5_hash = hashlib.md5(text.encode()).hexdigest()
-    return md5_hash
+    def _aes_decrypt(self, appsecret: str, text: str) -> str | None:
+        try:
+            iv = self._md5(appsecret)[:16].encode("utf-8")
+            cipher = AES.new(appsecret.encode("utf-8"), AES.MODE_CBC, iv)
+            decrypted_text = cipher.decrypt(base64.b64decode(text)).decode("utf-8")
+            return decrypted_text.rstrip("\0")
+        except Exception as exc:
+            print("Error during AES decryption:", exc)
+            return None
+        
+    def _aes_encrypt(self, appsecret: str, text: str) -> str:
+        iv = self._md5(appsecret)[:16].encode("utf-8")
+        cipher = AES.new(appsecret.encode("utf-8"), AES.MODE_CBC, iv)
+        padded_text = text + (16 - len(text) % 16) * "\0"
+        encrypted_text = base64.b64encode(cipher.encrypt(padded_text.encode("utf-8"))).decode("utf-8")
+        return encrypted_text
 
+    def _msgSignature(
+        self, signature: str, timeStamp: str, nonce: str, encrypt: str
+    ) -> str:
+        return self._sha1("".join(sorted([signature, timeStamp, nonce, encrypt])))
+    
+    @staticmethod
+    def generate_random_string(length=16):
+        chars = string.ascii_letters + string.digits
+        return ''.join(secrets.choice(chars) for _ in range(length))
 
-def aes_decrypt(app_key, iv, text):
-    try:
-        iv = iv.encode("utf-8")
-        app_key = app_key.encode("utf-8")
-        text = base64.b64decode(text)
-        cipher = AES.new(app_key, AES.MODE_CBC, iv)
-        decrypted_text = cipher.decrypt(text).decode("utf-8").rstrip("\0")
-        return decrypted_text
-    except Exception as e:
-        print("Error during AES decryption:", e)
-        return None
+    def decrypt(
+        self,
+        signature: str,
+        timeStamp: str,
+        nonce: str,
+        encrypt: str,
+        token: str | None = None,
+        appsecret: str | None = None,
+    ) -> str | None:
+        verification_token = self.token if token is None else token
+        secret = self.appsecret if appsecret is None else appsecret
+        if self._msgSignature(verification_token, timeStamp, nonce, encrypt) != signature:
+            raise ValueError("Signature verification error")
+        return self._aes_decrypt(secret, encrypt)
 
-
-def aes_encrypt(app_key, iv, text):
-    try:
-        iv = iv.encode("utf-8")
-        app_key = app_key.encode("utf-8")
-        text = text.encode("utf-8")
-        cipher = AES.new(app_key, AES.MODE_CBC, iv)
-        padded_text = pkcs7_padding(text, AES.block_size)
-        encrypted_text = cipher.encrypt(padded_text)
-        encoded_text = base64.b64encode(encrypted_text).decode("utf-8")
-        return encoded_text
-    except Exception as e:
-        print("Error during AES encryption:", e)
-        return None
-
-
-def pkcs7_padding(data, block_size):
-    padding_length = block_size - (len(data) % block_size)
-    padding = bytes([padding_length] * padding_length)
-    return data + padding
-
-
-def get_current_timestamp():
-    import time
-
-    timestamp = int(time.time())
-    return str(timestamp)
-
-
-def sort(arr):
-    sorted_arr = sorted(arr)
-    sorted_string = "".join(sorted_arr)
-    return sorted_string
-
-
-def decrypt(app_key, token, signature, timestamp, nonce, text):
-    timestamp = timestamp or get_current_timestamp()
-    arr = [token, timestamp, nonce, text]
-    sorted_string = sort(arr)
-    sha1_string = sha1(sorted_string)
-    if sha1_string != signature:
-        raise Exception("Signature verification error")
-    iv = md5(app_key)[:16]
-    return aes_decrypt(app_key, iv, text)
-
-
-def encrypt(app_key, token, timestamp, nonce, text):
-    timestamp = timestamp or get_current_timestamp()
-    iv = md5(app_key)[:16]
-    encrypted_text = aes_encrypt(app_key, iv, text)
-    arr = [token, timestamp, nonce, encrypted_text]
-    sorted_string = sort(arr)
-    msg_signature = sha1(sorted_string)
-
-    result = {
-        "msgSignature": msg_signature,
-        "encrypt": encrypted_text,
-        "timeStamp": timestamp,
-        "nonce": nonce,
-    }
-
-    return result
+    def encrypt(
+        self,
+        timeStamp: str | None = None,
+        nonce: str | None = None,
+        text: str = "",
+        token: str | None = None,
+        appsecret: str | None = None,
+    ) -> dict[str, str]:
+        verification_token = self.token if token is None else token
+        secret = self.appsecret if appsecret is None else appsecret
+        timeStamp = timeStamp or str(int(time.time()))
+        nonce=nonce or self.generate_random_string()
+        
+        iv = self._md5(secret)[:16].encode("utf-8")
+        cipher = AES.new(secret.encode("utf-8"), AES.MODE_CBC, iv)
+        padded_text = text + (16 - len(text) % 16) * "\0"
+        encrypted_text = base64.b64encode(cipher.encrypt(padded_text.encode("utf-8"))).decode("utf-8")
+        signature = self._msgSignature(verification_token, timeStamp, nonce, encrypted_text)
+        return {
+            "msgSignature": signature,
+            "timeStamp": timeStamp,
+            "nonce": nonce,
+            "encrypt": encrypted_text,
+        }

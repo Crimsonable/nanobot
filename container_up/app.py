@@ -13,12 +13,13 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
+from venv import logger
 
-from attr import dataclass
 import docker
 import uvicorn
 from container_up.bridge_hub import BridgeHub
-from container_up.crypt_tools import ecrypt,decrypt
+from container_up.crypt_tools import CryptoParser
+from container_up.dispatch import dispatch_parser
 from docker.errors import APIError, DockerException, NotFound
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
@@ -55,6 +56,10 @@ IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "3600"))
 CLEANUP_SCAN_INTERVAL = int(os.getenv("CLEANUP_SCAN_INTERVAL", "300"))
 INSTANCE_IDLE_TIMEOUT_SECONDS = int(os.getenv("INSTANCE_IDLE_TIMEOUT_SECONDS", "1800"))
 LOG_LLM_REQUESTS = os.getenv("NANOBOT_LOG_LLM_REQUESTS", "").strip()
+APP_ID = os.getenv("APPID", "").strip()
+APP_SECRET = os.getenv("APPSCRECT", "").strip()
+CORP_ID = os.getenv("CORPID", "").strip()
+CALLBACK_TOKEN = os.getenv("TOKEN", "").strip()
 
 docker_client = docker.from_env()
 db_lock = threading.Lock()
@@ -560,17 +565,46 @@ def get_org(org_id: str) -> dict[str, Any]:
     }
 
 
-@dataclass
-class SubForm:
+class SubForm(BaseModel):
     msgSignature: str
     encrypt: str
-    timeStamp: int
+    timeStamp: str
     nonce: str
 
 
-@app.get("/subscribe")
-async def subscribe(sub_form: SubForm):
+@app.post("/subscribe")
+async def subscribe(sub_form: SubForm) -> dict[str, Any]:
+    if not APP_SECRET:
+        raise HTTPException(status_code=500, detail="appscrect is not configured")
+
+    parser = CryptoParser(
+        appid=APP_ID,
+        appsecret=APP_SECRET,
+        corpid=CORP_ID,
+        token=CALLBACK_TOKEN,
+    )
+    try:
+        decrypted = parser.decrypt(
+            signature=sub_form.msgSignature,
+            timeStamp=sub_form.timeStamp,
+            nonce=sub_form.nonce,
+            encrypt=sub_form.encrypt,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not decrypted:
+        raise HTTPException(status_code=400, detail="empty decrypted payload")
+
+    try:
+        payload = json.loads(decrypted)
+        result = dispatch_parser.parse(payload)
+        result = parser.encrypt(text=json.dumps(result))
+    except json.JSONDecodeError:
+        logger.error("failed to decode decrypted payload as json: %s", decrypted)
+        return {"error": "invalid payload"}
     
+    return result
 
 @app.post("/api/message")
 async def post_message(payload: MessageRequest) -> dict[str, Any]:

@@ -8,20 +8,37 @@ import os
 from typing import Any
 
 from loguru import logger
+from pydantic import Field
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import BridgeConfig
+from nanobot.config.schema import Base
+
+
+class BridgeConfig(Base):
+    """Generic remote bridge channel configuration."""
+
+    enabled: bool = False
+    bridge_url: str = "ws://localhost:8765"
+    bridge_token: str = ""
+    allow_from: list[str] = Field(default_factory=list)
 
 
 class BridgeChannel(BaseChannel):
     """Channel that connects nanobot to an external bridge over WebSocket."""
 
     name = "bridge"
+    display_name = "Bridge"
     _PROTOCOL_VERSION = 2
 
-    def __init__(self, config: BridgeConfig, bus: MessageBus):
+    @classmethod
+    def default_config(cls) -> dict[str, Any]:
+        return BridgeConfig().model_dump(by_alias=True)
+
+    def __init__(self, config: Any, bus: MessageBus):
+        if isinstance(config, dict):
+            config = BridgeConfig.model_validate(config)
         super().__init__(config, bus)
         self.config: BridgeConfig = config
         self._ws = None

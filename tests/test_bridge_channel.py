@@ -4,8 +4,7 @@ import pytest
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.bridge import BridgeChannel
-from nanobot.config.schema import BridgeConfig
+from nanobot.channels.bridge import BridgeChannel, BridgeConfig
 
 
 class _FakeWebSocket:
