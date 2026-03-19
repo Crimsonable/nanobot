@@ -25,3 +25,5 @@ nano.*.save
 container_up_runtime/
 .DS_Store
 uv.lock
+*.tar
+*.db

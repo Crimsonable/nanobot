@@ -50,7 +50,6 @@ class LocalNanobotService:
             model=self.config.agents.defaults.model,
             max_iterations=self.config.agents.defaults.max_tool_iterations,
             context_window_tokens=self.config.agents.defaults.context_window_tokens,
-            brave_api_key=self.config.tools.web.search.api_key or None,
             web_proxy=self.config.tools.web.proxy or None,
             exec_config=self.config.tools.exec,
             cron_service=self.cron,
