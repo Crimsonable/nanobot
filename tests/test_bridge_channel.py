@@ -24,9 +24,8 @@ async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
             {
                 "type": "inbound_message",
                 "request_id": "req-1",
-                "tenant_id": "tenant-a",
                 "conversation_id": "conv-1",
-                "session_key": "remote:tenant-a:conv-1",
+                "session_key": "remote:conv-1",
                 "sender_id": "user-1",
                 "chat_id": "conv-1",
                 "content": "hello",
@@ -39,7 +38,7 @@ async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
     msg = await channel.bus.consume_inbound()
     assert msg.sender_id == "user-1"
     assert msg.chat_id == "conv-1"
-    assert msg.session_key == "remote:tenant-a:conv-1"
+    assert msg.session_key == "remote:conv-1"
     assert msg.metadata["request_id"] == "req-1"
     assert msg.metadata["trace_id"] == "trace-1"
     assert msg.media == ["/tmp/a.png"]
@@ -54,9 +53,8 @@ async def test_bridge_cancel_maps_to_stop_message() -> None:
             {
                 "type": "cancel",
                 "request_id": "req-2",
-                "tenant_id": "tenant-a",
                 "conversation_id": "conv-2",
-                "session_key": "remote:tenant-a:conv-2",
+                "session_key": "remote:conv-2",
                 "sender_id": "user-1",
             }
         )
@@ -64,7 +62,7 @@ async def test_bridge_cancel_maps_to_stop_message() -> None:
 
     msg = await channel.bus.consume_inbound()
     assert msg.content == "/stop"
-    assert msg.session_key == "remote:tenant-a:conv-2"
+    assert msg.session_key == "remote:conv-2"
     assert msg.sender_id == "user-1"
 
 
@@ -81,7 +79,6 @@ async def test_bridge_send_encodes_progress_packet() -> None:
             content="thinking",
             metadata={
                 "request_id": "req-3",
-                "tenant_id": "tenant-a",
                 "conversation_id": "conv-1",
                 "_progress": True,
             },

@@ -122,7 +122,6 @@ class BridgeChannel(BaseChannel):
         metadata.update(
             {
                 "request_id": packet.get("request_id", ""),
-                "tenant_id": packet.get("tenant_id", "default"),
                 "conversation_id": packet.get("conversation_id", ""),
             }
         )
@@ -138,7 +137,6 @@ class BridgeChannel(BaseChannel):
     async def _publish_bridge_cancel(self, packet: dict[str, Any]) -> None:
         metadata = {
             "request_id": packet.get("request_id", ""),
-            "tenant_id": packet.get("tenant_id", "default"),
             "conversation_id": packet.get("conversation_id", ""),
         }
         await self._handle_message(
@@ -154,7 +152,6 @@ class BridgeChannel(BaseChannel):
         packet: dict[str, Any] = {
             "type": self._event_type(msg),
             "request_id": str(metadata.get("request_id") or ""),
-            "tenant_id": str(metadata.get("tenant_id") or "default"),
             "conversation_id": str(metadata.get("conversation_id") or msg.chat_id),
             "content": msg.content,
         }

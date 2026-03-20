@@ -20,10 +20,9 @@ def make_request_id() -> str:
     return f"req_{uuid4().hex}"
 
 
-def make_session_key(tenant_id: str, conversation_id: str) -> str:
+def make_session_key(conversation_id: str) -> str:
     """Build the session key expected by nanobot's bridge channel."""
-    tenant = tenant_id or "default"
-    return f"remote:{tenant}:{conversation_id}"
+    return f"remote:{conversation_id or 'default'}"
 
 
 def make_pending_key(org_id: str, request_id: str) -> tuple[str, str]:

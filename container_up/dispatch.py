@@ -1,7 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 from collections.abc import Callable
 from typing import Any
+from aiohttp import ClientError
+
+
+from container_up.bridge_state import get_bridge_hub
+from container_up.crypt_tools import get_crypto_parser
+from container_up.http_state import get_dispatch_session
+from container_up.settings import (
+    SEND_MSG_RETRY_BACKOFF,
+    SEND_MSG_RETRY_COUNT,
+    SEND_MSG_URL,
+)
 
 EventHandler = Callable[[dict[str, Any]], Any]
 
@@ -18,15 +31,87 @@ class DispatchParser:
 
         return decorator
 
-    def parse(self, event: dict[str, Any]) -> Any:
+    async def parse(self, event: dict[str, Any]) -> Any:
         event_type = str(event[self.event_key])
         handler = self._handlers[event_type]
-        return handler(event)
+        result = handler(event)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 dispatch_parser = DispatchParser()
 
 
-@dispatch_parser.register("check_url")
-def parse_check_url(_: dict[str, Any]) -> str:
-    return "success"
+async def _post_message_with_retry(
+    *,
+    access_token: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if not SEND_MSG_URL:
+        raise RuntimeError("SEND_MSG_URL is not configured")
+
+    last_error: Exception | None = None
+    for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
+        try:
+            async with get_dispatch_session().post(
+                SEND_MSG_URL,
+                params={"access_token": access_token},
+                json=payload,
+            ) as response:
+                response_text = await response.text()
+                if response.status >= 500:
+                    raise RuntimeError(
+                        f"send message failed with {response.status}: {response_text}"
+                    )
+                if response.status >= 400:
+                    raise RuntimeError(
+                        f"send message rejected with {response.status}: {response_text}"
+                    )
+                return {
+                    "status": response.status,
+                    "body": response_text,
+                }
+        except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
+            last_error = exc
+            if attempt >= SEND_MSG_RETRY_COUNT:
+                break
+            await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
+
+    raise RuntimeError(f"send message failed after retries: {last_error}") from last_error
+
+
+@dispatch_parser.register("p2p_chat_receive_msg")
+async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(event.get("event"))
+    message = dict(payload.get("message"))
+    sender_uid = str(payload.get("sender_uid"))
+
+    result = await get_bridge_hub().submit_message(
+        org_id=sender_uid,
+        conversation_id=str(message.get("chat_id")),
+        user_id=sender_uid,
+        content=str(message.get("content")),
+        request_id=None,
+        attachments=[],
+    )
+
+    crypto_parser = get_crypto_parser()
+    access_token = crypto_parser.get_access_token()
+    if access_token is None:
+        raise RuntimeError("Failed to retrieve access token for response encryption")
+
+    payload = {
+        "to_single_uid": sender_uid,
+        "type": "text",
+        "message": {"content": str(result)},
+    }
+
+    post_result = await _post_message_with_retry(
+        access_token=access_token,
+        payload=payload,
+    )
+    return {
+        "ok": True,
+        "response": post_result,
+    }

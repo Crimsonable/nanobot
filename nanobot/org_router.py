@@ -104,7 +104,6 @@ class OrgRouter:
         user_id = str(packet.get("sender_id") or "user")
         request_id = str(packet.get("request_id") or "")
         conversation_id = str(packet.get("conversation_id") or "default")
-        tenant_id = str(packet.get("tenant_id") or "default")
         metadata = dict(packet.get("metadata") or {})
         metadata.setdefault("user_id", user_id)
         session_key = str(packet.get("session_key") or f"remote:{conversation_id}")
@@ -134,7 +133,6 @@ class OrgRouter:
                     response = json.loads(raw)
                     response["request_id"] = request_id
                     response["conversation_id"] = conversation_id
-                    response["tenant_id"] = tenant_id
                     await self._send_parent(parent_ws, response)
                     if str(response.get("type") or "") in TERMINAL_EVENT_TYPES:
                         break
@@ -146,7 +144,6 @@ class OrgRouter:
                     "type": "error",
                     "request_id": request_id,
                     "conversation_id": conversation_id,
-                    "tenant_id": tenant_id,
                     "content": "User instance unavailable.",
                 },
             )

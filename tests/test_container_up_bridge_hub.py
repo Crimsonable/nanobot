@@ -45,7 +45,6 @@ async def test_register_child_and_submit_message_are_org_bound() -> None:
             org_id="org-a",
             conversation_id="conv-1",
             user_id="user-1",
-            tenant_id="tenant-a",
             content="hello",
             attachments=["/tmp/a.png"],
             metadata={"trace_id": "trace-1"},
@@ -61,7 +60,6 @@ async def test_register_child_and_submit_message_are_org_bound() -> None:
             "type": "progress",
             "request_id": "req-1",
             "conversation_id": "conv-1",
-            "tenant_id": "tenant-a",
             "content": "thinking",
         },
     )
@@ -71,7 +69,6 @@ async def test_register_child_and_submit_message_are_org_bound() -> None:
             "type": "final",
             "request_id": "req-1",
             "conversation_id": "conv-1",
-            "tenant_id": "tenant-a",
             "content": "done",
         },
     )
@@ -81,9 +78,8 @@ async def test_register_child_and_submit_message_are_org_bound() -> None:
         "type": "inbound_message",
         "version": PROTOCOL_VERSION,
         "request_id": "req-1",
-        "tenant_id": "tenant-a",
         "conversation_id": "conv-1",
-        "session_key": "remote:tenant-a:conv-1",
+        "session_key": "remote:conv-1",
         "channel": "bridge",
         "sender_id": "user-1",
         "chat_id": "conv-1",
@@ -116,7 +112,6 @@ async def test_same_request_id_across_orgs_does_not_collide() -> None:
             org_id="org-a",
             conversation_id="conv-a",
             user_id="user-a",
-            tenant_id="tenant-a",
             content="hello a",
             attachments=[],
             metadata={},
@@ -129,7 +124,6 @@ async def test_same_request_id_across_orgs_does_not_collide() -> None:
             org_id="org-b",
             conversation_id="conv-b",
             user_id="user-b",
-            tenant_id="tenant-b",
             content="hello b",
             attachments=[],
             metadata={},
@@ -145,7 +139,6 @@ async def test_same_request_id_across_orgs_does_not_collide() -> None:
             "type": "final",
             "request_id": "req-1",
             "conversation_id": "conv-b",
-            "tenant_id": "tenant-b",
             "content": "done b",
         },
     )
@@ -155,7 +148,6 @@ async def test_same_request_id_across_orgs_does_not_collide() -> None:
             "type": "final",
             "request_id": "req-1",
             "conversation_id": "conv-a",
-            "tenant_id": "tenant-a",
             "content": "done a",
         },
     )
@@ -179,7 +171,6 @@ async def test_submit_cancel_routes_to_bound_org() -> None:
         org_id="org-a",
         conversation_id="conv-2",
         user_id="user-1",
-        tenant_id="tenant-a",
         request_id="req-2",
     )
 
@@ -188,15 +179,13 @@ async def test_submit_cancel_routes_to_bound_org() -> None:
         "org_id": "org-a",
         "request_id": "req-2",
         "conversation_id": "conv-2",
-        "tenant_id": "tenant-a",
     }
     assert child.sent[1] == {
         "type": "cancel",
         "version": PROTOCOL_VERSION,
         "request_id": "req-2",
-        "tenant_id": "tenant-a",
         "conversation_id": "conv-2",
-        "session_key": "remote:tenant-a:conv-2",
+        "session_key": "remote:conv-2",
         "sender_id": "user-1",
     }
 
@@ -215,7 +204,6 @@ async def test_submit_message_timeout_sends_cancel() -> None:
             org_id="org-a",
             conversation_id="conv-timeout",
             user_id="user-1",
-            tenant_id="tenant-a",
             content="hello",
             attachments=[],
             metadata={},
@@ -228,9 +216,8 @@ async def test_submit_message_timeout_sends_cancel() -> None:
         "type": "cancel",
         "version": PROTOCOL_VERSION,
         "request_id": "req-timeout",
-        "tenant_id": "tenant-a",
         "conversation_id": "conv-timeout",
-        "session_key": "remote:tenant-a:conv-timeout",
+        "session_key": "remote:conv-timeout",
         "sender_id": "user-1",
     }
 

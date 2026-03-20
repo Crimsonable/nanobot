@@ -1,0 +1,39 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Start container_up as root for debug",
+            "type": "shell",
+            "command": "set -a && source .env && set +a && export CONTAINER_UP_DB_PATH='${workspaceFolder}/container_up_runtime/data/container_up.db' && sudo -E /home/crimson/miniconda3/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m container_up.app",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "-lc"
+                    ]
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": [
+                {
+                    "pattern": [
+                        {
+                            "regexp": "."
+                        }
+                    ],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": ".*",
+                        "endsPattern": ".*Waiting for client to attach.*|.*debugpy.*"
+                    }
+                }
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        }
+    ]
+}

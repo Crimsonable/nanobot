@@ -13,6 +13,7 @@
 
 - `POST /api/message`
 - `POST /api/cancel`
+- `POST /subscribe`
 - `GET /api/org/{org_id}`
 - `GET /healthz`
 
@@ -92,6 +93,19 @@ curl http://127.0.0.1:8080/api/org/org-1
 curl http://127.0.0.1:8080/healthz
 ```
 
+订阅回调：
+
+```bash
+curl -X POST http://127.0.0.1:8080/subscribe \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "msgSignature": "...",
+    "timeStamp": "1491805325",
+    "nonce": "KkSvMbDM",
+    "encrypt": "..."
+  }'
+```
+
 ## 工作目录结构
 
 现在使用单一工作根目录 `HOST_WORKSPACE_ROOT`。
@@ -104,7 +118,7 @@ curl http://127.0.0.1:8080/healthz
   - `HOST_SHARED_SKILLS -> /app/nanobot/skills`
 - 子容器里 `org_router` 会按用户直接使用：
   - 公共 config：`/app/nanobot_workspaces/config.json`
-  - 实例 workspace：`/app/nanobot_workspaces/<user_id-hash>/`
+  - 实例 workspace：`/app/nanobot_workspaces/<safe-user-id>-<hash>/`
 
 ## 子容器端口策略
 
@@ -270,7 +284,7 @@ curl http://127.0.0.1:8080/healthz
 4. `org_router` 收到 parent 转发的消息
 - 按 `user_id` 定位用户实例 workspace 目录
 - 若实例不存在，则创建：
-  - `/app/nanobot_workspaces/<user_id-hash>/`
+  - `/app/nanobot_workspaces/<safe-user-id>-<hash>/`
 - 实例直接复用：
   - 公共 config `/app/nanobot_workspaces/config.json`
 - 公共 skills 直接通过 builtin skills 挂载对实例生效
@@ -278,7 +292,7 @@ curl http://127.0.0.1:8080/healthz
 5. `org_router` 拉起用户实例
 - 用户实例运行 `nanobot.local_service`
 - 该实例只服务一个用户自己的 workspace
-- 对话历史仍由 `conversation_id` 映射到该用户 workspace 下的历史文件
+- 对话历史由 `conversation_id` 映射到该用户 workspace 下的 session / history
 - 用户自己新增的 skills 保存在该实例自己的 `skills/`
 
 6. 用户实例开始处理请求
@@ -349,10 +363,32 @@ PARENT_BRIDGE_URL=ws://container-up:8080/ws/bridge
   - `3600`
 - 用户实例 idle timeout：
   - `1800`
-- idle timeout：
-  - `300`
 - cleanup scan interval：
   - `300`
+
+当前实现里，请求路由只使用这三个业务字段：
+
+- `org_id`
+- `user_id` / `usr_id`
+- `conversation_id`
+
+其中：
+
+- `org_id` 决定组织容器
+- `user_id` 决定组织容器内复用哪个本地用户实例
+- `conversation_id` 决定 session key 和会话上下文
+
+`tenant_id` 已经不再参与这条链路。
+
+另外，`container_up` 的配置项已经统一收口到：
+
+- [container_up/settings.py](/mnt/d/codes/nanobot_modify/nanobot/container_up/settings.py)
+
+数据库和 bridge / 调度逻辑也已拆分到：
+
+- [container_up/db_store.py](/mnt/d/codes/nanobot_modify/nanobot/container_up/db_store.py)
+- [container_up/bridge_state.py](/mnt/d/codes/nanobot_modify/nanobot/container_up/bridge_state.py)
+- [container_up/router_service.py](/mnt/d/codes/nanobot_modify/nanobot/container_up/router_service.py)
 
 启动前建议先确认：
 

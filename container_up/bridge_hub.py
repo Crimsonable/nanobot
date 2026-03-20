@@ -22,7 +22,6 @@ class PendingRequest:
     org_id: str
     request_id: str
     conversation_id: str
-    tenant_id: str
     events: list[dict[str, Any]] = field(default_factory=list)
     done: asyncio.Future[dict[str, Any]] | None = None
 
@@ -90,7 +89,6 @@ class BridgeHub:
         org_id: str,
         conversation_id: str,
         user_id: str,
-        tenant_id: str,
         content: str,
         attachments: list[str] | None,
         metadata: dict[str, Any] | None,
@@ -106,7 +104,6 @@ class BridgeHub:
             org_id=org_id,
             request_id=request_id,
             conversation_id=conversation_id,
-            tenant_id=tenant_id,
         )
         pending_key = make_pending_key(org_id, request_id)
         self._pending[pending_key] = pending
@@ -116,9 +113,8 @@ class BridgeHub:
                     "type": "inbound_message",
                     "version": PROTOCOL_VERSION,
                     "request_id": request_id,
-                    "tenant_id": tenant_id,
                     "conversation_id": conversation_id,
-                    "session_key": make_session_key(tenant_id, conversation_id),
+                    "session_key": make_session_key(conversation_id),
                     "channel": "bridge",
                     "sender_id": user_id,
                     "chat_id": conversation_id,
@@ -135,7 +131,6 @@ class BridgeHub:
                         org_id=org_id,
                         conversation_id=conversation_id,
                         user_id=user_id,
-                        tenant_id=tenant_id,
                         request_id=request_id,
                     )
                 except RuntimeError:
@@ -147,7 +142,6 @@ class BridgeHub:
                 "org_id": org_id,
                 "request_id": request_id,
                 "conversation_id": conversation_id,
-                "tenant_id": tenant_id,
                 "events": pending.events,
                 "result": result,
             }
@@ -160,7 +154,6 @@ class BridgeHub:
         org_id: str,
         conversation_id: str,
         user_id: str,
-        tenant_id: str,
         request_id: str,
     ) -> dict[str, Any]:
         child = self.child_for_org(org_id)
@@ -172,9 +165,8 @@ class BridgeHub:
                 "type": "cancel",
                 "version": PROTOCOL_VERSION,
                 "request_id": request_id,
-                "tenant_id": tenant_id,
                 "conversation_id": conversation_id,
-                "session_key": make_session_key(tenant_id, conversation_id),
+                "session_key": make_session_key(conversation_id),
                 "sender_id": user_id,
             }
         )
@@ -183,7 +175,6 @@ class BridgeHub:
             "org_id": org_id,
             "request_id": request_id,
             "conversation_id": conversation_id,
-            "tenant_id": tenant_id,
         }
 
     async def handle_child_packet(self, org_id: str, packet: dict[str, Any]) -> None:

@@ -2,6 +2,31 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Debug container_up",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "container_up.app",
+            "console": "integratedTerminal",
+            "python": "/home/crimson/miniconda3/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "CONTAINER_UP_DB_PATH": "${workspaceFolder}/container_up_runtime/data/container_up.db"
+            },
+            "justMyCode": true
+        },
+        {
+            "name": "Debug container_up (root attach)",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "127.0.0.1",
+                "port": 5678
+            },
+            "justMyCode": true,
+            "preLaunchTask": "Start container_up as root for debug"
+        },
+        {
             "name": "Python: Current File (base)",
             "type": "debugpy",
             "request": "launch",
