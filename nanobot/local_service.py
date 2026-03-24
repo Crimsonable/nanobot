@@ -61,7 +61,16 @@ class LocalNanobotService:
 
     async def start(self) -> None:
         await self.agent._connect_mcp()
-        self._server = await websockets.serve(self._handle_client, self.host, self.port, ping_interval=20)
+        # This socket is only used for in-container local traffic from org_router.
+        # Disable websocket keepalive here to avoid false 1011 ping timeouts
+        # while the agent is busy with long-running model/tool work.
+        self._server = await websockets.serve(
+            self._handle_client,
+            self.host,
+            self.port,
+            ping_interval=None,
+            ping_timeout=None,
+        )
         logger.info("Local nanobot service listening on ws://{}:{}", self.host, self.port)
         await self._server.wait_closed()
 

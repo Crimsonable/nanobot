@@ -9,8 +9,11 @@ from aiohttp import ClientError
 
 from container_up.bridge_state import get_bridge_hub
 from container_up.crypt_tools import get_crypto_parser
+from container_up.db_store import touch_org
 from container_up.http_state import get_dispatch_session
+from container_up.router_service import ensure_org_container
 from container_up.settings import (
+    FORWARD_TIMEOUT,
     SEND_MSG_RETRY_BACKOFF,
     SEND_MSG_RETRY_COUNT,
     SEND_MSG_URL,
@@ -78,7 +81,9 @@ async def _post_message_with_retry(
                 break
             await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
 
-    raise RuntimeError(f"send message failed after retries: {last_error}") from last_error
+    raise RuntimeError(
+        f"send message failed after retries: {last_error}"
+    ) from last_error
 
 
 @dispatch_parser.register("p2p_chat_receive_msg")
@@ -86,14 +91,27 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
     payload = dict(event.get("event"))
     message = dict(payload.get("message"))
     sender_uid = str(payload.get("sender_uid"))
+    conversation_id = str(message.get("chat_id"))
+
+    await asyncio.to_thread(ensure_org_container, sender_uid)
+    await asyncio.to_thread(touch_org, sender_uid)
 
     result = await get_bridge_hub().submit_message(
         org_id=sender_uid,
-        conversation_id=str(message.get("chat_id")),
+        conversation_id=conversation_id,
         user_id=sender_uid,
         content=str(message.get("content")),
         request_id=None,
         attachments=[],
+        metadata={
+            "event_type": str(event.get("event_type", "")),
+            "chat_type": str(message.get("chat_type", "")),
+            "message_type": str(message.get("type", "")),
+            "message_id": str(message.get("message_id", "")),
+            "timestamp": str(event.get("timestamp", "")),
+            "source": "subscribe",
+        },
+        timeout=FORWARD_TIMEOUT,
     )
 
     crypto_parser = get_crypto_parser()
@@ -104,7 +122,7 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "to_single_uid": sender_uid,
         "type": "text",
-        "message": {"content": str(result)},
+        "message": {"content": str(result["result"]["content"])},
     }
 
     post_result = await _post_message_with_retry(

@@ -61,13 +61,16 @@ INSTANCE_IDLE_TIMEOUT_SECONDS = int(os.getenv("INSTANCE_IDLE_TIMEOUT_SECONDS", "
 LOG_LLM_REQUESTS = os.getenv("NANOBOT_LOG_LLM_REQUESTS", "").strip()
 
 # 订阅解密/鉴权使用的应用 ID
-APP_ID = os.getenv("APPID", "").strip()
+APP_ID = os.getenv("APP_ID", os.getenv("APPID", "")).strip()
 # 订阅解密/鉴权使用的应用密钥
-APP_SECRET = os.getenv("APPSCRECT", "").strip()
+APP_SECRET = os.getenv(
+    "APP_SECRET",
+    os.getenv("APPSECRET", os.getenv("APPSECRECT", os.getenv("APPSCRECT", ""))),
+).strip()
 # 企业或组织 ID
-CORP_ID = os.getenv("CORPID", "").strip()
+CORP_ID = os.getenv("CORP_ID", os.getenv("CORPID", "")).strip()
 # 订阅回调验签 token
-CALLBACK_TOKEN = os.getenv("TOKEN", "").strip()
+CALLBACK_TOKEN = os.getenv("CALLBACK_TOKEN", os.getenv("TOKEN", "")).strip()
 # 获取 access token 的接口地址
 ACCESS_URL = os.getenv("ACCESS_URL", "").strip()
 # 发送消息回调到远端的接口地址

@@ -112,7 +112,12 @@ class OrgRouter:
         instance.last_active = asyncio.get_running_loop().time()
 
         try:
-            async with websockets.connect(f"ws://{INSTANCE_HOST}:{instance.port}", proxy=None) as local_ws:
+            async with websockets.connect(
+                f"ws://{INSTANCE_HOST}:{instance.port}",
+                proxy=None,
+                ping_interval=None,
+                ping_timeout=None,
+            ) as local_ws:
                 await local_ws.send(
                     json.dumps(
                         {
@@ -159,7 +164,12 @@ class OrgRouter:
         session_key = str(packet.get("session_key") or f"remote:{conversation_id}")
 
         try:
-            async with websockets.connect(f"ws://{INSTANCE_HOST}:{instance.port}", proxy=None) as local_ws:
+            async with websockets.connect(
+                f"ws://{INSTANCE_HOST}:{instance.port}",
+                proxy=None,
+                ping_interval=None,
+                ping_timeout=None,
+            ) as local_ws:
                 await local_ws.send(
                     json.dumps(
                         {
@@ -229,7 +239,12 @@ class OrgRouter:
         deadline = asyncio.get_running_loop().time() + 30
         while asyncio.get_running_loop().time() < deadline:
             try:
-                async with websockets.connect(f"ws://{INSTANCE_HOST}:{port}", proxy=None):
+                async with websockets.connect(
+                    f"ws://{INSTANCE_HOST}:{port}",
+                    proxy=None,
+                    ping_interval=None,
+                    ping_timeout=None,
+                ):
                     return
             except Exception:
                 await asyncio.sleep(0.2)

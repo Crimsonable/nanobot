@@ -29,6 +29,8 @@ from container_up.router_service import (
     ensure_child_network,
     ensure_org_container,
     get_container,
+    shutdown_all_org_containers,
+    shutdown_org_container,
     sync_existing_orgs,
 )
 from container_up.settings import (
@@ -73,6 +75,10 @@ class CancelRequest(BaseModel):
     )
     user_id: str = Field(validation_alias=AliasChoices("user_id", "usr_id"))
     request_id: str = ""
+
+
+class ShutdownRequest(BaseModel):
+    org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
 
 
 def cleanup_loop() -> None:
@@ -187,7 +193,7 @@ async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
 @app.post("/subscribe")
 async def subscribe(sub_form: SubForm) -> dict[str, Any]:
     if not APP_SECRET:
-        raise HTTPException(status_code=500, detail="appscrect is not configured")
+        raise HTTPException(status_code=500, detail="app_secret is not configured")
 
     parser = get_crypto_parser()
     try:
@@ -205,6 +211,7 @@ async def subscribe(sub_form: SubForm) -> dict[str, Any]:
 
     try:
         payload = json.loads(decrypted)
+        logger.error("received subscribe event: %r", payload)
     except json.JSONDecodeError:
         logger.error("failed to decode decrypted payload as json: %r", decrypted)
         return {"error": "invalid payload"}
@@ -261,6 +268,23 @@ async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/shutdown")
+async def post_shutdown(payload: ShutdownRequest) -> dict[str, Any]:
+    if payload.org_id == "ALL":
+        results = await run_in_threadpool(shutdown_all_org_containers)
+        return {
+            "scope": "all",
+            "count": len(results),
+            "results": results,
+        }
+
+    result = await run_in_threadpool(shutdown_org_container, payload.org_id)
+    return {
+        "scope": "single",
+        "result": result,
+    }
 
 
 def main() -> None:

@@ -128,12 +128,26 @@ class CryptoParser:
         }
 
     def get_access_token(self) -> str | None:
+        if not self.access_url:
+            logging.error("ACCESS_URL is not configured")
+            return None
+        if not self.corpid:
+            logging.error("CORP_ID is not configured")
+            return None
+        if not self.appid:
+            logging.error("APP_ID is not configured")
+            return None
         try:
             resp = requests.get(
                 url=self.access_url, params={"corpid": self.corpid, "appid": self.appid}
             )
         except Exception as exc:
             logging.error("Error during access token retrieval: %s", exc)
+            return None
+        try:
+            resp.raise_for_status()
+        except Exception as exc:
+            logging.error("Access token request failed: %s", exc)
             return None
         return resp.json().get("access_token")
 

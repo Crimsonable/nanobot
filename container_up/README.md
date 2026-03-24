@@ -168,6 +168,17 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 - 共享 skills 直接挂载到 child 容器的 builtin skills 路径
 - 用户实例自己的 `workspace/skills` 仍然保留
 
+5. 订阅回调与消息回传：
+- `APP_ID`
+- `APP_SECRET`
+- `CORP_ID`
+- `CALLBACK_TOKEN`
+- `ACCESS_URL`
+- `SEND_MSG_URL`
+- `SEND_MSG_TIMEOUT`
+- `SEND_MSG_RETRY_COUNT`
+- `SEND_MSG_RETRY_BACKOFF`
+
 ### 配置项含义
 
 - `CONTAINER_UP_HOST`
@@ -217,6 +228,24 @@ curl -X POST http://127.0.0.1:8080/subscribe \
   - 回收线程的扫描周期
 - `INSTANCE_IDLE_TIMEOUT_SECONDS`
   - 组织容器内用户实例空闲多久后被 `org_router` 回收
+- `APP_ID`
+  - 订阅解密和 access token 获取使用的应用 ID
+- `APP_SECRET`
+  - 订阅解密使用的应用密钥
+- `CORP_ID`
+  - 企业或组织 ID
+- `CALLBACK_TOKEN`
+  - 订阅回调签名校验 token
+- `ACCESS_URL`
+  - 获取 access token 的接口地址
+- `SEND_MSG_URL`
+  - 将处理结果回发到上游 IM 的接口地址
+- `SEND_MSG_TIMEOUT`
+  - 回发消息请求超时时间
+- `SEND_MSG_RETRY_COUNT`
+  - 回发消息失败后的最大重试次数
+- `SEND_MSG_RETRY_BACKOFF`
+  - 回发消息失败后的退避基数秒数
 
 - 公共 skills 的加载方式
   - 共享 skills 作为 builtin skills 被所有用户实例直接读取

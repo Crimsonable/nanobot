@@ -90,10 +90,10 @@ class BridgeHub:
         conversation_id: str,
         user_id: str,
         content: str,
-        attachments: list[str] | None,
-        metadata: dict[str, Any] | None,
-        request_id: str | None,
-        timeout: float,
+        attachments: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        timeout: float = 300.0,
     ) -> dict[str, Any]:
         child = self.child_for_org(org_id)
         if child is None:

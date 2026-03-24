@@ -230,6 +230,38 @@ def cleanup_idle_orgs() -> None:
             delete_org_record(org_id)
 
 
+def shutdown_org_container(org_id: str) -> dict[str, Any]:
+    with get_org_lock(org_id):
+        record = org_record(org_id)
+        container_name = safe_name(org_id)
+        container = get_container(record["container_name"]) if record else None
+        if container is None:
+            container = get_container(container_name)
+
+        removed = False
+        if container is not None:
+            remove_container(container)
+            removed = True
+
+        if record is not None:
+            delete_org_record(org_id)
+
+        return {
+            "org_id": org_id,
+            "container_name": getattr(container, "name", container_name),
+            "removed": removed,
+            "record_deleted": record is not None,
+        }
+
+
+def shutdown_all_org_containers() -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    org_ids = [str(record["org_id"]) for record in list_org_records()]
+    for org_id in org_ids:
+        results.append(shutdown_org_container(org_id))
+    return results
+
+
 def sync_existing_orgs() -> None:
     load_shared_config()
     for record in list_org_records():

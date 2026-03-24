@@ -1,8 +1,8 @@
 {
     "keys": {
-        "appid": "14781834408490388",
-        "appscrect": "b1ti05dBCMhlA9ncePbzMPRZ3h3hruqD",
-        "corpid": "14781834408466801",
-        "token": ""
+        "app_id": "14781834408490388",
+        "app_secret": "b1ti05dBCMhlA9ncePbzMPRZ3h3hruqD",
+        "corp_id": "14781834408466801",
+        "callback_token": ""
     }
 }
