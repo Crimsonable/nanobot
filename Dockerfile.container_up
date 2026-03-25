@@ -1,17 +1,21 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
-WORKDIR /app
+WORKDIR /tmp/container_up_build
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-COPY container_up/ /app/
+COPY container_up/pyproject.toml container_up/README.md ./
+RUN mkdir -p container_up && touch container_up/__init__.py
 
-RUN uv pip install --system --no-cache /app
+RUN uv pip install --system --no-cache . && rm -rf /tmp/container_up_build
+
+WORKDIR /app
 
 EXPOSE 8080
 

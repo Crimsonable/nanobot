@@ -4,6 +4,7 @@ import asyncio
 import inspect
 from collections.abc import Callable
 from typing import Any
+from venv import logger
 from aiohttp import ClientError
 
 from container_up.attachments import normalize_attachments
@@ -57,12 +58,24 @@ async def _post_message_with_retry(
     last_error: Exception | None = None
     for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
         try:
+            logger.error(
+                "dispatch send_message attempt=%s to_single_uid=%s type=%s",
+                attempt,
+                payload.get("to_single_uid"),
+                payload.get("type"),
+            )
             async with get_dispatch_session().post(
                 SEND_MSG_URL,
                 params={"access_token": access_token},
                 json=payload,
             ) as response:
                 response_text = await response.text()
+                logger.error(
+                    "dispatch send_message response attempt=%s status=%s body_len=%s",
+                    attempt,
+                    response.status,
+                    len(response_text),
+                )
                 if response.status >= 500:
                     raise RuntimeError(
                         f"send message failed with {response.status}: {response_text}"
@@ -76,6 +89,11 @@ async def _post_message_with_retry(
                     "body": response_text,
                 }
         except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
+            logger.error(
+                "dispatch send_message retry attempt=%s error=%s",
+                attempt,
+                exc,
+            )
             last_error = exc
             if attempt >= SEND_MSG_RETRY_COUNT:
                 break
@@ -94,10 +112,23 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
     conversation_id = str(message.get("chat_id"))
     content = str(message.get("content") or "")
     attachments = normalize_attachments(content, [])
+    logger.error(
+        "dispatch event start event_type=%s sender_uid=%s conversation_id=%s content_len=%s attachments_count=%s",
+        event.get("event_type"),
+        sender_uid,
+        conversation_id,
+        len(content),
+        len(attachments),
+    )
 
     await asyncio.to_thread(ensure_org_container, sender_uid)
     await asyncio.to_thread(touch_org, sender_uid)
 
+    logger.error(
+        "dispatch submit_message start sender_uid=%s conversation_id=%s",
+        sender_uid,
+        conversation_id,
+    )
     result = await get_bridge_hub().submit_message(
         org_id=sender_uid,
         conversation_id=conversation_id,
@@ -115,6 +146,15 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
         },
         timeout=FORWARD_TIMEOUT,
     )
+    logger.error(
+        "dispatch submit_message done sender_uid=%s conversation_id=%s request_id=%s result_type=%s events_seen=%s",
+        sender_uid,
+        conversation_id,
+        result.get("request_id"),
+        (result.get("result") or {}).get("type"),
+        len(result.get("events") or []),
+    )
+    logger.error("bridge processing result: %r", result)
 
     crypto_parser = get_crypto_parser()
     access_token = crypto_parser.get_access_token()
@@ -126,10 +166,22 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
         "type": "text",
         "message": {"content": str(result["result"]["content"])},
     }
+    logger.error(
+        "dispatch outbound send start sender_uid=%s request_id=%s content_len=%s",
+        sender_uid,
+        result.get("request_id"),
+        len(str(result["result"]["content"])),
+    )
 
     post_result = await _post_message_with_retry(
         access_token=access_token,
         payload=payload,
+    )
+    logger.error(
+        "dispatch outbound send done sender_uid=%s request_id=%s status=%s",
+        sender_uid,
+        result.get("request_id"),
+        post_result.get("status"),
     )
     return {
         "ok": True,

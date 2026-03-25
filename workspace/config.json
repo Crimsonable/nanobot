@@ -15,7 +15,7 @@
     "providers": {
         "vllm": {
             "apiKey": "3c19057182a675301cccf9f59b8463a5",
-            "apiBase": "http://169.254.202.33:8724/v1"
+            "apiBase": "http://169.254.247.135:8724/v1"
         }
     },
     "agents": {

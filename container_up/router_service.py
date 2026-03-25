@@ -18,16 +18,16 @@ from container_up.db_store import (
 )
 from container_up.settings import (
     CHILD_BRIDGE_TOKEN,
-    CHILD_BUILTIN_SKILLS_TARGET,
     CHILD_CONTAINER_PREFIX,
     CHILD_IMAGE,
     CHILD_NETWORK,
+    CHILD_NANOBOT_SOURCE_TARGET,
     CHILD_NETWORK_MODE,
     CHILD_READY_TIMEOUT,
     CHILD_SHARED_CONFIG_TARGET,
     CHILD_WORKSPACE_TARGET,
+    HOST_NANOBOT_SOURCE,
     HOST_SHARED_CONFIG,
-    HOST_SHARED_SKILLS,
     HOST_WORKSPACE_ROOT,
     IDLE_TIMEOUT_SECONDS,
     INSTANCE_IDLE_TIMEOUT_SECONDS,
@@ -130,9 +130,11 @@ def build_child_volumes(workspace_path: Path) -> dict[str, dict[str, str]]:
             "mode": "ro",
         },
     }
-    if HOST_SHARED_SKILLS:
-        volumes[str(HOST_SHARED_SKILLS)] = {
-            "bind": CHILD_BUILTIN_SKILLS_TARGET,
+    if HOST_NANOBOT_SOURCE:
+        if not HOST_NANOBOT_SOURCE.exists():
+            raise RuntimeError(f"nanobot source missing at {HOST_NANOBOT_SOURCE}")
+        volumes[str(HOST_NANOBOT_SOURCE)] = {
+            "bind": CHILD_NANOBOT_SOURCE_TARGET,
             "mode": "ro",
         }
     return volumes

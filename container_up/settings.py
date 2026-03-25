@@ -19,8 +19,9 @@ HOST_WORKSPACE_ROOT = Path(os.getenv("HOST_WORKSPACE_ROOT", "/opt/nanobot/worksp
 HOST_SHARED_CONFIG = Path(
     os.getenv("HOST_SHARED_CONFIG", "/opt/nanobot/shared/config.json")
 )
-# 宿主机上的共享 skills 目录
-HOST_SHARED_SKILLS = Path(os.getenv("HOST_SHARED_SKILLS", "/opt/nanobot/shared/skills"))
+# 宿主机上的 nanobot 源码目录；配置后会直接挂载到子容器
+_host_nanobot_source = os.getenv("HOST_NANOBOT_SOURCE", "").strip()
+HOST_NANOBOT_SOURCE = Path(_host_nanobot_source) if _host_nanobot_source else None
 
 # 子容器使用的镜像名
 CHILD_IMAGE = os.getenv("CHILD_IMAGE", "nanobot-bridge:latest")
@@ -34,10 +35,10 @@ CHILD_WORKSPACE_TARGET = os.getenv("CHILD_WORKSPACE_TARGET", "/app/nanobot_works
 CHILD_SHARED_CONFIG_TARGET = os.getenv(
     "CHILD_SHARED_CONFIG_TARGET", "/app/nanobot_workspaces/config.json"
 )
-# 内置 skills 挂载到子容器内的目标目录
-CHILD_BUILTIN_SKILLS_TARGET = os.getenv(
-    "CHILD_BUILTIN_SKILLS_TARGET", "/app/nanobot/skills"
-)
+# nanobot 源码挂载到子容器内的目标目录
+CHILD_NANOBOT_SOURCE_TARGET = os.getenv(
+    "CHILD_NANOBOT_SOURCE_TARGET", "/app/nanobot"
+).strip()
 # parent 与 child 之间 bridge 连接使用的 token
 CHILD_BRIDGE_TOKEN = os.getenv("CHILD_BRIDGE_TOKEN", "")
 # 等待子容器 bridge ready 的超时时间，单位秒

@@ -231,6 +231,13 @@ async def subscribe(sub_form: SubForm) -> dict[str, Any]:
 
 @app.post("/api/message")
 async def post_message(payload: MessageRequest) -> dict[str, Any]:
+    logger.error(
+        "api message start org_id=%s conversation_id=%s user_id=%s attachments_count=%s",
+        payload.org_id,
+        payload.conversation_id,
+        payload.user_id,
+        len(payload.attachments),
+    )
     try:
         await run_in_threadpool(ensure_org_container, payload.org_id)
     except RuntimeError as exc:
@@ -239,7 +246,7 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
     attachments = normalize_attachments(payload.content, payload.attachments)
 
     try:
-        return await get_bridge_hub().submit_message(
+        result = await get_bridge_hub().submit_message(
             org_id=payload.org_id,
             conversation_id=payload.conversation_id,
             user_id=payload.user_id,
@@ -249,6 +256,14 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
             metadata=payload.metadata,
             timeout=payload.timeout_seconds,
         )
+        logger.error(
+            "api message done org_id=%s conversation_id=%s request_id=%s result_type=%s",
+            payload.org_id,
+            payload.conversation_id,
+            result.get("request_id"),
+            (result.get("result") or {}).get("type"),
+        )
+        return result
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except asyncio.TimeoutError as exc:

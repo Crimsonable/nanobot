@@ -13,7 +13,7 @@ RUN apt-get update && \
 
 # Copy source code. workspace/ is excluded by .dockerignore and should be mounted at runtime.
 COPY pyproject.toml README.md LICENSE ./
-COPY nanobot/ nanobot/
+RUN mkdir -p nanobot && touch nanobot/__init__.py
 COPY bridge/ bridge/
 COPY start_nanobot_bridge.sh start_org_router.sh ./
 

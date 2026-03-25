@@ -113,6 +113,15 @@ class LocalNanobotService:
             await websocket.send(json.dumps({"type": "error", "content": "missing request_id"}))
             return
 
+        logger.info(
+            "local_service request start request_id={} session_key={} channel={} chat_id={} media_count={}",
+            request_id,
+            session_key,
+            channel,
+            chat_id,
+            len(media),
+        )
+
         async def on_progress(progress: str, *, tool_hint: bool = False) -> None:
             event = {
                 "type": "progress",
@@ -120,10 +129,17 @@ class LocalNanobotService:
                 "content": progress,
                 "kind": "tool_hint" if tool_hint else "reasoning",
             }
+            logger.info(
+                "local_service progress request_id={} kind={} content_len={}",
+                request_id,
+                event["kind"],
+                len(progress),
+            )
             await websocket.send(json.dumps(event, ensure_ascii=False))
 
         async def run_request() -> str:
             async with self._processing_lock:
+                logger.info("local_service request entered agent request_id={}", request_id)
                 msg = InboundMessage(
                     channel=channel,
                     sender_id="user",
@@ -138,6 +154,12 @@ class LocalNanobotService:
                     session_key=session_key,
                     on_progress=on_progress,
                 )
+                logger.info(
+                    "local_service request agent returned request_id={} has_response={} content_len={}",
+                    request_id,
+                    response is not None,
+                    len(response.content) if response and isinstance(response.content, str) else 0,
+                )
                 return response.content if response else ""
 
         task = asyncio.create_task(run_request())
@@ -146,6 +168,17 @@ class LocalNanobotService:
         self._request_sockets[request_id] = websocket
         try:
             result = await task
+            logger.info(
+                "local_service final ready request_id={} content_len={}",
+                request_id,
+                len(result),
+            )
+            logger.info(
+                "local_service sending final request_id={} content_len={}",
+                request_id,
+                len(result),
+            )
+            logger.info("local_service before websocket.send request_id={}", request_id)
             await websocket.send(
                 json.dumps(
                     {
@@ -157,7 +190,10 @@ class LocalNanobotService:
                     ensure_ascii=False,
                 )
             )
+            logger.info("local_service after websocket.send request_id={}", request_id)
+            logger.info("local_service sent final request_id={}", request_id)
         except asyncio.CancelledError:
+            logger.warning("local_service sending cancelled request_id={}", request_id)
             await websocket.send(
                 json.dumps(
                     {
@@ -171,6 +207,7 @@ class LocalNanobotService:
             )
         except Exception:
             logger.exception("Local request failed: {}", request_id)
+            logger.warning("local_service sending error request_id={}", request_id)
             await websocket.send(
                 json.dumps(
                     {

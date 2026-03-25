@@ -6,6 +6,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+from venv import logger
+
 from container_up.bridge_protocol import (
     PROTOCOL_VERSION,
     REGISTER_OK_PACKET_TYPE,
@@ -107,6 +109,13 @@ class BridgeHub:
         )
         pending_key = make_pending_key(org_id, request_id)
         self._pending[pending_key] = pending
+        logger.error(
+            "bridge submit start org_id=%s conversation_id=%s request_id=%s child_connected=%s",
+            org_id,
+            conversation_id,
+            request_id,
+            child is not None,
+        )
         try:
             await child.websocket.send_json(
                 {
@@ -126,6 +135,13 @@ class BridgeHub:
             try:
                 result = await asyncio.wait_for(pending.done, timeout=timeout)
             except asyncio.TimeoutError:
+                logger.error(
+                    "bridge submit timeout org_id=%s conversation_id=%s request_id=%s events_seen=%s",
+                    org_id,
+                    conversation_id,
+                    request_id,
+                    len(pending.events),
+                )
                 try:
                     await self.submit_cancel(
                         org_id=org_id,
@@ -138,6 +154,14 @@ class BridgeHub:
                     # primary failure surfaced to the caller.
                     pass
                 raise
+            logger.error(
+                "bridge submit done org_id=%s conversation_id=%s request_id=%s result_type=%s events_seen=%s",
+                org_id,
+                conversation_id,
+                request_id,
+                result.get("type"),
+                len(pending.events),
+            )
             return {
                 "org_id": org_id,
                 "request_id": request_id,
@@ -180,12 +204,32 @@ class BridgeHub:
     async def handle_child_packet(self, org_id: str, packet: dict[str, Any]) -> None:
         request_id = str(packet.get("request_id") or "")
         if not request_id:
+            logger.error("bridge child packet missing request_id org_id=%s packet_type=%s", org_id, packet.get("type"))
             return
 
         pending = self._pending.get(make_pending_key(org_id, request_id))
         if pending is None:
+            logger.error(
+                "bridge child packet without pending org_id=%s request_id=%s packet_type=%s",
+                org_id,
+                request_id,
+                packet.get("type"),
+            )
             return
 
         pending.events.append(packet)
+        logger.error(
+            "bridge child packet org_id=%s request_id=%s packet_type=%s events_seen=%s",
+            org_id,
+            request_id,
+            packet.get("type"),
+            len(pending.events),
+        )
         if is_terminal_event(packet) and not pending.done.done():
+            logger.error(
+                "bridge child terminal org_id=%s request_id=%s packet_type=%s",
+                org_id,
+                request_id,
+                packet.get("type"),
+            )
             pending.done.set_result(packet)
