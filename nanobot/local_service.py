@@ -17,6 +17,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.cli.commands import _make_provider
 from nanobot.config.loader import load_config, set_config_path
 from nanobot.config.paths import get_cron_dir
+from nanobot.cron.types import CronJob
 from nanobot.cron.service import CronService
 from nanobot.session.manager import SessionManager
 from nanobot.utils.helpers import sync_workspace_templates
@@ -59,8 +60,10 @@ class LocalNanobotService:
             mcp_servers=self.config.tools.mcp_servers,
             channels_config=self.config.channels,
         )
+        self.cron.on_job = self._on_cron_job
 
     async def start(self) -> None:
+        await self.cron.start()
         await self.agent._connect_mcp()
         # This socket is only used for in-container local traffic from org_router.
         # Disable websocket keepalive here to avoid false 1011 ping timeouts
@@ -96,9 +99,21 @@ class LocalNanobotService:
                 elif msg_type == "cancel":
                     await self._handle_cancel(websocket, packet)
                 else:
-                    await websocket.send(json.dumps({"type": "error", "content": "unsupported packet type"}))
+                    await websocket.send(
+                        json.dumps({"type": "error", "content": "unsupported packet type"})
+                    )
         except websockets.ConnectionClosed:
             return
+
+    async def _on_cron_job(self, job: CronJob) -> str | None:
+        """Execute a scheduled cron job through the local agent loop."""
+        response = await self.agent.process_direct(
+            job.payload.message,
+            session_key=f"cron:{job.id}",
+            channel=job.payload.channel or "bridge",
+            chat_id=job.payload.to or "direct",
+        )
+        return response.content if response else ""
 
     async def _handle_message(self, websocket: Any, packet: dict[str, Any]) -> None:
         request_id = str(packet.get("request_id") or "")

@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import uuid4
 from venv import logger
 
 import uvicorn
@@ -80,6 +82,19 @@ class CancelRequest(BaseModel):
 
 class ShutdownRequest(BaseModel):
     org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
+
+
+class DebugP2PRequest(BaseModel):
+    sender_uid: str
+    chat_id: str
+    content: str
+    chat_type: str = "single"
+    message_type: str = Field(
+        default="text",
+        validation_alias=AliasChoices("message_type", "type"),
+    )
+    message_id: str = ""
+    timestamp: str = ""
 
 
 def cleanup_loop() -> None:
@@ -302,6 +317,25 @@ async def post_shutdown(payload: ShutdownRequest) -> dict[str, Any]:
         "scope": "single",
         "result": result,
     }
+
+
+@app.post("/api/debug/p2p")
+async def debug_p2p(payload: DebugP2PRequest) -> dict[str, Any]:
+    event = {
+        "event_type": "p2p_chat_receive_msg",
+        "timestamp": payload.timestamp or str(int(time.time())),
+        "event": {
+            "sender_uid": payload.sender_uid,
+            "message": {
+                "chat_id": payload.chat_id,
+                "content": payload.content,
+                "chat_type": payload.chat_type,
+                "type": payload.message_type,
+                "message_id": payload.message_id or f"debug-{uuid4().hex}",
+            },
+        },
+    }
+    return await dispatch_parser.parse(event)
 
 
 def main() -> None:
