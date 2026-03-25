@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from aiohttp import ClientError
 
-
+from container_up.attachments import normalize_attachments
 from container_up.bridge_state import get_bridge_hub
 from container_up.crypt_tools import get_crypto_parser
 from container_up.db_store import touch_org
@@ -92,6 +92,8 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
     message = dict(payload.get("message"))
     sender_uid = str(payload.get("sender_uid"))
     conversation_id = str(message.get("chat_id"))
+    content = str(message.get("content") or "")
+    attachments = normalize_attachments(content, [])
 
     await asyncio.to_thread(ensure_org_container, sender_uid)
     await asyncio.to_thread(touch_org, sender_uid)
@@ -100,9 +102,9 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
         org_id=sender_uid,
         conversation_id=conversation_id,
         user_id=sender_uid,
-        content=str(message.get("content")),
+        content=content,
         request_id=None,
-        attachments=[],
+        attachments=attachments,
         metadata={
             "event_type": str(event.get("event_type", "")),
             "chat_type": str(message.get("chat_type", "")),

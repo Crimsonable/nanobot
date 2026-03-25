@@ -90,7 +90,7 @@ class BridgeHub:
         conversation_id: str,
         user_id: str,
         content: str,
-        attachments: list[str] | None = None,
+        attachments: list[Any] | None = None,
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         timeout: float = 300.0,

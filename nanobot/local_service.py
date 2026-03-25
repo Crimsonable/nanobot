@@ -12,6 +12,7 @@ import websockets
 from loguru import logger
 
 from nanobot.agent.loop import AgentLoop
+from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.cli.commands import _make_provider
 from nanobot.config.loader import load_config, set_config_path
@@ -22,7 +23,7 @@ from nanobot.utils.helpers import sync_workspace_templates
 
 
 class LocalNanobotService:
-    """Expose AgentLoop.process_direct() over a local websocket protocol."""
+    """Expose bridge-friendly AgentLoop access over a local websocket protocol."""
 
     def __init__(self, *, config_path: Path, workspace_path: Path, host: str, port: int) -> None:
         self.config_path = config_path
@@ -123,13 +124,21 @@ class LocalNanobotService:
 
         async def run_request() -> str:
             async with self._processing_lock:
-                return await self.agent.process_direct(
-                    content,
-                    session_key=session_key,
+                msg = InboundMessage(
                     channel=channel,
+                    sender_id="user",
                     chat_id=chat_id,
+                    content=content,
+                    media=media,
+                    metadata=metadata,
+                    session_key_override=session_key,
+                )
+                response = await self.agent._process_message(
+                    msg,
+                    session_key=session_key,
                     on_progress=on_progress,
                 )
+                return response.content if response else ""
 
         task = asyncio.create_task(run_request())
         self._request_tasks[request_id] = task

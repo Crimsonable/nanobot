@@ -81,3 +81,8 @@ SEND_MSG_TIMEOUT = float(os.getenv("SEND_MSG_TIMEOUT", "10"))
 SEND_MSG_RETRY_COUNT = int(os.getenv("SEND_MSG_RETRY_COUNT", "3"))
 # 发送消息回调重试退避基数，单位秒
 SEND_MSG_RETRY_BACKOFF = float(os.getenv("SEND_MSG_RETRY_BACKOFF", "1"))
+# 当 content 整体为该前缀 URL 时，自动提升为附件入口
+ATTACHMENT_URL_PREFIX = os.getenv(
+    "ATTACHMENT_URL_PREFIX",
+    "https://im2test.chidi.com.cn:8282/ccworkdisk",
+).strip()

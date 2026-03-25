@@ -10,6 +10,7 @@ from typing import Any
 from venv import logger
 
 import uvicorn
+from container_up.attachments import normalize_attachments
 from container_up.bridge_state import (
     get_bridge_hub,
     init_bridge_hub,
@@ -62,7 +63,7 @@ class MessageRequest(BaseModel):
     user_id: str = Field(validation_alias=AliasChoices("user_id", "usr_id"))
     content: str
     request_id: str | None = None
-    attachments: list[str] = Field(default_factory=list)
+    attachments: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: float = 300.0
 
@@ -235,6 +236,7 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     await run_in_threadpool(touch_org, payload.org_id)
+    attachments = normalize_attachments(payload.content, payload.attachments)
 
     try:
         return await get_bridge_hub().submit_message(
@@ -243,7 +245,7 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
             user_id=payload.user_id,
             content=payload.content,
             request_id=payload.request_id,
-            attachments=payload.attachments,
+            attachments=attachments,
             metadata=payload.metadata,
             timeout=payload.timeout_seconds,
         )

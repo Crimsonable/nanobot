@@ -11,7 +11,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 import websockets
 from loguru import logger
 
@@ -24,6 +26,7 @@ BRIDGE_CONTAINER_NAME = os.getenv("BRIDGE_CONTAINER_NAME", "").strip()
 BRIDGE_TOKEN_OVERRIDE = os.getenv("BRIDGE_TOKEN_OVERRIDE", "").strip()
 INSTANCE_IDLE_TIMEOUT = int(os.getenv("INSTANCE_IDLE_TIMEOUT_SECONDS", "1800"))
 INSTANCE_HOST = os.getenv("INSTANCE_HOST", "127.0.0.1")
+ATTACHMENTS_CACHE_DIR = Path("cache") / "attachments"
 
 TERMINAL_EVENT_TYPES = {"final", "error", "cancelled"}
 
@@ -110,6 +113,11 @@ class OrgRouter:
 
         instance = await self._ensure_instance(user_id)
         instance.last_active = asyncio.get_running_loop().time()
+        attachments = await self._materialize_attachments(
+            instance.workspace_path,
+            request_id=request_id or "request",
+            attachments=packet.get("attachments") or [],
+        )
 
         try:
             async with websockets.connect(
@@ -127,7 +135,7 @@ class OrgRouter:
                             "channel": "bridge",
                             "chat_id": conversation_id,
                             "content": str(packet.get("content") or ""),
-                            "attachments": packet.get("attachments") or [],
+                            "attachments": attachments,
                             "metadata": metadata,
                         },
                         ensure_ascii=False,
@@ -299,6 +307,78 @@ class OrgRouter:
         digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
         cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value).strip("-.")
         return f"{cleaned[:48] or 'user'}-{digest}"
+
+    async def _materialize_attachments(
+        self,
+        workspace_path: Path,
+        *,
+        request_id: str,
+        attachments: list[Any],
+    ) -> list[str]:
+        if not attachments:
+            return []
+
+        target_dir = workspace_path / ATTACHMENTS_CACHE_DIR / self._safe_name(request_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        local_paths: list[str] = []
+
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            for index, attachment in enumerate(attachments):
+                if isinstance(attachment, str):
+                    if attachment.startswith(("http://", "https://")):
+                        saved = await self._download_attachment(
+                            client,
+                            attachment,
+                            target_dir,
+                            index=index,
+                        )
+                        if saved is not None:
+                            local_paths.append(str(saved))
+                    else:
+                        local_paths.append(attachment)
+                    continue
+
+                if not isinstance(attachment, dict):
+                    continue
+                url = str(attachment.get("url") or "").strip()
+                if not url:
+                    continue
+                saved = await self._download_attachment(
+                    client,
+                    url,
+                    target_dir,
+                    index=index,
+                    filename=str(attachment.get("filename") or "").strip() or None,
+                )
+                if saved is not None:
+                    local_paths.append(str(saved))
+
+        return local_paths
+
+    async def _download_attachment(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        target_dir: Path,
+        *,
+        index: int,
+        filename: str | None = None,
+    ) -> Path | None:
+        target = target_dir / self._attachment_filename(url, index=index, filename=filename)
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("Attachment download failed for {}: {}", url, exc)
+            return None
+        target.write_bytes(response.content)
+        return target
+
+    @staticmethod
+    def _attachment_filename(url: str, *, index: int, filename: str | None = None) -> str:
+        candidate = filename or Path(urlparse(url).path).name or f"attachment-{index}"
+        cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in candidate).strip("._")
+        return cleaned or f"attachment-{index}"
 
 
 async def _main_async() -> None:
