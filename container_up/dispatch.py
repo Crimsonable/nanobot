@@ -112,23 +112,10 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
     conversation_id = str(message.get("chat_id"))
     content = str(message.get("content") or "")
     attachments = normalize_attachments(content, [])
-    logger.error(
-        "dispatch event start event_type=%s sender_uid=%s conversation_id=%s content_len=%s attachments_count=%s",
-        event.get("event_type"),
-        sender_uid,
-        conversation_id,
-        len(content),
-        len(attachments),
-    )
 
     await asyncio.to_thread(ensure_org_container, sender_uid)
     await asyncio.to_thread(touch_org, sender_uid)
 
-    logger.error(
-        "dispatch submit_message start sender_uid=%s conversation_id=%s",
-        sender_uid,
-        conversation_id,
-    )
     result = await get_bridge_hub().submit_message(
         org_id=sender_uid,
         conversation_id=conversation_id,

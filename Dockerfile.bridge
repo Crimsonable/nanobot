@@ -3,7 +3,8 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
-    GATEWAY_PORT=18790
+    GATEWAY_PORT=18790 \
+    TIKTOKEN_CACHE_DIR=/var/cache/tiktoken
 
 WORKDIR /app
 
@@ -19,6 +20,8 @@ COPY start_nanobot_bridge.sh start_org_router.sh ./
 
 RUN uv pip install --system --no-cache . playwright && \
     python -m playwright install --with-deps chromium && \
+    mkdir -p "$TIKTOKEN_CACHE_DIR" && \
+    python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" && \
     chmod +x /app/start_nanobot_bridge.sh /app/start_org_router.sh
 
 EXPOSE 18790

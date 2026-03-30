@@ -146,14 +146,6 @@ class OrgRouter:
                     response = json.loads(raw)
                     response["request_id"] = request_id
                     response["conversation_id"] = conversation_id
-                    logger.info(
-                        "org_router local response org_id={} user_id={} request_id={} packet_type={} content_len={}",
-                        BRIDGE_ORG_ID,
-                        user_id,
-                        request_id,
-                        response.get("type"),
-                        len(str(response.get("content") or "")),
-                    )
                     await self._send_parent(parent_ws, response)
                     if str(response.get("type") or "") in TERMINAL_EVENT_TYPES:
                         break
@@ -293,21 +285,8 @@ class OrgRouter:
         logger.info("Stopped user instance {}", user_id)
 
     async def _send_parent(self, websocket: Any, packet: dict[str, Any]) -> None:
-        logger.info(
-            "org_router send_parent org_id={} request_id={} packet_type={} content_len={}",
-            BRIDGE_ORG_ID,
-            packet.get("request_id"),
-            packet.get("type"),
-            len(str(packet.get("content") or "")),
-        )
         async with self._parent_send_lock:
             await websocket.send(json.dumps(packet, ensure_ascii=False))
-        logger.info(
-            "org_router sent_parent org_id={} request_id={} packet_type={}",
-            BRIDGE_ORG_ID,
-            packet.get("request_id"),
-            packet.get("type"),
-        )
 
     @staticmethod
     def _config_mtime() -> float:

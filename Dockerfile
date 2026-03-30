@@ -1,5 +1,7 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
+ENV TIKTOKEN_CACHE_DIR=/var/cache/tiktoken
+
 # Install Node.js 20 for the WhatsApp bridge
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git openssh-client && \
@@ -18,6 +20,8 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
     uv pip install --system --no-cache . && \
+    mkdir -p "$TIKTOKEN_CACHE_DIR" && \
+    python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" && \
     rm -rf nanobot bridge
 
 # Copy the full source and install
