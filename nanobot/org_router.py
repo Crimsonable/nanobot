@@ -8,7 +8,7 @@ import json
 import os
 import socket
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -28,8 +28,6 @@ INSTANCE_IDLE_TIMEOUT = int(os.getenv("INSTANCE_IDLE_TIMEOUT_SECONDS", "1800"))
 INSTANCE_HOST = os.getenv("INSTANCE_HOST", "127.0.0.1")
 ATTACHMENTS_CACHE_DIR = Path("cache") / "attachments"
 
-TERMINAL_EVENT_TYPES = {"final", "error", "cancelled"}
-
 
 @dataclass
 class UserInstance:
@@ -40,6 +38,9 @@ class UserInstance:
     workspace_path: Path
     last_active: float
     config_mtime: float
+    websocket: Any | None = None
+    relay_task: asyncio.Task[None] | None = None
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class OrgRouter:
@@ -50,6 +51,7 @@ class OrgRouter:
         self._locks: dict[str, asyncio.Lock] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
         self._parent_send_lock = asyncio.Lock()
+        self._parent_ws: Any = None
 
     async def run(self) -> None:
         if not BRIDGE_ORG_ID or not BRIDGE_CONTAINER_NAME:
@@ -69,6 +71,7 @@ class OrgRouter:
                 await asyncio.sleep(5)
 
     async def close(self) -> None:
+        self._parent_ws = None
         if self._cleanup_task is not None:
             self._cleanup_task.cancel()
             try:
@@ -81,16 +84,21 @@ class OrgRouter:
     async def _run_bridge_client(self) -> None:
         logger.info("Connecting org router to {}", PARENT_BRIDGE_URL)
         async with websockets.connect(PARENT_BRIDGE_URL, proxy=None) as websocket:
+            self._parent_ws = websocket
             await websocket.send(json.dumps(self._register_packet(), ensure_ascii=False))
-            async for raw in websocket:
-                packet = json.loads(raw)
-                packet_type = str(packet.get("type") or "")
-                if packet_type in {"register_ok", "auth_ok", "pong"}:
-                    continue
-                if packet_type == "inbound_message":
-                    asyncio.create_task(self._handle_parent_message(websocket, packet))
-                elif packet_type == "cancel":
-                    asyncio.create_task(self._handle_parent_cancel(packet))
+            try:
+                async for raw in websocket:
+                    packet = json.loads(raw)
+                    packet_type = str(packet.get("type") or "")
+                    if packet_type in {"register_ok", "auth_ok", "pong"}:
+                        continue
+                    if packet_type == "inbound_message":
+                        asyncio.create_task(self._handle_parent_message(packet))
+                    elif packet_type == "cancel":
+                        asyncio.create_task(self._handle_parent_cancel(packet))
+            finally:
+                if self._parent_ws is websocket:
+                    self._parent_ws = None
 
     def _register_packet(self) -> dict[str, Any]:
         packet: dict[str, Any] = {
@@ -103,97 +111,45 @@ class OrgRouter:
             packet["token"] = BRIDGE_TOKEN_OVERRIDE
         return packet
 
-    async def _handle_parent_message(self, parent_ws: Any, packet: dict[str, Any]) -> None:
+    async def _handle_parent_message(self, packet: dict[str, Any]) -> None:
         user_id = str(packet.get("sender_id") or "user")
-        request_id = str(packet.get("request_id") or "")
-        conversation_id = str(packet.get("conversation_id") or "default")
-        metadata = dict(packet.get("metadata") or {})
-        metadata.setdefault("user_id", user_id)
-        session_key = str(packet.get("session_key") or f"remote:{conversation_id}")
-
         instance = await self._ensure_instance(user_id)
         instance.last_active = asyncio.get_running_loop().time()
         attachments = await self._materialize_attachments(
             instance.workspace_path,
-            request_id=request_id or "request",
+            attachment_group=str(packet.get("chat_id") or user_id),
             attachments=packet.get("attachments") or [],
         )
-
-        try:
-            async with websockets.connect(
-                f"ws://{INSTANCE_HOST}:{instance.port}",
-                proxy=None,
-                ping_interval=None,
-                ping_timeout=None,
-            ) as local_ws:
-                await local_ws.send(
-                    json.dumps(
-                        {
-                            "type": "message",
-                            "request_id": request_id,
-                            "session_key": session_key,
-                            "channel": "bridge",
-                            "chat_id": conversation_id,
-                            "content": str(packet.get("content") or ""),
-                            "attachments": attachments,
-                            "metadata": metadata,
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-
-                async for raw in local_ws:
-                    response = json.loads(raw)
-                    response["request_id"] = request_id
-                    response["conversation_id"] = conversation_id
-                    await self._send_parent(parent_ws, response)
-                    if str(response.get("type") or "") in TERMINAL_EVENT_TYPES:
-                        break
-        except Exception:
-            logger.exception("User instance request failed for {}", user_id)
-            await self._send_parent(
-                parent_ws,
-                {
-                    "type": "error",
-                    "request_id": request_id,
-                    "conversation_id": conversation_id,
-                    "content": "User instance unavailable.",
-                },
-            )
+        await self._ensure_instance_socket(instance)
+        outbound_packet = {
+            "type": "inbound_message",
+            "channel": str(packet.get("channel") or "bridge"),
+            "sender_id": user_id,
+            "chat_id": str(packet.get("chat_id") or ""),
+            "session_key": str(packet.get("session_key") or "") or None,
+            "content": str(packet.get("content") or ""),
+            "attachments": attachments,
+            "metadata": dict(packet.get("metadata") or {}),
+        }
+        await self._send_instance(instance, outbound_packet)
 
     async def _handle_parent_cancel(self, packet: dict[str, Any]) -> None:
         user_id = str(packet.get("sender_id") or "user")
         instance = self._instances.get(user_id)
         if instance is None or instance.process.returncode is not None:
             return
-
-        request_id = str(packet.get("request_id") or "")
-        conversation_id = str(packet.get("conversation_id") or "default")
-        session_key = str(packet.get("session_key") or f"remote:{conversation_id}")
-
-        try:
-            async with websockets.connect(
-                f"ws://{INSTANCE_HOST}:{instance.port}",
-                proxy=None,
-                ping_interval=None,
-                ping_timeout=None,
-            ) as local_ws:
-                await local_ws.send(
-                    json.dumps(
-                        {
-                            "type": "cancel",
-                            "request_id": request_id,
-                            "session_key": session_key,
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-                try:
-                    await asyncio.wait_for(local_ws.recv(), timeout=3)
-                except asyncio.TimeoutError:
-                    return
-        except Exception:
-            logger.exception("Failed to forward cancel to user instance {}", user_id)
+        await self._ensure_instance_socket(instance)
+        await self._send_instance(
+            instance,
+            {
+                "type": "cancel",
+                "channel": str(packet.get("channel") or "bridge"),
+                "sender_id": user_id,
+                "chat_id": str(packet.get("chat_id") or ""),
+                "session_key": str(packet.get("session_key") or "") or None,
+                "metadata": dict(packet.get("metadata") or {}),
+            },
+        )
 
     async def _ensure_instance(self, user_id: str) -> UserInstance:
         lock = self._locks.setdefault(user_id, asyncio.Lock())
@@ -202,6 +158,7 @@ class OrgRouter:
             current_mtime = self._config_mtime()
             if current is not None and current.process.returncode is None:
                 if current.config_mtime == current_mtime:
+                    await self._ensure_instance_socket(current)
                     return current
                 await self._stop_instance(user_id)
             if current is not None:
@@ -234,6 +191,7 @@ class OrgRouter:
                 config_mtime=current_mtime,
             )
             self._instances[user_id] = instance
+            await self._ensure_instance_socket(instance)
             logger.info("Started user instance {} on port {}", user_id, port)
             return instance
 
@@ -258,6 +216,57 @@ class OrgRouter:
                 await asyncio.sleep(0.2)
         raise RuntimeError(f"user instance on port {port} did not become ready")
 
+    async def _ensure_instance_socket(self, instance: UserInstance) -> None:
+        if instance.websocket is not None:
+            return
+        websocket = await websockets.connect(
+            f"ws://{INSTANCE_HOST}:{instance.port}",
+            proxy=None,
+            ping_interval=None,
+            ping_timeout=None,
+        )
+        instance.websocket = websocket
+        instance.relay_task = asyncio.create_task(self._relay_instance(instance, websocket))
+
+    async def _relay_instance(self, instance: UserInstance, websocket: Any) -> None:
+        try:
+            async for raw in websocket:
+                packet = json.loads(raw)
+                if self._parent_ws is None:
+                    logger.warning("Dropping bridge packet because parent websocket is disconnected")
+                    continue
+                await self._send_parent(packet)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("User instance relay failed for {}", instance.user_id)
+        finally:
+            if instance.websocket is websocket:
+                instance.websocket = None
+            if instance.relay_task is asyncio.current_task():
+                instance.relay_task = None
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    async def _send_instance(self, instance: UserInstance, packet: dict[str, Any]) -> None:
+        async with instance.send_lock:
+            if instance.websocket is None:
+                await self._ensure_instance_socket(instance)
+            if instance.websocket is None:
+                raise RuntimeError(f"user instance websocket unavailable for {instance.user_id}")
+            try:
+                await instance.websocket.send(json.dumps(packet, ensure_ascii=False))
+            except Exception:
+                logger.exception("Failed to forward packet to user instance {}", instance.user_id)
+                try:
+                    await instance.websocket.close()
+                except Exception:
+                    pass
+                instance.websocket = None
+                raise
+
     async def _cleanup_loop(self) -> None:
         if INSTANCE_IDLE_TIMEOUT <= 0:
             return
@@ -275,6 +284,15 @@ class OrgRouter:
         instance = self._instances.pop(user_id, None)
         if instance is None:
             return
+        if instance.relay_task is not None:
+            instance.relay_task.cancel()
+            await asyncio.gather(instance.relay_task, return_exceptions=True)
+        if instance.websocket is not None:
+            try:
+                await instance.websocket.close()
+            except Exception:
+                pass
+            instance.websocket = None
         if instance.process.returncode is None:
             instance.process.terminate()
             try:
@@ -284,9 +302,11 @@ class OrgRouter:
                 await instance.process.wait()
         logger.info("Stopped user instance {}", user_id)
 
-    async def _send_parent(self, websocket: Any, packet: dict[str, Any]) -> None:
+    async def _send_parent(self, packet: dict[str, Any]) -> None:
+        if self._parent_ws is None:
+            return
         async with self._parent_send_lock:
-            await websocket.send(json.dumps(packet, ensure_ascii=False))
+            await self._parent_ws.send(json.dumps(packet, ensure_ascii=False))
 
     @staticmethod
     def _config_mtime() -> float:
@@ -312,13 +332,13 @@ class OrgRouter:
         self,
         workspace_path: Path,
         *,
-        request_id: str,
+        attachment_group: str,
         attachments: list[Any],
     ) -> list[str]:
         if not attachments:
             return []
 
-        target_dir = workspace_path / ATTACHMENTS_CACHE_DIR / self._safe_name(request_id)
+        target_dir = workspace_path / ATTACHMENTS_CACHE_DIR / self._safe_name(attachment_group)
         target_dir.mkdir(parents=True, exist_ok=True)
         local_paths: list[str] = []
 

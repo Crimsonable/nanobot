@@ -4,21 +4,24 @@ import asyncio
 import inspect
 from collections.abc import Callable
 from typing import Any
+
 from venv import logger
-from aiohttp import ClientError
 
 from container_up.attachments import normalize_attachments
 from container_up.bridge_state import get_bridge_hub
-from container_up.crypt_tools import get_crypto_parser
+from container_up.im_tools import get_im_parser
 from container_up.db_store import touch_org
-from container_up.http_state import get_dispatch_session
 from container_up.router_service import ensure_org_container
-from container_up.settings import (
-    FORWARD_TIMEOUT,
-    SEND_MSG_RETRY_BACKOFF,
-    SEND_MSG_RETRY_COUNT,
-    SEND_MSG_URL,
-)
+
+
+_DELIVERY_TARGET_SEPARATOR = ":::"
+
+
+def split_delivery_target(value: str) -> tuple[str, str]:
+    sender_uid, separator, conversation_id = value.partition(_DELIVERY_TARGET_SEPARATOR)
+    if not separator or not sender_uid or not conversation_id:
+        raise ValueError("invalid bridge delivery target")
+    return sender_uid, conversation_id
 
 EventHandler = Callable[[dict[str, Any]], Any]
 
@@ -47,61 +50,49 @@ class DispatchParser:
 dispatch_parser = DispatchParser()
 
 
-async def _post_message_with_retry(
-    *,
-    access_token: str,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    if not SEND_MSG_URL:
-        raise RuntimeError("SEND_MSG_URL is not configured")
+async def _send_text_to_uid(*, sender_uid: str, content: str) -> dict[str, Any]:
+    if not sender_uid:
+        raise RuntimeError("missing recipient sender_uid")
+    im_parser = get_im_parser()
+    return await im_parser.post_message_with_retry(
+        payload={
+            "to_single_uid": sender_uid,
+            "type": "text",
+            "message": {"content": content},
+        }
+    )
 
-    last_error: Exception | None = None
-    for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
-        try:
-            logger.error(
-                "dispatch send_message attempt=%s to_single_uid=%s type=%s",
-                attempt,
-                payload.get("to_single_uid"),
-                payload.get("type"),
-            )
-            async with get_dispatch_session().post(
-                SEND_MSG_URL,
-                params={"access_token": access_token},
-                json=payload,
-            ) as response:
-                response_text = await response.text()
-                logger.error(
-                    "dispatch send_message response attempt=%s status=%s body_len=%s",
-                    attempt,
-                    response.status,
-                    len(response_text),
-                )
-                if response.status >= 500:
-                    raise RuntimeError(
-                        f"send message failed with {response.status}: {response_text}"
-                    )
-                if response.status >= 400:
-                    raise RuntimeError(
-                        f"send message rejected with {response.status}: {response_text}"
-                    )
-                return {
-                    "status": response.status,
-                    "body": response_text,
-                }
-        except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
-            logger.error(
-                "dispatch send_message retry attempt=%s error=%s",
-                attempt,
-                exc,
-            )
-            last_error = exc
-            if attempt >= SEND_MSG_RETRY_COUNT:
-                break
-            await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
 
-    raise RuntimeError(
-        f"send message failed after retries: {last_error}"
-    ) from last_error
+async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(packet.get("metadata") or {})
+    if metadata.get("_progress") or metadata.get("_stream_delta") or metadata.get("_stream_end"):
+        return {"ok": True, "response": None, "skipped": "non_terminal_event"}
+
+    content = str(packet.get("content") or "")
+    if not content:
+        return {"ok": True, "response": None, "skipped": "empty_content"}
+
+    try:
+        sender_uid, conversation_id = split_delivery_target(str(packet.get("chat_id") or ""))
+    except ValueError as exc:
+        raise RuntimeError("invalid bridge delivery target") from exc
+
+    logger.error(
+        "bridge outbound dispatch sender_uid=%s conversation_id=%s metadata=%r",
+        sender_uid,
+        conversation_id,
+        metadata,
+    )
+    post_result = await _send_text_to_uid(
+        sender_uid=sender_uid,
+        content=content,
+    )
+    return {
+        "ok": True,
+        "conversation_id": conversation_id,
+        "metadata": metadata,
+        "response": post_result,
+    }
 
 
 @dispatch_parser.register("p2p_chat_receive_msg")
@@ -121,7 +112,6 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
         conversation_id=conversation_id,
         user_id=sender_uid,
         content=content,
-        request_id=None,
         attachments=attachments,
         metadata={
             "event_type": str(event.get("event_type", "")),
@@ -130,47 +120,26 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
             "message_id": str(message.get("message_id", "")),
             "timestamp": str(event.get("timestamp", "")),
             "source": "subscribe",
+            "to_single_uid": sender_uid,
+            "type": "text",
         },
-        timeout=FORWARD_TIMEOUT,
-    )
-    logger.error(
-        "dispatch submit_message done sender_uid=%s conversation_id=%s request_id=%s result_type=%s events_seen=%s",
-        sender_uid,
-        conversation_id,
-        result.get("request_id"),
-        (result.get("result") or {}).get("type"),
-        len(result.get("events") or []),
     )
     logger.error("bridge processing result: %r", result)
-
-    crypto_parser = get_crypto_parser()
-    access_token = crypto_parser.get_access_token()
-    if access_token is None:
-        raise RuntimeError("Failed to retrieve access token for response encryption")
-
-    payload = {
-        "to_single_uid": sender_uid,
-        "type": "text",
-        "message": {"content": str(result["result"]["content"])},
-    }
-    logger.error(
-        "dispatch outbound send start sender_uid=%s request_id=%s content_len=%s",
-        sender_uid,
-        result.get("request_id"),
-        len(str(result["result"]["content"])),
-    )
-
-    post_result = await _post_message_with_retry(
-        access_token=access_token,
-        payload=payload,
-    )
-    logger.error(
-        "dispatch outbound send done sender_uid=%s request_id=%s status=%s",
-        sender_uid,
-        result.get("request_id"),
-        post_result.get("status"),
-    )
     return {
         "ok": True,
-        "response": post_result,
+        "response": result,
     }
+
+
+@dispatch_parser.register("bridge_outbound_message")
+async def parse_bridge_outbound_message(event: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(event.get("event") or {})
+    return await forward_bridge_outbound(
+        {
+            "type": "outbound_message",
+            "chat_id": str(payload.get("to") or ""),
+            "content": str(payload.get("content") or ""),
+            "metadata": dict(payload.get("metadata") or {}),
+            "attachments": list(payload.get("attachments") or []),
+        }
+    )

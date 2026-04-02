@@ -27,8 +27,6 @@ HOST_NANOBOT_SOURCE = Path(_host_nanobot_source) if _host_nanobot_source else No
 CHILD_IMAGE = os.getenv("CHILD_IMAGE", "nanobot-bridge:latest")
 # 子容器加入的 Docker 网络名
 CHILD_NETWORK = os.getenv("CHILD_NETWORK", "nanobot-stack")
-# 子容器的网络模式；为空时使用普通 network 连接
-CHILD_NETWORK_MODE = os.getenv("CHILD_NETWORK_MODE", "").strip()
 # 宿主机 workspace 挂载到子容器内的目标目录
 CHILD_WORKSPACE_TARGET = os.getenv("CHILD_WORKSPACE_TARGET", "/app/nanobot_workspaces")
 # 共享配置文件挂载到子容器内的目标路径
@@ -46,12 +44,8 @@ CHILD_READY_TIMEOUT = int(os.getenv("CHILD_READY_TIMEOUT", "90"))
 # 组织容器名称前缀
 CHILD_CONTAINER_PREFIX = os.getenv("CHILD_CONTAINER_PREFIX", "nanobot-org")
 # child 容器回连 parent bridge 的 websocket 地址
-PARENT_BRIDGE_URL = os.getenv(
-    "PARENT_BRIDGE_URL", f"ws://container-up:{APP_PORT}/ws/bridge"
-)
+PARENT_BRIDGE_URL = f"ws://container-up:{APP_PORT}/ws/bridge"
 
-# parent 转发请求到 child 的超时时间，单位秒
-FORWARD_TIMEOUT = float(os.getenv("FORWARD_TIMEOUT", "300"))
 # org 级别空闲回收阈值，单位秒
 IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "3600"))
 # 后台扫描空闲 org 容器的周期，单位秒

@@ -1,35 +1,23 @@
-"""Org-bound bridge state manager for container_up."""
+"""Org-bound bridge connection manager for container_up."""
 
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
-
-from venv import logger
 
 from container_up.bridge_protocol import (
     PROTOCOL_VERSION,
     REGISTER_OK_PACKET_TYPE,
-    is_terminal_event,
-    make_pending_key,
-    make_request_id,
-    make_session_key,
+    build_register_packet,
     parse_register_packet,
 )
 
 
-@dataclass
-class PendingRequest:
-    org_id: str
-    request_id: str
-    conversation_id: str
-    events: list[dict[str, Any]] = field(default_factory=list)
-    done: asyncio.Future[dict[str, Any]] | None = None
+_DELIVERY_TARGET_SEPARATOR = ":::"
 
-    def __post_init__(self) -> None:
-        if self.done is None:
-            self.done = asyncio.get_running_loop().create_future()
+
+def compose_delivery_target(sender_id: str, conversation_id: str) -> str:
+    return f"{sender_id}{_DELIVERY_TARGET_SEPARATOR}{conversation_id}"
 
 
 @dataclass
@@ -40,12 +28,11 @@ class ChildConnection:
 
 
 class BridgeHub:
-    """Minimal org-aware bridge hub for container_up."""
+    """Track child bridge connections and forward packets to them."""
 
     def __init__(self, token: str | None = None) -> None:
         self.token = token or None
         self._children: dict[str, ChildConnection] = {}
-        self._pending: dict[tuple[str, str], PendingRequest] = {}
 
     @property
     def child_count(self) -> int:
@@ -71,11 +58,14 @@ class BridgeHub:
             websocket=websocket,
         )
         await websocket.send_json(
-            {
+            build_register_packet(
+                org_id=org_id,
+                container_name=container_name,
+                token=None,
+            )
+            | {
                 "type": REGISTER_OK_PACKET_TYPE,
                 "version": PROTOCOL_VERSION,
-                "org_id": org_id,
-                "container_name": container_name,
             }
         )
         return org_id
@@ -94,83 +84,34 @@ class BridgeHub:
         content: str,
         attachments: list[Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        request_id: str | None = None,
-        timeout: float = 300.0,
     ) -> dict[str, Any]:
         child = self.child_for_org(org_id)
         if child is None:
             raise RuntimeError(f"No bridge channel connected for org {org_id}")
 
-        request_id = request_id or make_request_id()
-        pending = PendingRequest(
-            org_id=org_id,
-            request_id=request_id,
-            conversation_id=conversation_id,
-        )
-        pending_key = make_pending_key(org_id, request_id)
-        self._pending[pending_key] = pending
-        logger.error(
-            "bridge submit start org_id=%s conversation_id=%s request_id=%s child_connected=%s",
-            org_id,
-            conversation_id,
-            request_id,
-            child is not None,
-        )
-        try:
-            await child.websocket.send_json(
-                {
-                    "type": "inbound_message",
-                    "version": PROTOCOL_VERSION,
-                    "request_id": request_id,
-                    "conversation_id": conversation_id,
-                    "session_key": make_session_key(conversation_id),
-                    "channel": "bridge",
-                    "sender_id": user_id,
-                    "chat_id": conversation_id,
-                    "content": content,
-                    "attachments": attachments or [],
-                    "metadata": metadata or {},
-                }
-            )
-            try:
-                result = await asyncio.wait_for(pending.done, timeout=timeout)
-            except asyncio.TimeoutError:
-                logger.error(
-                    "bridge submit timeout org_id=%s conversation_id=%s request_id=%s events_seen=%s",
-                    org_id,
-                    conversation_id,
-                    request_id,
-                    len(pending.events),
-                )
-                try:
-                    await self.submit_cancel(
-                        org_id=org_id,
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        request_id=request_id,
-                    )
-                except RuntimeError:
-                    # The child may already be gone; preserve the timeout as the
-                    # primary failure surfaced to the caller.
-                    pass
-                raise
-            logger.error(
-                "bridge submit done org_id=%s conversation_id=%s request_id=%s result_type=%s events_seen=%s",
-                org_id,
-                conversation_id,
-                request_id,
-                result.get("type"),
-                len(pending.events),
-            )
-            return {
-                "org_id": org_id,
-                "request_id": request_id,
+        delivery_target = compose_delivery_target(user_id, conversation_id)
+        packet = {
+            "type": "inbound_message",
+            "version": PROTOCOL_VERSION,
+            "channel": "bridge",
+            "sender_id": user_id,
+            "chat_id": delivery_target,
+            "session_key": f"bridge:{delivery_target}",
+            "content": content,
+            "attachments": attachments or [],
+            "metadata": {
+                **dict(metadata or {}),
+                "sender_id": user_id,
                 "conversation_id": conversation_id,
-                "events": pending.events,
-                "result": result,
-            }
-        finally:
-            self._pending.pop(pending_key, None)
+            },
+        }
+        await child.websocket.send_json(packet)
+        return {
+            "status": "accepted",
+            "org_id": org_id,
+            "chat_id": delivery_target,
+            "conversation_id": conversation_id,
+        }
 
     async def submit_cancel(
         self,
@@ -178,58 +119,34 @@ class BridgeHub:
         org_id: str,
         conversation_id: str,
         user_id: str,
-        request_id: str,
     ) -> dict[str, Any]:
         child = self.child_for_org(org_id)
         if child is None:
             raise RuntimeError(f"No bridge channel connected for org {org_id}")
 
+        delivery_target = compose_delivery_target(user_id, conversation_id)
         await child.websocket.send_json(
             {
                 "type": "cancel",
                 "version": PROTOCOL_VERSION,
-                "request_id": request_id,
-                "conversation_id": conversation_id,
-                "session_key": make_session_key(conversation_id),
+                "channel": "bridge",
                 "sender_id": user_id,
+                "chat_id": delivery_target,
+                "session_key": f"bridge:{delivery_target}",
+                "metadata": {
+                    "sender_id": user_id,
+                    "conversation_id": conversation_id,
+                },
             }
         )
         return {
             "status": "accepted",
             "org_id": org_id,
-            "request_id": request_id,
+            "chat_id": delivery_target,
             "conversation_id": conversation_id,
         }
 
-    async def handle_child_packet(self, org_id: str, packet: dict[str, Any]) -> None:
-        request_id = str(packet.get("request_id") or "")
-        if not request_id:
-            logger.error("bridge child packet missing request_id org_id=%s packet_type=%s", org_id, packet.get("type"))
-            return
-
-        pending = self._pending.get(make_pending_key(org_id, request_id))
-        if pending is None:
-            logger.error(
-                "bridge child packet without pending org_id=%s request_id=%s packet_type=%s",
-                org_id,
-                request_id,
-                packet.get("type"),
-            )
-            return
-
-        pending.events.append(packet)
-        logger.error(
-            "bridge child packet org_id=%s request_id=%s packet_type=%s events_seen=%s",
-            org_id,
-            request_id,
-            packet.get("type"),
-            len(pending.events),
-        )
-        if is_terminal_event(packet) and not pending.done.done():
-            logger.error(
-                "bridge child terminal org_id=%s request_id=%s packet_type=%s",
-                org_id,
-                request_id,
-                packet.get("type"),
-            )
-            pending.done.set_result(packet)
+    async def handle_child_packet(self, org_id: str, packet: dict[str, Any]) -> dict[str, Any]:
+        if self.child_for_org(org_id) is None:
+            raise RuntimeError(f"No bridge channel connected for org {org_id}")
+        return packet

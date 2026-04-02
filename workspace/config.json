@@ -4,7 +4,6 @@
         "sendToolHints": false,
         "bridge": {
             "enabled": true,
-            "bridgeUrl": "ws://container-up:8080/ws/bridge",
             "bridgeToken": "my-shared-token",
             "allowFrom": [
                 "user-1",
@@ -24,7 +23,8 @@
     "agents": {
         "defaults": {
             "model": "GLM-4.6V-FlashX",
-            "provider": "zhipu"
+            "provider": "zhipu",
+            "timezone": "Asia/Shanghai"
         }
     }
 }

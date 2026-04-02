@@ -1,73 +1,46 @@
-"""Local websocket service for one isolated nanobot instance."""
+"""Local websocket relay that fronts a standard nanobot gateway process."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import os
+import secrets
+import sys
 from pathlib import Path
 from typing import Any
 
 import websockets
 from loguru import logger
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.cli.commands import _make_provider
-from nanobot.config.loader import load_config, set_config_path
-from nanobot.config.paths import get_cron_dir
-from nanobot.cron.types import CronJob
-from nanobot.cron.service import CronService
-from nanobot.session.manager import SessionManager
-from nanobot.utils.helpers import sync_workspace_templates
-
 
 class LocalNanobotService:
-    """Expose bridge-friendly AgentLoop access over a local websocket protocol."""
+    """Expose a local bridge websocket while delegating runtime to `nanobot gateway`."""
 
     def __init__(self, *, config_path: Path, workspace_path: Path, host: str, port: int) -> None:
         self.config_path = config_path
         self.workspace_path = workspace_path
         self.host = host
         self.port = port
+
         self._server: Any = None
-        self._request_tasks: dict[str, asyncio.Task[str]] = {}
-        self._request_sessions: dict[str, str] = {}
-        self._request_sockets: dict[str, Any] = {}
-        self._processing_lock = asyncio.Lock()
+        self._router_ws: Any = None
+        self._gateway_ws: Any = None
+        self._router_send_lock = asyncio.Lock()
+        self._gateway_send_lock = asyncio.Lock()
+        self._gateway_ready = asyncio.Event()
+        self._gateway_process: asyncio.subprocess.Process | None = None
+        self._gateway_watch_task: asyncio.Task[None] | None = None
+        self._stopping = False
 
-        set_config_path(self.config_path)
-        self.config = load_config(self.config_path)
-        self.config.agents.defaults.workspace = str(self.workspace_path)
-        sync_workspace_templates(self.workspace_path)
-
-        self.bus = MessageBus()
-        self.provider = _make_provider(self.config)
-        self.cron = CronService(get_cron_dir() / "jobs.json")
-        self.agent = AgentLoop(
-            bus=self.bus,
-            provider=self.provider,
-            workspace=self.workspace_path,
-            model=self.config.agents.defaults.model,
-            max_iterations=self.config.agents.defaults.max_tool_iterations,
-            context_window_tokens=self.config.agents.defaults.context_window_tokens,
-            web_proxy=self.config.tools.web.proxy or None,
-            exec_config=self.config.tools.exec,
-            cron_service=self.cron,
-            restrict_to_workspace=self.config.tools.restrict_to_workspace,
-            session_manager=SessionManager(self.workspace_path),
-            mcp_servers=self.config.tools.mcp_servers,
-            channels_config=self.config.channels,
+        self._bridge_token = secrets.token_hex(16)
+        self._gateway_config_path = (
+            self.workspace_path / ".nanobot-local" / "gateway.bridge.config.json"
         )
-        self.cron.on_job = self._on_cron_job
 
     async def start(self) -> None:
-        await self.cron.start()
-        await self.agent._connect_mcp()
-        # This socket is only used for in-container local traffic from org_router.
-        # Disable websocket keepalive here to avoid false 1011 ping timeouts
-        # while the agent is busy with long-running model/tool work.
+        self._prepare_gateway_config()
         self._server = await websockets.serve(
             self._handle_client,
             self.host,
@@ -75,168 +48,188 @@ class LocalNanobotService:
             ping_interval=None,
             ping_timeout=None,
         )
-        logger.info("Local nanobot service listening on ws://{}:{}", self.host, self.port)
+        await self._spawn_gateway()
+        logger.info("Local gateway relay listening on ws://{}:{}", self.host, self.port)
         await self._server.wait_closed()
 
     async def close(self) -> None:
-        for task in list(self._request_tasks.values()):
-            if not task.done():
-                task.cancel()
-        await self.agent.close_mcp()
-        self.cron.stop()
-        self.agent.stop()
+        self._stopping = True
+        if self._gateway_watch_task is not None and not self._gateway_watch_task.done():
+            self._gateway_watch_task.cancel()
+            await asyncio.gather(self._gateway_watch_task, return_exceptions=True)
+
+        for websocket in (self._router_ws, self._gateway_ws):
+            if websocket is not None:
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+
+        self._router_ws = None
+        self._gateway_ws = None
+        self._gateway_ready.clear()
+
+        if self._gateway_process is not None and self._gateway_process.returncode is None:
+            self._gateway_process.terminate()
+            try:
+                await asyncio.wait_for(self._gateway_process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                self._gateway_process.kill()
+                await self._gateway_process.wait()
+        self._gateway_process = None
+
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
 
+    def _prepare_gateway_config(self) -> None:
+        data = json.loads(self.config_path.read_text(encoding="utf-8"))
+
+        channels = dict(data.get("channels") or {})
+        for name, section in list(channels.items()):
+            if name in {"sendProgress", "sendToolHints", "sendMaxRetries", "bridge"}:
+                continue
+            if isinstance(section, dict):
+                channels[name] = {**section, "enabled": False}
+
+        bridge = dict(channels.get("bridge") or {})
+        bridge["enabled"] = True
+        bridge["bridgeUrl"] = f"ws://{self.host}:{self.port}"
+        bridge["bridgeToken"] = self._bridge_token
+        bridge["allowFrom"] = ["*"]
+        channels["bridge"] = bridge
+        data["channels"] = channels
+
+        agents = dict(data.get("agents") or {})
+        defaults = dict(agents.get("defaults") or {})
+        defaults["workspace"] = str(self.workspace_path)
+        agents["defaults"] = defaults
+        data["agents"] = agents
+
+        self._gateway_config_path.parent.mkdir(parents=True, exist_ok=True)
+        self._gateway_config_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    async def _spawn_gateway(self) -> None:
+        env = os.environ.copy()
+        env["BRIDGE_SESSION_ID"] = ""
+        env["BRIDGE_CONTAINER_NAME"] = ""
+        env["BRIDGE_ORG_ID"] = ""
+        env["PARENT_BRIDGE_URL"] = ""
+
+        self._gateway_process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "nanobot",
+            "gateway",
+            "--config",
+            str(self._gateway_config_path),
+            "--workspace",
+            str(self.workspace_path),
+            "--port",
+            str(self.port),
+            env=env,
+        )
+        self._gateway_watch_task = asyncio.create_task(self._watch_gateway_process())
+
+    async def _watch_gateway_process(self) -> None:
+        assert self._gateway_process is not None
+        returncode = await self._gateway_process.wait()
+        if self._stopping:
+            return
+        logger.error("nanobot gateway exited unexpectedly with code {}", returncode)
+        if self._server is not None:
+            self._server.close()
+
     async def _handle_client(self, websocket: Any) -> None:
+        first_packet: dict[str, Any] | None = None
         try:
-            async for raw in websocket:
-                packet = json.loads(raw)
-                msg_type = str(packet.get("type") or "")
-                if msg_type == "message":
-                    await self._handle_message(websocket, packet)
-                elif msg_type == "cancel":
-                    await self._handle_cancel(websocket, packet)
-                else:
+            try:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+            except asyncio.TimeoutError:
+                raw = None
+
+            if raw is not None:
+                try:
+                    first_packet = json.loads(raw)
+                except json.JSONDecodeError:
                     await websocket.send(
-                        json.dumps({"type": "error", "content": "unsupported packet type"})
+                        json.dumps({"type": "error", "content": "invalid json"})
                     )
+                    return
+
+            if first_packet is not None and self._is_gateway_handshake(first_packet):
+                await self._run_gateway_session(websocket, first_packet)
+            else:
+                await self._run_router_session(websocket, first_packet)
         except websockets.ConnectionClosed:
             return
 
-    async def _on_cron_job(self, job: CronJob) -> str | None:
-        """Execute a scheduled cron job through the local agent loop."""
-        response = await self.agent.process_direct(
-            job.payload.message,
-            session_key=f"cron:{job.id}",
-            channel=job.payload.channel or "bridge",
-            chat_id=job.payload.to or "direct",
-        )
-        return response.content if response else ""
+    @staticmethod
+    def _is_gateway_handshake(packet: dict[str, Any]) -> bool:
+        return str(packet.get("type") or "") in {"auth", "register"}
 
-    async def _handle_message(self, websocket: Any, packet: dict[str, Any]) -> None:
-        request_id = str(packet.get("request_id") or "")
-        session_key = str(packet.get("session_key") or packet.get("chat_id") or "remote:default")
-        chat_id = str(packet.get("chat_id") or "remote")
-        channel = str(packet.get("channel") or "bridge")
-        metadata = dict(packet.get("metadata") or {})
-        content = str(packet.get("content") or "")
-        media = [str(item) for item in packet.get("attachments") or []]
-
-        if not request_id:
-            await websocket.send(json.dumps({"type": "error", "content": "missing request_id"}))
+    async def _run_gateway_session(self, websocket: Any, packet: dict[str, Any]) -> None:
+        packet_type = str(packet.get("type") or "")
+        token = str(packet.get("token") or "")
+        if token != self._bridge_token:
+            await websocket.send(json.dumps({"type": "error", "content": "invalid bridge token"}))
+            await websocket.close(code=4003, reason="invalid token")
             return
 
-        async def on_progress(progress: str, *, tool_hint: bool = False) -> None:
-            event = {
-                "type": "progress",
-                "request_id": request_id,
-                "content": progress,
-                "kind": "tool_hint" if tool_hint else "reasoning",
-            }
-            await websocket.send(json.dumps(event, ensure_ascii=False))
+        if packet_type == "register":
+            await websocket.send(json.dumps({"type": "register_ok", "version": 2}))
+        else:
+            await websocket.send(json.dumps({"type": "auth_ok"}))
 
-        async def run_request() -> str:
-            async with self._processing_lock:
-                msg = InboundMessage(
-                    channel=channel,
-                    sender_id="user",
-                    chat_id=chat_id,
-                    content=content,
-                    media=media,
-                    metadata=metadata,
-                    session_key_override=session_key,
-                )
-                response = await self.agent._process_message(
-                    msg,
-                    session_key=session_key,
-                    on_progress=on_progress,
-                )
-                return response.content if response else ""
-
-        task = asyncio.create_task(run_request())
-        self._request_tasks[request_id] = task
-        self._request_sessions[request_id] = session_key
-        self._request_sockets[request_id] = websocket
+        self._gateway_ws = websocket
+        self._gateway_ready.set()
         try:
-            result = await task
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "final",
-                        "request_id": request_id,
-                        "content": result,
-                        "metadata": metadata,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        except asyncio.CancelledError:
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "cancelled",
-                        "request_id": request_id,
-                        "content": "Request cancelled.",
-                        "metadata": metadata,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        except Exception:
-            logger.exception("Local request failed: {}", request_id)
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "request_id": request_id,
-                        "content": "Sorry, I encountered an error.",
-                        "metadata": metadata,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            async for raw in websocket:
+                message = json.loads(raw)
+                if str(message.get("type") or "") == "outbound_message":
+                    await self._send_router(message)
         finally:
-            self._request_tasks.pop(request_id, None)
-            self._request_sessions.pop(request_id, None)
-            self._request_sockets.pop(request_id, None)
+            if self._gateway_ws is websocket:
+                self._gateway_ws = None
+                self._gateway_ready.clear()
 
-    async def _handle_cancel(self, websocket: Any, packet: dict[str, Any]) -> None:
-        request_id = str(packet.get("request_id") or "")
-        session_key = str(packet.get("session_key") or "")
-        cancelled = 0
+    async def _run_router_session(self, websocket: Any, first_packet: dict[str, Any] | None) -> None:
+        self._router_ws = websocket
+        try:
+            if first_packet is not None:
+                await self._forward_to_gateway(first_packet)
+            async for raw in websocket:
+                packet = json.loads(raw)
+                await self._forward_to_gateway(packet)
+        finally:
+            if self._router_ws is websocket:
+                self._router_ws = None
 
-        if request_id and (task := self._request_tasks.get(request_id)) is not None:
-            if not task.done():
-                task.cancel()
-                cancelled += 1
+    async def _forward_to_gateway(self, packet: dict[str, Any]) -> None:
+        packet_type = str(packet.get("type") or "")
+        if packet_type not in {"inbound_message", "cancel"}:
+            raise RuntimeError(f"unsupported router packet type: {packet_type}")
 
-        if session_key:
-            for active_request_id, active_session_key in list(self._request_sessions.items()):
-                if active_session_key != session_key:
-                    continue
-                task = self._request_tasks.get(active_request_id)
-                if task is not None and not task.done():
-                    task.cancel()
-                    cancelled += 1
-            cancelled += await self.agent.subagents.cancel_by_session(session_key)
+        await asyncio.wait_for(self._gateway_ready.wait(), timeout=30)
+        async with self._gateway_send_lock:
+            if self._gateway_ws is None:
+                raise RuntimeError("gateway bridge websocket is unavailable")
+            await self._gateway_ws.send(json.dumps(packet, ensure_ascii=False))
 
-        await websocket.send(
-            json.dumps(
-                {
-                    "type": "cancel_ack",
-                    "request_id": request_id,
-                    "cancelled": cancelled,
-                },
-                ensure_ascii=False,
-            )
-        )
+    async def _send_router(self, packet: dict[str, Any]) -> None:
+        async with self._router_send_lock:
+            if self._router_ws is None:
+                logger.warning("Dropping outbound packet because org router is disconnected")
+                return
+            await self._router_ws.send(json.dumps(packet, ensure_ascii=False))
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a local websocket nanobot instance service.")
-    parser.add_argument("--config", required=True, help="Path to config.json")
+    parser = argparse.ArgumentParser(description="Run a local websocket relay for nanobot gateway.")
+    parser.add_argument("--config", required=True, help="Path to shared config.json")
     parser.add_argument("--workspace", required=True, help="Workspace directory")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, required=True, help="Bind port")

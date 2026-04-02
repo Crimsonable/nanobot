@@ -23,8 +23,6 @@ async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
         json.dumps(
             {
                 "type": "inbound_message",
-                "request_id": "req-1",
-                "conversation_id": "conv-1",
                 "session_key": "remote:conv-1",
                 "sender_id": "user-1",
                 "chat_id": "conv-1",
@@ -39,7 +37,6 @@ async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
     assert msg.sender_id == "user-1"
     assert msg.chat_id == "conv-1"
     assert msg.session_key == "remote:conv-1"
-    assert msg.metadata["request_id"] == "req-1"
     assert msg.metadata["trace_id"] == "trace-1"
     assert msg.media == ["/tmp/a.png"]
 
@@ -52,10 +49,9 @@ async def test_bridge_cancel_maps_to_stop_message() -> None:
         json.dumps(
             {
                 "type": "cancel",
-                "request_id": "req-2",
-                "conversation_id": "conv-2",
                 "session_key": "remote:conv-2",
                 "sender_id": "user-1",
+                "chat_id": "conv-2",
             }
         )
     )
@@ -67,7 +63,7 @@ async def test_bridge_cancel_maps_to_stop_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bridge_send_encodes_progress_packet() -> None:
+async def test_bridge_send_encodes_outbound_packet() -> None:
     channel = BridgeChannel(BridgeConfig(bridge_url="ws://bridge", allow_from=["*"]), MessageBus())
     channel._ws = _FakeWebSocket()
     channel._connected = True
@@ -78,18 +74,18 @@ async def test_bridge_send_encodes_progress_packet() -> None:
             chat_id="conv-1",
             content="thinking",
             metadata={
-                "request_id": "req-3",
-                "conversation_id": "conv-1",
                 "_progress": True,
+                "trace_id": "trace-3",
             },
         )
     )
 
     sent = json.loads(channel._ws.sent[0])
-    assert sent["type"] == "progress"
-    assert sent["request_id"] == "req-3"
-    assert sent["conversation_id"] == "conv-1"
+    assert sent["type"] == "outbound_message"
+    assert sent["channel"] == "bridge"
+    assert sent["chat_id"] == "conv-1"
     assert sent["content"] == "thinking"
+    assert sent["metadata"] == {"_progress": True, "trace_id": "trace-3"}
 
 
 def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatch) -> None:

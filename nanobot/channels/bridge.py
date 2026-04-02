@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 from typing import Any
+from urllib.parse import urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 from loguru import logger
 from pydantic import Field
@@ -31,6 +33,7 @@ class BridgeChannel(BaseChannel):
     name = "bridge"
     display_name = "Bridge"
     _PROTOCOL_VERSION = 2
+    _DELIVERY_TARGET_SEPARATOR = ":::"
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
@@ -88,7 +91,13 @@ class BridgeChannel(BaseChannel):
     async def send(self, msg: OutboundMessage) -> None:
         """Send nanobot output back to the bridge."""
         if not self._ws or not self._connected:
-            logger.warning("Bridge not connected")
+            logger.warning("Bridge not connected, falling back to proactive send")
+            await self.send_proactive_message(
+                self.config,
+                to=msg.chat_id,
+                content=msg.content,
+                metadata=msg.metadata,
+            )
             return
 
         packet = self._encode_outbound(msg)
@@ -119,15 +128,10 @@ class BridgeChannel(BaseChannel):
 
     async def _publish_bridge_inbound(self, packet: dict[str, Any]) -> None:
         metadata = dict(packet.get("metadata") or {})
-        metadata.update(
-            {
-                "request_id": packet.get("request_id", ""),
-                "conversation_id": packet.get("conversation_id", ""),
-            }
-        )
+        sender_id = str(packet.get("sender_id") or "user")
         await self._handle_message(
-            sender_id=str(packet.get("sender_id") or "user"),
-            chat_id=str(packet.get("chat_id") or packet.get("conversation_id") or "remote"),
+            sender_id=sender_id,
+            chat_id=str(packet.get("chat_id") or "remote"),
             content=str(packet.get("content") or ""),
             media=[str(item) for item in packet.get("attachments") or []],
             metadata=metadata,
@@ -135,42 +139,29 @@ class BridgeChannel(BaseChannel):
         )
 
     async def _publish_bridge_cancel(self, packet: dict[str, Any]) -> None:
-        metadata = {
-            "request_id": packet.get("request_id", ""),
-            "conversation_id": packet.get("conversation_id", ""),
-        }
+        metadata = dict(packet.get("metadata") or {})
         await self._handle_message(
             sender_id=str(packet.get("sender_id") or "remote-control"),
-            chat_id=str(packet.get("conversation_id") or "remote"),
+            chat_id=str(packet.get("chat_id") or "remote"),
             content="/stop",
             metadata=metadata,
             session_key=str(packet.get("session_key") or "") or None,
         )
 
     def _encode_outbound(self, msg: OutboundMessage) -> dict[str, Any]:
-        metadata = dict(msg.metadata or {})
         packet: dict[str, Any] = {
-            "type": self._event_type(msg),
-            "request_id": str(metadata.get("request_id") or ""),
-            "conversation_id": str(metadata.get("conversation_id") or msg.chat_id),
+            "type": "outbound_message",
+            "version": self._PROTOCOL_VERSION,
+            "channel": msg.channel,
+            "chat_id": msg.chat_id,
             "content": msg.content,
+            "metadata": dict(msg.metadata or {}),
         }
-        if metadata.get("_progress"):
-            packet["kind"] = "tool_hint" if metadata.get("_tool_hint") else "reasoning"
         if msg.media:
             packet["attachments"] = list(msg.media)
+        if msg.reply_to:
+            packet["reply_to"] = msg.reply_to
         return packet
-
-    @staticmethod
-    def _event_type(msg: OutboundMessage) -> str:
-        metadata = msg.metadata or {}
-        if metadata.get("_progress"):
-            return "progress"
-        if msg.content.startswith("⏹ Stopped") or msg.content == "No active task to stop.":
-            return "cancelled"
-        if msg.content == "Sorry, I encountered an error.":
-            return "error"
-        return "final"
 
     def _build_handshake_packet(self) -> dict[str, Any] | None:
         if self._session_id and self._container_name:
@@ -188,3 +179,71 @@ class BridgeChannel(BaseChannel):
             return {"type": "auth", "token": self.config.bridge_token}
 
         return None
+
+    @classmethod
+    async def send_proactive_message(
+        cls,
+        config: Any,
+        *,
+        to: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if isinstance(config, dict):
+            config = BridgeConfig.model_validate(config)
+        elif not isinstance(config, BridgeConfig):
+            config = BridgeConfig.model_validate(config.model_dump(by_alias=True))
+
+        url = cls._resolve_outbound_url(config)
+        if not url:
+            raise RuntimeError("Bridge outbound URL is not configured")
+        org_id = os.getenv("BRIDGE_ORG_ID", os.getenv("BRIDGE_SESSION_ID", "")).strip()
+        if not org_id:
+            raise RuntimeError("BRIDGE_ORG_ID or BRIDGE_SESSION_ID is required for proactive bridge sends")
+
+        payload = {
+            "org_id": org_id,
+            "to": to,
+            "content": content,
+            "metadata": dict(metadata or {}),
+        }
+        token = config.bridge_token
+        await asyncio.to_thread(cls._post_outbound_sync, url, token, payload)
+
+    @staticmethod
+    def _post_outbound_sync(url: str, token: str, payload: dict[str, Any]) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["X-Bridge-Token"] = token
+        request = Request(url, data=data, headers=headers, method="POST")
+        with urlopen(request, timeout=15) as response:
+            if response.status >= 400:
+                body = response.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"bridge outbound rejected with {response.status}: {body}")
+
+    @classmethod
+    def _resolve_outbound_url(cls, config: BridgeConfig) -> str:
+        parent_bridge_url = os.getenv("PARENT_BRIDGE_URL", "").strip()
+        if not parent_bridge_url:
+            raise RuntimeError("PARENT_BRIDGE_URL is required for proactive bridge sends")
+        return cls._bridge_ws_to_outbound_http(parent_bridge_url)
+
+    @staticmethod
+    def _bridge_ws_to_outbound_http(bridge_url: str) -> str:
+        parsed = urlparse(bridge_url)
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        http_scheme = "https" if parsed.scheme == "wss" else "http"
+        return urlunparse((http_scheme, parsed.netloc, "/api/bridge/outbound", "", "", ""))
+
+    @classmethod
+    def _compose_delivery_target(cls, sender_id: str, conversation_id: str) -> str:
+        return f"{sender_id}{cls._DELIVERY_TARGET_SEPARATOR}{conversation_id}"
+
+    @classmethod
+    def split_delivery_target(cls, value: str) -> tuple[str, str]:
+        sender_id, separator, conversation_id = value.partition(cls._DELIVERY_TARGET_SEPARATOR)
+        if not separator or not sender_id or not conversation_id:
+            raise ValueError("invalid bridge delivery target")
+        return sender_id, conversation_id

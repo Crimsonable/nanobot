@@ -1,8 +1,6 @@
-import asyncio
-
 import pytest
 
-from container_up.bridge_hub import BridgeHub
+from container_up.bridge_hub import BridgeHub, compose_delivery_target
 from container_up.bridge_protocol import PROTOCOL_VERSION, build_register_packet
 
 
@@ -40,122 +38,37 @@ async def test_register_child_and_submit_message_are_org_bound() -> None:
         "container_name": "nanobot-org-a",
     }
 
-    task = asyncio.create_task(
-        hub.submit_message(
-            org_id="org-a",
-            conversation_id="conv-1",
-            user_id="user-1",
-            content="hello",
-            attachments=["/tmp/a.png"],
-            metadata={"trace_id": "trace-1"},
-            request_id="req-1",
-            timeout=1,
-        )
-    )
-    await asyncio.sleep(0)
-
-    await hub.handle_child_packet(
-        "org-a",
-        {
-            "type": "progress",
-            "request_id": "req-1",
-            "conversation_id": "conv-1",
-            "content": "thinking",
-        },
-    )
-    await hub.handle_child_packet(
-        "org-a",
-        {
-            "type": "final",
-            "request_id": "req-1",
-            "conversation_id": "conv-1",
-            "content": "done",
-        },
+    result = await hub.submit_message(
+        org_id="org-a",
+        conversation_id="conv-1",
+        user_id="user-1",
+        content="hello",
+        attachments=["/tmp/a.png"],
+        metadata={"trace_id": "trace-1"},
     )
 
-    result = await task
+    delivery_target = compose_delivery_target("user-1", "conv-1")
     assert child.sent[1] == {
         "type": "inbound_message",
         "version": PROTOCOL_VERSION,
-        "request_id": "req-1",
-        "conversation_id": "conv-1",
-        "session_key": "remote:conv-1",
         "channel": "bridge",
         "sender_id": "user-1",
-        "chat_id": "conv-1",
+        "chat_id": delivery_target,
+        "session_key": f"bridge:{delivery_target}",
         "content": "hello",
         "attachments": ["/tmp/a.png"],
-        "metadata": {"trace_id": "trace-1"},
+        "metadata": {
+            "trace_id": "trace-1",
+            "sender_id": "user-1",
+            "conversation_id": "conv-1",
+        },
     }
-    assert [event["type"] for event in result["events"]] == ["progress", "final"]
-    assert result["org_id"] == "org-a"
-    assert result["result"]["content"] == "done"
-
-
-@pytest.mark.asyncio
-async def test_same_request_id_across_orgs_does_not_collide() -> None:
-    hub = BridgeHub()
-    child_a = _FakeChild()
-    child_b = _FakeChild()
-
-    await hub.register_child(
-        child_a,
-        build_register_packet(org_id="org-a", container_name="nanobot-org-a"),
-    )
-    await hub.register_child(
-        child_b,
-        build_register_packet(org_id="org-b", container_name="nanobot-org-b"),
-    )
-
-    task_a = asyncio.create_task(
-        hub.submit_message(
-            org_id="org-a",
-            conversation_id="conv-a",
-            user_id="user-a",
-            content="hello a",
-            attachments=[],
-            metadata={},
-            request_id="req-1",
-            timeout=1,
-        )
-    )
-    task_b = asyncio.create_task(
-        hub.submit_message(
-            org_id="org-b",
-            conversation_id="conv-b",
-            user_id="user-b",
-            content="hello b",
-            attachments=[],
-            metadata={},
-            request_id="req-1",
-            timeout=1,
-        )
-    )
-    await asyncio.sleep(0)
-
-    await hub.handle_child_packet(
-        "org-b",
-        {
-            "type": "final",
-            "request_id": "req-1",
-            "conversation_id": "conv-b",
-            "content": "done b",
-        },
-    )
-    await hub.handle_child_packet(
-        "org-a",
-        {
-            "type": "final",
-            "request_id": "req-1",
-            "conversation_id": "conv-a",
-            "content": "done a",
-        },
-    )
-
-    result_a = await task_a
-    result_b = await task_b
-    assert result_a["result"]["content"] == "done a"
-    assert result_b["result"]["content"] == "done b"
+    assert result == {
+        "status": "accepted",
+        "org_id": "org-a",
+        "chat_id": delivery_target,
+        "conversation_id": "conv-1",
+    }
 
 
 @pytest.mark.asyncio
@@ -171,27 +84,31 @@ async def test_submit_cancel_routes_to_bound_org() -> None:
         org_id="org-a",
         conversation_id="conv-2",
         user_id="user-1",
-        request_id="req-2",
     )
 
+    delivery_target = compose_delivery_target("user-1", "conv-2")
     assert result == {
         "status": "accepted",
         "org_id": "org-a",
-        "request_id": "req-2",
+        "chat_id": delivery_target,
         "conversation_id": "conv-2",
     }
     assert child.sent[1] == {
         "type": "cancel",
         "version": PROTOCOL_VERSION,
-        "request_id": "req-2",
-        "conversation_id": "conv-2",
-        "session_key": "remote:conv-2",
+        "channel": "bridge",
         "sender_id": "user-1",
+        "chat_id": delivery_target,
+        "session_key": f"bridge:{delivery_target}",
+        "metadata": {
+            "sender_id": "user-1",
+            "conversation_id": "conv-2",
+        },
     }
 
 
 @pytest.mark.asyncio
-async def test_submit_message_timeout_sends_cancel() -> None:
+async def test_handle_child_packet_returns_packet() -> None:
     hub = BridgeHub()
     child = _FakeChild()
     await hub.register_child(
@@ -199,27 +116,13 @@ async def test_submit_message_timeout_sends_cancel() -> None:
         build_register_packet(org_id="org-a", container_name="nanobot-org-a"),
     )
 
-    with pytest.raises(asyncio.TimeoutError):
-        await hub.submit_message(
-            org_id="org-a",
-            conversation_id="conv-timeout",
-            user_id="user-1",
-            content="hello",
-            attachments=[],
-            metadata={},
-            request_id="req-timeout",
-            timeout=0.01,
-        )
-
-    assert child.sent[1]["type"] == "inbound_message"
-    assert child.sent[2] == {
-        "type": "cancel",
-        "version": PROTOCOL_VERSION,
-        "request_id": "req-timeout",
-        "conversation_id": "conv-timeout",
-        "session_key": "remote:conv-timeout",
-        "sender_id": "user-1",
+    packet = {
+        "type": "outbound_message",
+        "chat_id": compose_delivery_target("user-1", "conv-3"),
+        "content": "done",
+        "metadata": {},
     }
+    assert await hub.handle_child_packet("org-a", packet) == packet
 
 
 @pytest.mark.asyncio

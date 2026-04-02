@@ -22,7 +22,6 @@ from container_up.settings import (
     CHILD_IMAGE,
     CHILD_NETWORK,
     CHILD_NANOBOT_SOURCE_TARGET,
-    CHILD_NETWORK_MODE,
     CHILD_READY_TIMEOUT,
     CHILD_SHARED_CONFIG_TARGET,
     CHILD_WORKSPACE_TARGET,
@@ -141,8 +140,6 @@ def build_child_volumes(workspace_path: Path) -> dict[str, dict[str, str]]:
 
 
 def ensure_child_network() -> None:
-    if CHILD_NETWORK_MODE:
-        return
     if not CHILD_NETWORK:
         raise RuntimeError("CHILD_NETWORK must be configured")
     try:
@@ -172,11 +169,8 @@ def create_child_container(
         "labels": {"managed-by": "container_up", "org-id": org_id},
         "environment": environment,
         "volumes": build_child_volumes(workspace_path),
+        "network": CHILD_NETWORK,
     }
-    if CHILD_NETWORK_MODE:
-        run_kwargs["network_mode"] = CHILD_NETWORK_MODE
-    else:
-        run_kwargs["network"] = CHILD_NETWORK
 
     try:
         container = docker_client.containers.run(

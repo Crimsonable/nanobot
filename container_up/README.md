@@ -6,13 +6,14 @@
 
 - 接收用户请求：`org_id`、`conversation_id`、`user_id`/`usr_id`、`content`
 - 用 SQLite 记录 `org_id -> child container`
-- 如果组织容器已存在且可用，就通过内置的 FastAPI WebSocket bridge hub 把请求分发给该 child
+- 如果组织容器已存在且可用，就通过内置的 FastAPI WebSocket bridge hub 把消息分发给该 child
 - 如果不存在，就启动新的 `nanobot-bridge` 容器，等待 child 的 `org_router` 注册到 hub 后再分发
 
 ## API
 
 - `POST /api/message`
 - `POST /api/cancel`
+- `POST /api/bridge/outbound`
 - `POST /subscribe`
 - `GET /api/org/{org_id}`
 - `GET /healthz`
@@ -58,15 +59,15 @@ curl -X POST http://127.0.0.1:8080/api/message \
     "org_id": "org-1",
     "conversation_id": "conv-1",
     "user_id": "user-1",
-    "request_id": "req-1",
     "content": "请总结一下这个项目结构",
     "attachments": [],
     "metadata": {
       "source": "client-demo"
-    },
-    "timeout_seconds": 300
+    }
   }'
 ```
+
+`POST /api/message` 现在只负责把消息投递进 child，成功时返回 `accepted` 风格结果，不再同步等待最终回复。
 
 取消请求：
 
@@ -76,8 +77,24 @@ curl -X POST http://127.0.0.1:8080/api/cancel \
   -d '{
     "org_id": "org-1",
     "conversation_id": "conv-1",
-    "usr_id": "user-1",
-    "request_id": "req-1"
+    "usr_id": "user-1"
+  }'
+```
+
+主动外发入口：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/bridge/outbound \
+  -H 'Content-Type: application/json' \
+  -H 'X-Bridge-Token: <child-bridge-token>' \
+  -d '{
+    "org_id": "org-1",
+    "to": "user-1:::conv-1",
+    "content": "后台任务完成",
+    "attachments": [],
+    "metadata": {
+      "source": "bridge"
+    }
   }'
 ```
 
@@ -114,8 +131,6 @@ curl -X POST http://127.0.0.1:8080/subscribe \
   - `HOST_SHARED_CONFIG -> /app/nanobot_workspaces/config.json`
 - 宿主机组织工作目录挂载到组织容器：
   - `HOST_WORKSPACE_ROOT/<org_id> -> /app/nanobot_workspaces`
-- 宿主机公共 skills 挂载到组织容器 builtin skills 目录：
-  - `HOST_SHARED_SKILLS -> /app/nanobot/skills`
 - 子容器里 `org_router` 会按用户直接使用：
   - 公共 config：`/app/nanobot_workspaces/config.json`
   - 实例 workspace：`/app/nanobot_workspaces/<safe-user-id>-<hash>/`
@@ -150,25 +165,17 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 2. 模板和工作目录：
 - `HOST_WORKSPACE_ROOT`
 - `HOST_SHARED_CONFIG`
-- `HOST_SHARED_SKILLS`
 
 3. 组织容器调度：
 - `CHILD_IMAGE`
 - `CHILD_NETWORK`
-- `CHILD_NETWORK_MODE`
 - `CHILD_BRIDGE_TOKEN`
-- `PARENT_BRIDGE_URL`
 - `CHILD_READY_TIMEOUT`
-- `FORWARD_TIMEOUT`
 - `IDLE_TIMEOUT_SECONDS`
 - `CLEANUP_SCAN_INTERVAL`
 - `INSTANCE_IDLE_TIMEOUT_SECONDS`
 
-4. 组织级共享 skill 挂载：
-- 共享 skills 直接挂载到 child 容器的 builtin skills 路径
-- 用户实例自己的 `workspace/skills` 仍然保留
-
-5. 订阅回调与消息回传：
+4. 订阅回调与消息回传：
 - `APP_ID`
 - `APP_SECRET`
 - `CORP_ID`
@@ -199,29 +206,15 @@ curl -X POST http://127.0.0.1:8080/subscribe \
   - 宿主机上的公共 config 模板
   - 组织容器内会只读挂载到 `/app/nanobot_workspaces/config.json`
   - 所有用户实例直接复用这个文件
-- `HOST_SHARED_SKILLS`
-  - 宿主机上的公共 skills 目录
-  - 会直接挂到 child 容器内 `nanobot` 的 builtin skills 路径
 
 - `CHILD_IMAGE`
   - 动态拉起的组织容器镜像
 - `CHILD_NETWORK`
   - 组织容器加入的 Docker 网络
-  - 仅在未设置 `CHILD_NETWORK_MODE` 时生效
-- `CHILD_NETWORK_MODE`
-  - 可选的 Docker `network_mode`
-  - 留空时走默认 bridge 网络，也就是原先的容器网络模式
-  - 例如设为 `host` 时，child 会直接使用宿主机网络栈
 - `CHILD_BRIDGE_TOKEN`
   - `container_up` 和组织容器之间的 websocket bridge 鉴权 token
-- `PARENT_BRIDGE_URL`
-  - 组织容器内 `org_router` 回连 parent 的 websocket 地址
-  - 默认 bridge 网络下，通常保持 `ws://container-up:8080/ws/bridge`
-  - 如果 `CHILD_NETWORK_MODE=host`，则需要改成 `ws://127.0.0.1:8080/ws/bridge`
 - `CHILD_READY_TIMEOUT`
   - 等组织容器注册到 bridge hub 的超时时间
-- `FORWARD_TIMEOUT`
-  - 单次 `/api/message` 在 parent 层等待最终结果的最长时间
 - `IDLE_TIMEOUT_SECONDS`
   - 组织容器空闲多久后被回收
 - `CLEANUP_SCAN_INTERVAL`
@@ -246,11 +239,6 @@ curl -X POST http://127.0.0.1:8080/subscribe \
   - 回发消息失败后的最大重试次数
 - `SEND_MSG_RETRY_BACKOFF`
   - 回发消息失败后的退避基数秒数
-
-- 公共 skills 的加载方式
-  - 共享 skills 作为 builtin skills 被所有用户实例直接读取
-  - 用户实例自己的技能仍写在 `workspace/skills`
-  - 因此“公共 skills 更新”与“用户私有 skills 创建”互不影响
 
 ## 配置同步机制
 
@@ -303,11 +291,11 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 
 2. `container_up` 收到请求
 - 用 `HOST_WORKSPACE_ROOT` 找到或创建组织目录 `HOST_WORKSPACE_ROOT/<org_id>`
-- 用 `CHILD_IMAGE`、`CHILD_NETWORK` 或 `CHILD_NETWORK_MODE`、`CHILD_BRIDGE_TOKEN`、`PARENT_BRIDGE_URL` 拉起组织容器
+- 用 `CHILD_IMAGE`、`CHILD_NETWORK`、`CHILD_BRIDGE_TOKEN` 拉起组织容器
 - 在 `CHILD_READY_TIMEOUT` 内等待组织容器注册成功
 
 3. 组织容器启动 `org_router`
-- `org_router` 用 `PARENT_BRIDGE_URL` 回连 `container_up`
+- `org_router` 固定回连 `ws://container-up:<CONTAINER_UP_PORT>/ws/bridge`
 - 用 `INSTANCE_IDLE_TIMEOUT_SECONDS` 管理用户实例生命周期
 
 4. `org_router` 收到 parent 转发的消息
@@ -316,7 +304,6 @@ curl -X POST http://127.0.0.1:8080/subscribe \
   - `/app/nanobot_workspaces/<safe-user-id>-<hash>/`
 - 实例直接复用：
   - 公共 config `/app/nanobot_workspaces/config.json`
-- 公共 skills 直接通过 builtin skills 挂载对实例生效
 
 5. `org_router` 拉起用户实例
 - 用户实例运行 `nanobot.local_service`
@@ -325,10 +312,39 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 - 用户自己新增的 skills 保存在该实例自己的 `skills/`
 
 6. 用户实例开始处理请求
-- `org_router` 把 `content`、`conversation_id`、`user_id` 转发给本地实例
-- 实例进入 `AgentLoop`
-- 若请求在 `FORWARD_TIMEOUT` 内完成，结果经 `org_router` 回传给 `container_up`
-- `container_up` 再把最终结果返回给 client
+- `org_router` 把统一的 bridge 消息包转发给本地实例
+- 本地实例把消息直接 `publish_inbound` 到 nanobot bus
+- `AgentLoop` 常驻从 bus 消费，同一 session 的串行由 nanobot 自己保证
+- 任意出站消息统一走 `bus.outbound -> outbound_message`
+- `container_up` 收到 `outbound_message` 后按 `chat_id + metadata` 直接发到上游 IM
+
+## 统一消息格式
+
+bridge 链路现在统一使用和 nanobot channel 一致的消息字段：
+
+- inbound 到 child：
+  - `type: "inbound_message"`
+  - `channel`
+  - `sender_id`
+  - `chat_id`
+  - `session_key`
+  - `content`
+  - `attachments`
+  - `metadata`
+- outbound 回 parent：
+  - `type: "outbound_message"`
+  - `channel`
+  - `chat_id`
+  - `content`
+  - `attachments`
+  - `metadata`
+  - `reply_to`（可选）
+
+其中 `chat_id` 对 bridge 统一使用复合格式：
+
+- `<sender_id>:::<conversation_id>`
+
+这样 parent 侧既能保留原始来源标识，也能在需要时解析出具体会话。
 
 ## 部署注意
 
@@ -338,37 +354,26 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 /var/run/docker.sock:/var/run/docker.sock
 ```
 
-同时，`HOST_WORKSPACE_ROOT`、`HOST_SHARED_CONFIG`、`HOST_SHARED_SKILLS` 都必须是宿主机绝对路径，并且挂载到 `container_up` 容器内相同路径。这样 `container_up` 才能把这些路径原样传给宿主机 Docker daemon 创建子容器。
+同时，`HOST_WORKSPACE_ROOT` 和 `HOST_SHARED_CONFIG` 都必须是宿主机绝对路径，并且挂载到 `container_up` 容器内相同路径。这样 `container_up` 才能把这些路径原样传给宿主机 Docker daemon 创建子容器。
 
-## 网络模式
+## 网络模型
 
-默认情况下，child 使用 bridge 网络：
+当前实现只支持 Docker bridge 网络：
 
-- `CHILD_NETWORK=nanobot-stack`
-- `CHILD_NETWORK_MODE` 留空
-- `PARENT_BRIDGE_URL=ws://container-up:8080/ws/bridge`
+- `container_up` 固定加入 `nanobot-stack`
+- child 固定加入 `nanobot-stack`
+- child 固定回连 `ws://container-up:<CONTAINER_UP_PORT>/ws/bridge`
 
-这也是原先的容器网络模式，绝大多数情况下继续用这个就行。
+不再兼容 `host` 模式，也不再暴露 `PARENT_BRIDGE_URL` 作为外部配置项。
 
-如果某些宿主机地址在 bridge 网络下不可达，例如 WSL/Docker 中 child 无法访问链路本地地址 `169.254.x.x`，可以切换到可选的 host 网络模式：
+对于 bridge 渠道的主动回发：
 
-```env
-CHILD_NETWORK_MODE=host
-PARENT_BRIDGE_URL=ws://127.0.0.1:8080/ws/bridge
-```
-
-此时：
-
-- child 不再加入 `CHILD_NETWORK`
-- child 直接使用宿主机网络栈
-- `org_router` 回连 parent 时不能再使用容器名 `container-up`，而要使用 `127.0.0.1`
-
-所以答案是：这个模式是可选的，你可以随时切回原先的容器网络路径。切回时只需要：
-
-```env
-CHILD_NETWORK_MODE=
-PARENT_BRIDGE_URL=ws://container-up:8080/ws/bridge
-```
+- 正常情况下，child 直接通过与 parent 的长连接 websocket 回传 `outbound_message`
+- 若 bridge channel 自己独立运行且 websocket 不可用，仍可用 `/api/bridge/outbound` 作为兜底
+- 共享 `config.json` 中的 `channels.bridge` 只需要保留：
+  - `enabled`
+  - `bridgeToken`
+  - `allowFrom`
 
 ## Compose
 
@@ -380,12 +385,12 @@ PARENT_BRIDGE_URL=ws://container-up:8080/ws/bridge
   - `/mnt/d/codes/nanobot_modify/nanobot/container_up_runtime/workspaces`
 - 公共 config 模板：
   - [workspace/config.json](/mnt/d/codes/nanobot_modify/nanobot/workspace/config.json)
-- 公共 builtin skills：
-  - [/mnt/d/codes/nanobot_modify/nanobot/nanobot/skills](/mnt/d/codes/nanobot_modify/nanobot/nanobot/skills)
 - SQLite 数据目录：
   - `/mnt/d/codes/nanobot_modify/nanobot/container_up_runtime/data`
 - 子容器镜像：
   - `nanobot-bridge:latest`
+- 子容器网络：
+  - `nanobot-stack`
 - bridge token：
   - `my-shared-token`
 - 组织容器 idle timeout：
@@ -395,11 +400,12 @@ PARENT_BRIDGE_URL=ws://container-up:8080/ws/bridge
 - cleanup scan interval：
   - `300`
 
-当前实现里，请求路由只使用这三个业务字段：
+当前实现里，`/api/message` 的最小业务字段只有：
 
 - `org_id`
-- `user_id` / `usr_id`
 - `conversation_id`
+- `user_id`/`usr_id`
+- `content`
 
 其中：
 

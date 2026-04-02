@@ -1,32 +1,38 @@
+import asyncio
 import base64
 import hashlib
+import logging
 import secrets
 import string
 import time
 
-from Crypto.Cipher import AES
 import requests
-import logging
+from aiohttp import ClientError
+from Crypto.Cipher import AES
+from venv import logger
+
+from container_up.http_state import get_dispatch_session
+from container_up.settings import (
+    ACCESS_URL,
+    APP_ID,
+    APP_SECRET,
+    CALLBACK_TOKEN,
+    CORP_ID,
+    SEND_MSG_RETRY_BACKOFF,
+    SEND_MSG_RETRY_COUNT,
+    SEND_MSG_URL,
+)
 
 
-_crypto_parser: "CryptoParser | None" = None
+_im_parser: "QxtIMParser | None" = None
 
 
-class CryptoParser:
-    def __init__(
-        self,
-        *,
-        access_url: str,
-        appid: str = "",
-        appsecret: str = "",
-        corpid: str = "",
-        token: str = "",
-    ) -> None:
-        self.appid = appid
-        self.appsecret = appsecret
-        self.corpid = corpid
-        self.token = token
-        self.access_url = access_url
+class QxtIMParser:
+    def __init__(self) -> None:
+        self.appid = APP_ID
+        self.appsecret = APP_SECRET
+        self.corpid = CORP_ID
+        self.token = CALLBACK_TOKEN
 
     @staticmethod
     def _sha1(text: str) -> str:
@@ -128,7 +134,7 @@ class CryptoParser:
         }
 
     def get_access_token(self) -> str | None:
-        if not self.access_url:
+        if not ACCESS_URL:
             logging.error("ACCESS_URL is not configured")
             return None
         if not self.corpid:
@@ -139,7 +145,9 @@ class CryptoParser:
             return None
         try:
             resp = requests.get(
-                url=self.access_url, params={"corpid": self.corpid, "appid": self.appid}
+                url=ACCESS_URL,
+                params={"corpid": self.corpid, "appid": self.appid},
+                timeout=10,
             )
         except Exception as exc:
             logging.error("Error during access token retrieval: %s", exc)
@@ -151,27 +159,63 @@ class CryptoParser:
             return None
         return resp.json().get("access_token")
 
+    async def post_message_with_retry(self, *, payload: dict[str, object]) -> dict[str, object]:
+        access_token = await asyncio.to_thread(self.get_access_token)
+        if access_token is None:
+            raise RuntimeError("Failed to retrieve access token for response sending")
+        if not SEND_MSG_URL:
+            raise RuntimeError("SEND_MSG_URL is not configured")
 
-def init_crypto_parser(
-    *,
-    access_url: str = "",
-    appid: str = "",
-    appsecret: str = "",
-    corpid: str = "",
-    token: str = "",
-) -> CryptoParser:
-    global _crypto_parser
-    _crypto_parser = CryptoParser(
-        access_url=access_url,
-        appid=appid,
-        appsecret=appsecret,
-        corpid=corpid,
-        token=token,
-    )
-    return _crypto_parser
+        last_error: Exception | None = None
+        for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
+            try:
+                async with get_dispatch_session().post(
+                    SEND_MSG_URL,
+                    params={"access_token": access_token},
+                    json=payload,
+                ) as response:
+                    response_text = await response.text()
+                    logger.error(
+                        "dispatch send_message response attempt=%s status=%s body_len=%s",
+                        attempt,
+                        response.status,
+                        len(response_text),
+                    )
+                    if response.status >= 500:
+                        raise RuntimeError(
+                            f"send message failed with {response.status}: {response_text}"
+                        )
+                    if response.status >= 400:
+                        raise RuntimeError(
+                            f"send message rejected with {response.status}: {response_text}"
+                        )
+                    return {
+                        "status": response.status,
+                        "body": response_text,
+                    }
+            except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
+                logger.error(
+                    "dispatch send_message retry attempt=%s error=%s",
+                    attempt,
+                    exc,
+                )
+                last_error = exc
+                if attempt >= SEND_MSG_RETRY_COUNT:
+                    break
+                await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
+
+        raise RuntimeError(
+            f"send message failed after retries: {last_error}"
+        ) from last_error
 
 
-def get_crypto_parser() -> CryptoParser:
-    if _crypto_parser is None:
-        raise RuntimeError("crypto parser is not initialized")
-    return _crypto_parser
+def init_im_parser() -> QxtIMParser:
+    global _im_parser
+    _im_parser = QxtIMParser()
+    return _im_parser
+
+
+def get_im_parser() -> QxtIMParser:
+    if _im_parser is None:
+        raise RuntimeError("IM parser is not initialized")
+    return _im_parser

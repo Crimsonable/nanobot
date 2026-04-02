@@ -4,30 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
-from uuid import uuid4
 
 PROTOCOL_VERSION = 2
 
 REGISTER_PACKET_TYPE = "register"
 REGISTER_OK_PACKET_TYPE = "register_ok"
-REGISTER_REJECT_PACKET_TYPE = "register_reject"
-
-TERMINAL_EVENT_TYPES = {"final", "error", "cancelled"}
-
-
-def make_request_id() -> str:
-    """Generate a request id for a user request."""
-    return f"req_{uuid4().hex}"
-
-
-def make_session_key(conversation_id: str) -> str:
-    """Build the session key expected by nanobot's bridge channel."""
-    return f"remote:{conversation_id or 'default'}"
-
-
-def make_pending_key(org_id: str, request_id: str) -> tuple[str, str]:
-    """Build a collision-safe key for pending requests inside container_up."""
-    return org_id, request_id
 
 
 def build_register_packet(
@@ -62,8 +43,3 @@ def parse_register_packet(packet: Mapping[str, Any]) -> tuple[str, str]:
         raise ValueError("missing container_name")
 
     return org_id, container_name
-
-
-def is_terminal_event(packet: Mapping[str, Any]) -> bool:
-    """Return True when a bridge event completes a request lifecycle."""
-    return str(packet.get("type") or "") in TERMINAL_EVENT_TYPES

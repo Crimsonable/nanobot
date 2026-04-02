@@ -8,7 +8,6 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any
-from uuid import uuid4
 from venv import logger
 
 import uvicorn
@@ -17,7 +16,7 @@ from container_up.bridge_state import (
     get_bridge_hub,
     init_bridge_hub,
 )
-from container_up.crypt_tools import get_crypto_parser, init_crypto_parser
+from container_up.im_tools import get_im_parser, init_im_parser
 from container_up.db_store import (
     count_org_records,
     init_db,
@@ -37,18 +36,14 @@ from container_up.router_service import (
     sync_existing_orgs,
 )
 from container_up.settings import (
-    ACCESS_URL,
     APP_HOST,
-    APP_ID,
     APP_PORT,
     APP_SECRET,
-    CALLBACK_TOKEN,
     CHILD_BRIDGE_TOKEN,
     CLEANUP_SCAN_INTERVAL,
-    CORP_ID,
 )
 from docker.errors import DockerException
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -64,10 +59,8 @@ class MessageRequest(BaseModel):
     )
     user_id: str = Field(validation_alias=AliasChoices("user_id", "usr_id"))
     content: str
-    request_id: str | None = None
     attachments: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: float = 300.0
 
 
 class CancelRequest(BaseModel):
@@ -77,11 +70,18 @@ class CancelRequest(BaseModel):
         validation_alias=AliasChoices("conversation_id", "session_id"),
     )
     user_id: str = Field(validation_alias=AliasChoices("user_id", "usr_id"))
-    request_id: str = ""
 
 
 class ShutdownRequest(BaseModel):
     org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
+
+
+class BridgeOutboundRequest(BaseModel):
+    org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
+    to: str
+    content: str
+    attachments: list[Any] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DebugP2PRequest(BaseModel):
@@ -127,13 +127,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="container_up", version="0.1.0", lifespan=lifespan)
 init_bridge_hub(CHILD_BRIDGE_TOKEN or None)
-init_crypto_parser(
-    access_url=ACCESS_URL,
-    appid=APP_ID,
-    appsecret=APP_SECRET,
-    corpid=CORP_ID,
-    token=CALLBACK_TOKEN,
-)
+init_im_parser()
 
 
 @app.get("/healthz")
@@ -165,7 +159,20 @@ async def bridge_ws(websocket: WebSocket) -> None:
 
         while True:
             packet = await websocket.receive_json()
-            await bridge_hub.handle_child_packet(org_id, packet)
+            forwarded = await bridge_hub.handle_child_packet(org_id, packet)
+            if str(forwarded.get("type") or "") == "outbound_message":
+                await dispatch_parser.parse(
+                    {
+                        "event_type": "bridge_outbound_message",
+                        "org_id": org_id,
+                        "event": {
+                            "to": forwarded.get("chat_id", ""),
+                            "content": forwarded.get("content", ""),
+                            "metadata": forwarded.get("metadata", {}),
+                            "attachments": forwarded.get("attachments", []),
+                        },
+                    }
+                )
     except WebSocketDisconnect:
         pass
     except asyncio.TimeoutError:
@@ -211,7 +218,7 @@ async def subscribe(sub_form: SubForm) -> dict[str, Any]:
     if not APP_SECRET:
         raise HTTPException(status_code=500, detail="app_secret is not configured")
 
-    parser = get_crypto_parser()
+    parser = get_im_parser()
     try:
         decrypted = parser.decrypt(
             signature=sub_form.msgSignature,
@@ -266,23 +273,31 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
             conversation_id=payload.conversation_id,
             user_id=payload.user_id,
             content=payload.content,
-            request_id=payload.request_id,
             attachments=attachments,
             metadata=payload.metadata,
-            timeout=payload.timeout_seconds,
-        )
-        logger.error(
-            "api message done org_id=%s conversation_id=%s request_id=%s result_type=%s",
-            payload.org_id,
-            payload.conversation_id,
-            result.get("request_id"),
-            (result.get("result") or {}).get("type"),
         )
         return result
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="bridge response timeout") from exc
+
+
+@app.post("/api/bridge/outbound")
+async def post_bridge_outbound(
+    payload: BridgeOutboundRequest,
+    x_bridge_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    if CHILD_BRIDGE_TOKEN and x_bridge_token != CHILD_BRIDGE_TOKEN:
+        raise HTTPException(status_code=403, detail="invalid bridge token")
+    try:
+        return await dispatch_parser.parse(
+            {
+                "event_type": "bridge_outbound_message",
+                "org_id": payload.org_id,
+                "event": payload.model_dump(),
+            }
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/cancel")
@@ -296,7 +311,6 @@ async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
             org_id=payload.org_id,
             conversation_id=payload.conversation_id,
             user_id=payload.user_id,
-            request_id=payload.request_id,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
