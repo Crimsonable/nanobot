@@ -7,10 +7,11 @@ from typing import Any
 
 from venv import logger
 
+from container_up.attachment_paths import normalize_outbound_attachments
 from container_up.attachments import normalize_attachments
 from container_up.bridge_state import get_bridge_hub
-from container_up.im_tools import get_im_parser
 from container_up.db_store import touch_org
+from container_up.im_tools import get_im_parser
 from container_up.router_service import ensure_org_container
 
 
@@ -50,26 +51,35 @@ class DispatchParser:
 dispatch_parser = DispatchParser()
 
 
-async def _send_text_to_uid(*, sender_uid: str, content: str) -> dict[str, Any]:
+async def _send_text_to_uid(
+    *,
+    sender_uid: str,
+    content: str,
+    attachments: list[Any] | None = None,
+) -> dict[str, Any]:
     if not sender_uid:
         raise RuntimeError("missing recipient sender_uid")
     im_parser = get_im_parser()
+    payload: dict[str, Any] = {
+        "to_single_uid": sender_uid,
+        "type": "text",
+        "message": {"content": content},
+    }
+    if attachments:
+        payload["attachments"] = attachments
     return await im_parser.post_message_with_retry(
-        payload={
-            "to_single_uid": sender_uid,
-            "type": "text",
-            "message": {"content": content},
-        }
+        payload=payload
     )
 
 
 async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(packet.get("metadata") or {})
+    attachments = list(packet.get("attachments") or [])
     if metadata.get("_progress") or metadata.get("_stream_delta") or metadata.get("_stream_end"):
         return {"ok": True, "response": None, "skipped": "non_terminal_event"}
 
     content = str(packet.get("content") or "")
-    if not content:
+    if not content and not attachments:
         return {"ok": True, "response": None, "skipped": "empty_content"}
 
     try:
@@ -86,10 +96,12 @@ async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
     post_result = await _send_text_to_uid(
         sender_uid=sender_uid,
         content=content,
+        attachments=attachments,
     )
     return {
         "ok": True,
         "conversation_id": conversation_id,
+        "attachments": attachments,
         "metadata": metadata,
         "response": post_result,
     }
@@ -134,12 +146,13 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
 @dispatch_parser.register("bridge_outbound_message")
 async def parse_bridge_outbound_message(event: dict[str, Any]) -> dict[str, Any]:
     payload = dict(event.get("event") or {})
+    org_id = str(event.get("org_id") or "")
     return await forward_bridge_outbound(
         {
             "type": "outbound_message",
             "chat_id": str(payload.get("to") or ""),
             "content": str(payload.get("content") or ""),
             "metadata": dict(payload.get("metadata") or {}),
-            "attachments": list(payload.get("attachments") or []),
+            "attachments": normalize_outbound_attachments(org_id, list(payload.get("attachments") or [])),
         }
     )

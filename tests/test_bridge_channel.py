@@ -15,6 +15,11 @@ class _FakeWebSocket:
         self.sent.append(data)
 
 
+class _FailingWebSocket:
+    async def send(self, data: str) -> None:
+        raise RuntimeError("send failed")
+
+
 @pytest.mark.asyncio
 async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
     channel = BridgeChannel(BridgeConfig(bridge_url="ws://bridge", allow_from=["user-1"]), MessageBus())
@@ -88,6 +93,83 @@ async def test_bridge_send_encodes_outbound_packet() -> None:
     assert sent["metadata"] == {"_progress": True, "trace_id": "trace-3"}
 
 
+@pytest.mark.asyncio
+async def test_bridge_send_raises_on_websocket_failure() -> None:
+    channel = BridgeChannel(BridgeConfig(bridge_url="ws://bridge", allow_from=["*"]), MessageBus())
+    channel._ws = _FailingWebSocket()
+    channel._connected = True
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        await channel.send(OutboundMessage(channel="bridge", chat_id="conv-1", content="x"))
+
+
+@pytest.mark.asyncio
+async def test_bridge_send_delta_forwards_stream_packet() -> None:
+    channel = BridgeChannel(BridgeConfig(bridge_url="ws://bridge", allow_from=["*"]), MessageBus())
+    channel._ws = _FakeWebSocket()
+    channel._connected = True
+
+    await channel.send_delta(
+        "conv-1",
+        "partial",
+        {"_stream_delta": True, "_stream_id": "seg-1"},
+    )
+
+    sent = json.loads(channel._ws.sent[0])
+    assert sent["type"] == "outbound_message"
+    assert sent["chat_id"] == "conv-1"
+    assert sent["content"] == "partial"
+    assert sent["metadata"] == {"_stream_delta": True, "_stream_id": "seg-1"}
+
+
+def test_bridge_send_keeps_attachment_refs_as_is() -> None:
+    channel = BridgeChannel(BridgeConfig(bridge_url="ws://bridge", allow_from=["*"]), MessageBus())
+
+    packet = channel._encode_outbound(
+        OutboundMessage(
+            channel="bridge",
+            chat_id="conv-1",
+            content="done",
+            media=["/app/nanobot_workspaces/user-a/report 1.png"],
+        )
+    )
+
+    assert packet["attachments"] == ["/app/nanobot_workspaces/user-a/report 1.png"]
+
+
+@pytest.mark.asyncio
+async def test_bridge_send_proactive_message_includes_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PARENT_BRIDGE_URL", "ws://bridge/ws/bridge")
+    monkeypatch.setenv("BRIDGE_ORG_ID", "org-1")
+
+    captured: dict[str, object] = {}
+
+    def _fake_post(url: str, token: str, payload: dict[str, object]) -> None:
+        captured["url"] = url
+        captured["token"] = token
+        captured["payload"] = payload
+
+    monkeypatch.setattr(BridgeChannel, "_post_outbound_sync", staticmethod(_fake_post))
+
+    await BridgeChannel.send_proactive_message(
+        BridgeConfig(bridge_url="ws://bridge", bridge_token="secret", allow_from=["*"]),
+        to="user-1:::conv-1",
+        content="done",
+        media=["/app/nanobot_workspaces/user-a/a.png"],
+        metadata={"trace_id": "trace-1"},
+    )
+
+    assert captured["url"] == "http://bridge/api/bridge/outbound"
+    assert captured["token"] == "secret"
+    assert captured["payload"] == {
+        "org_id": "org-1",
+        "to": "user-1:::conv-1",
+        "content": "done",
+        "attachments": ["/app/nanobot_workspaces/user-a/a.png"],
+        "metadata": {"trace_id": "trace-1"},
+    }
+
+
 def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BRIDGE_SESSION_ID", "session-a")
     monkeypatch.setenv("BRIDGE_CONTAINER_NAME", "nanobot-session-a")
@@ -107,3 +189,18 @@ def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.delenv("BRIDGE_SESSION_ID")
     monkeypatch.delenv("BRIDGE_CONTAINER_NAME")
+
+
+def test_bridge_channel_applies_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BRIDGE_URL_OVERRIDE", "ws://127.0.0.1:37237")
+    monkeypatch.setenv("BRIDGE_TOKEN_OVERRIDE", "local-secret")
+    monkeypatch.setenv("BRIDGE_ALLOW_FROM_OVERRIDE", "*")
+
+    channel = BridgeChannel(
+        BridgeConfig(bridge_url="ws://bridge", bridge_token="shared", allow_from=["user-1"]),
+        MessageBus(),
+    )
+
+    assert channel.config.bridge_url == "ws://127.0.0.1:37237"
+    assert channel.config.bridge_token == "local-secret"
+    assert channel.config.allow_from == ["*"]

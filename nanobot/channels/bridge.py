@@ -24,6 +24,7 @@ class BridgeConfig(Base):
     enabled: bool = False
     bridge_url: str = "ws://localhost:8765"
     bridge_token: str = ""
+    streaming: bool = False
     allow_from: list[str] = Field(default_factory=list)
 
 
@@ -42,12 +43,28 @@ class BridgeChannel(BaseChannel):
     def __init__(self, config: Any, bus: MessageBus):
         if isinstance(config, dict):
             config = BridgeConfig.model_validate(config)
+        config = self._apply_env_overrides(config)
         super().__init__(config, bus)
         self.config: BridgeConfig = config
         self._ws = None
         self._connected = False
         self._session_id = os.getenv("BRIDGE_SESSION_ID", "").strip()
         self._container_name = os.getenv("BRIDGE_CONTAINER_NAME", "").strip()
+
+    @staticmethod
+    def _apply_env_overrides(config: BridgeConfig) -> BridgeConfig:
+        bridge_url = os.getenv("BRIDGE_URL_OVERRIDE", "").strip()
+        bridge_token = os.getenv("BRIDGE_TOKEN_OVERRIDE", "").strip()
+        allow_from_raw = os.getenv("BRIDGE_ALLOW_FROM_OVERRIDE", "").strip()
+
+        updates: dict[str, Any] = {}
+        if bridge_url:
+            updates["bridge_url"] = bridge_url
+        if bridge_token:
+            updates["bridge_token"] = bridge_token
+        if allow_from_raw:
+            updates["allow_from"] = [item.strip() for item in allow_from_raw.split(",") if item.strip()]
+        return config.model_copy(update=updates) if updates else config
 
     async def start(self) -> None:
         """Connect to the bridge and consume inbound packets forever."""
@@ -96,15 +113,24 @@ class BridgeChannel(BaseChannel):
                 self.config,
                 to=msg.chat_id,
                 content=msg.content,
+                media=msg.media,
                 metadata=msg.metadata,
             )
             return
 
         packet = self._encode_outbound(msg)
-        try:
-            await self._ws.send(json.dumps(packet, ensure_ascii=False))
-        except Exception as e:
-            logger.error("Error sending bridge packet: {}", e)
+        await self._ws.send(json.dumps(packet, ensure_ascii=False))
+
+    async def send_delta(self, chat_id: str, delta: str, metadata: dict[str, Any] | None = None) -> None:
+        """Forward streaming packets over the same bridge protocol."""
+        await self.send(
+            OutboundMessage(
+                channel=self.name,
+                chat_id=chat_id,
+                content=delta,
+                metadata=dict(metadata or {}),
+            )
+        )
 
     async def _handle_bridge_message(self, raw: str) -> None:
         """Handle a packet from the bridge."""
@@ -187,6 +213,7 @@ class BridgeChannel(BaseChannel):
         *,
         to: str,
         content: str,
+        media: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         if isinstance(config, dict):
@@ -205,6 +232,7 @@ class BridgeChannel(BaseChannel):
             "org_id": org_id,
             "to": to,
             "content": content,
+            "attachments": list(media or []),
             "metadata": dict(metadata or {}),
         }
         token = config.bridge_token

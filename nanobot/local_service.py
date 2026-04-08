@@ -35,12 +35,8 @@ class LocalNanobotService:
         self._stopping = False
 
         self._bridge_token = secrets.token_hex(16)
-        self._gateway_config_path = (
-            self.workspace_path / ".nanobot-local" / "gateway.bridge.config.json"
-        )
 
     async def start(self) -> None:
-        self._prepare_gateway_config()
         self._server = await websockets.serve(
             self._handle_client,
             self.host,
@@ -82,42 +78,15 @@ class LocalNanobotService:
             self._server.close()
             await self._server.wait_closed()
 
-    def _prepare_gateway_config(self) -> None:
-        data = json.loads(self.config_path.read_text(encoding="utf-8"))
-
-        channels = dict(data.get("channels") or {})
-        for name, section in list(channels.items()):
-            if name in {"sendProgress", "sendToolHints", "sendMaxRetries", "bridge"}:
-                continue
-            if isinstance(section, dict):
-                channels[name] = {**section, "enabled": False}
-
-        bridge = dict(channels.get("bridge") or {})
-        bridge["enabled"] = True
-        bridge["bridgeUrl"] = f"ws://{self.host}:{self.port}"
-        bridge["bridgeToken"] = self._bridge_token
-        bridge["allowFrom"] = ["*"]
-        channels["bridge"] = bridge
-        data["channels"] = channels
-
-        agents = dict(data.get("agents") or {})
-        defaults = dict(agents.get("defaults") or {})
-        defaults["workspace"] = str(self.workspace_path)
-        agents["defaults"] = defaults
-        data["agents"] = agents
-
-        self._gateway_config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._gateway_config_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
     async def _spawn_gateway(self) -> None:
         env = os.environ.copy()
         env["BRIDGE_SESSION_ID"] = ""
         env["BRIDGE_CONTAINER_NAME"] = ""
         env["BRIDGE_ORG_ID"] = ""
         env["PARENT_BRIDGE_URL"] = ""
+        env["BRIDGE_URL_OVERRIDE"] = f"ws://{self.host}:{self.port}"
+        env["BRIDGE_TOKEN_OVERRIDE"] = self._bridge_token
+        env["BRIDGE_ALLOW_FROM_OVERRIDE"] = "*"
 
         self._gateway_process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -125,7 +94,7 @@ class LocalNanobotService:
             "nanobot",
             "gateway",
             "--config",
-            str(self._gateway_config_path),
+            str(self.config_path),
             "--workspace",
             str(self.workspace_path),
             "--port",
