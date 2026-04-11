@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -38,9 +37,9 @@ from container_up.router_service import (
 from container_up.settings import (
     APP_HOST,
     APP_PORT,
-    APP_SECRET,
     CHILD_BRIDGE_TOKEN,
     CLEANUP_SCAN_INTERVAL,
+    IM_PROVIDER,
 )
 from docker.errors import DockerException
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
@@ -112,6 +111,11 @@ async def lifespan(_: FastAPI):
     docker_client.ping()
     sync_existing_orgs()
     init_dispatch_session()
+    init_im_parser(
+        dispatch_event=_dispatch_subscribe_event,
+        main_loop=asyncio.get_running_loop(),
+    )
+    get_im_parser().start()
     cleanup_stop_event.clear()
     global cleanup_thread
     cleanup_thread = threading.Thread(
@@ -122,12 +126,15 @@ async def lifespan(_: FastAPI):
     cleanup_stop_event.set()
     if cleanup_thread is not None:
         cleanup_thread.join(timeout=5)
+    try:
+        get_im_parser().stop()
+    except RuntimeError:
+        pass
     await close_dispatch_session()
 
 
 app = FastAPI(title="container_up", version="0.1.0", lifespan=lifespan)
 init_bridge_hub(CHILD_BRIDGE_TOKEN or None)
-init_im_parser()
 
 
 @app.get("/healthz")
@@ -141,6 +148,7 @@ def healthz() -> dict[str, Any]:
     return {
         "status": "ok" if docker_ok else "degraded",
         "docker": docker_ok,
+        "im_provider": IM_PROVIDER,
         "tracked_orgs": count_org_records(),
         "connected_bridge_orgs": bridge_hub.child_count,
     }
@@ -208,6 +216,10 @@ class SubForm(BaseModel):
 
 async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
     try:
+        parser = get_im_parser()
+        prepare_event = getattr(parser, "prepare_inbound_event", None)
+        if callable(prepare_event):
+            payload = await prepare_event(payload)
         await dispatch_parser.parse(payload)
     except Exception:
         logger.exception("subscribe event dispatch failed: %r", payload)
@@ -215,40 +227,21 @@ async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
 
 @app.post("/subscribe")
 async def subscribe(sub_form: SubForm) -> dict[str, Any]:
-    if not APP_SECRET:
-        raise HTTPException(status_code=500, detail="app_secret is not configured")
-
     parser = get_im_parser()
     try:
-        decrypted = parser.decrypt(
-            signature=sub_form.msgSignature,
-            timeStamp=sub_form.timeStamp,
-            nonce=sub_form.nonce,
-            encrypt=sub_form.encrypt,
-        )
+        if not parser.supports_subscribe():
+            raise HTTPException(
+                status_code=404,
+                detail="subscribe is not supported for current IM provider",
+            )
+        response, payload = parser.process_subscribe_form(sub_form)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if not decrypted:
-        raise HTTPException(status_code=400, detail="empty decrypted payload")
-
-    try:
-        payload = json.loads(decrypted)
+    if payload is not None:
         logger.error("received subscribe event: %r", payload)
-    except json.JSONDecodeError:
-        logger.error("failed to decode decrypted payload as json: %r", decrypted)
-        return {"error": "invalid payload"}
-
-    event_type = str(payload.get("event_type") or "")
-    if event_type == "check_url":
-        return parser.encrypt(
-            text="success",
-        )
-
-    asyncio.create_task(_dispatch_subscribe_event(payload))
-    return parser.encrypt(
-        text="success",
-    )
+        asyncio.create_task(_dispatch_subscribe_event(payload))
+    return response
 
 
 @app.post("/api/message")
@@ -349,7 +342,17 @@ async def debug_p2p(payload: DebugP2PRequest) -> dict[str, Any]:
             },
         },
     }
-    return await dispatch_parser.parse(event)
+    return await _dispatch_debug_event(event)
+
+
+async def _dispatch_debug_event(payload: dict[str, Any]) -> dict[str, Any]:
+    parser = get_im_parser()
+    if hasattr(parser, "normalize_subscribe_payload"):
+        payload = parser.normalize_subscribe_payload(payload)
+    prepare_event = getattr(parser, "prepare_inbound_event", None)
+    if callable(prepare_event):
+        payload = await prepare_event(payload)
+    return await dispatch_parser.parse(payload)
 
 
 def main() -> None:

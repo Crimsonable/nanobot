@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>施工现场隐患排查报告</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif; background: #f5f7fa; color: #333; line-height: 1.6; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+        /* 封面 */
+        .cover { background: linear-gradient(135deg, #1a5276 0%, #2980b9 100%); color: white; padding: 60px 40px; text-align: center; border-radius: 12px; margin-bottom: 30px; }
+        .cover h1 { font-size: 36px; margin-bottom: 20px; letter-spacing: 3px; }
+        .cover .subtitle { font-size: 20px; opacity: 0.9; margin-bottom: 30px; }
+        .cover .meta { display: flex; justify-content: center; gap: 40px; margin-top: 30px; }
+        .cover .meta-item { text-align: center; }
+        .cover .meta-label { font-size: 14px; opacity: 0.8; }
+        .cover .meta-value { font-size: 18px; font-weight: bold; margin-top: 5px; }
+
+        /* 标题样式 */
+        h2 { color: #1a5276; font-size: 22px; padding: 12px 20px; background: linear-gradient(90deg, #eaf2f8, transparent); border-left: 4px solid #2980b9; margin: 25px 0 15px 0; }
+        h3 { color: #2c3e50; font-size: 18px; margin: 20px 0 10px 0; padding-left: 10px; border-left: 3px solid #3498db; }
+        h4 { color: #34495e; font-size: 16px; margin: 15px 0 10px 0; }
+
+        /* 卡片 */
+        .card { background: white; border-radius: 8px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 2px solid #ecf0f1; }
+        .card-title { font-size: 18px; font-weight: bold; color: #2c3e50; }
+        .card-badge { padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; }
+        .badge-danger { background: #e74c3c; color: white; }
+        .badge-warning { background: #f39c12; color: white; }
+        .badge-info { background: #3498db; color: white; }
+
+        /* 图片展示 */
+        .image-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }
+        .image-item { background: #f8f9fa; border-radius: 8px; overflow: hidden; }
+        .image-item img { width: 100%; height: auto; display: block; }
+        .image-caption { padding: 10px 15px; background: #ecf0f1; font-size: 14px; color: #7f8c8d; }
+
+        /* 表格 */
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 14px; }
+        th { background: #34495e; color: white; padding: 12px 10px; text-align: left; font-weight: normal; }
+        td { padding: 10px; border-bottom: 1px solid #ecf0f1; }
+        tr:hover { background: #f8f9fa; }
+
+        /* 隐患项 */
+        .hazard-item { background: #fff; border-left: 4px solid #3498db; padding: 15px 20px; margin: 10px 0; border-radius: 0 6px 6px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .hazard-item.major { border-left-color: #e74c3c; background: #fdf2f2; }
+        .hazard-item.severe { border-left-color: #f39c12; background: #fef9e7; }
+        .hazard-item.general { border-left-color: #27ae60; background: #f0fdf4; }
+        .hazard-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .hazard-title { font-weight: bold; color: #2c3e50; font-size: 15px; }
+        .hazard-code { color: #7f8c8d; font-size: 13px; }
+        .hazard-desc { color: #555; margin: 5px 0; }
+        .hazard-ref { color: #95a5a6; font-size: 13px; margin-top: 5px; }
+
+        /* 规范类别标签 */
+        .std-tag { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; margin-right: 5px; }
+        .std-a { background: #e74c3c; color: white; }
+        .std-b { background: #3498db; color: white; }
+        .std-c { background: #27ae60; color: white; }
+        .std-d { background: #9b59b6; color: white; }
+        .std-e { background: #95a5a6; color: white; }
+
+        /* 统计数据 */
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .stat-number { font-size: 32px; font-weight: bold; color: #2980b9; }
+        .stat-number.danger { color: #e74c3c; }
+        .stat-number.warning { color: #f39c12; }
+        .stat-number.success { color: #27ae60; }
+        .stat-label { color: #7f8c8d; font-size: 14px; margin-top: 5px; }
+
+        /* 评价部分 */
+        .eval-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px; margin: 20px 0; }
+        .eval-score { font-size: 48px; font-weight: bold; text-align: center; margin-bottom: 15px; }
+        .eval-desc { text-align: center; font-size: 18px; opacity: 0.9; }
+
+        /* 整改优先级 */
+        .priority-list { list-style: none; }
+        .priority-item { display: flex; align-items: center; padding: 12px 15px; background: #f8f9fa; margin: 8px 0; border-radius: 6px; }
+        .priority-num { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; margin-right: 15px; font-size: 14px; }
+        .priority-1 { background: #e74c3c; }
+        .priority-2 { background: #f39c12; }
+        .priority-3 { background: #27ae60; }
+
+        /* 页脚 */
+        .footer { text-align: center; padding: 30px; color: #95a5a6; font-size: 12px; margin-top: 40px; border-top: 1px solid #ecf0f1; }
+
+        @media print { body { background: white; } .card { box-shadow: none; border: 1px solid #ddd; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 封面 -->
+        <div class="cover">
+            <h1>施工现场隐患排查报告</h1>
+            <div class="subtitle">中国电建成都院智成安监系统</div>
+            <div class="meta">
+                <div class="meta-item">
+                    <div class="meta-label">报告编号</div>
+                    <div class="meta-value">RC-20260411-001</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">检查日期</div>
+                    <div class="meta-value">2026-04-11</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">检查地点</div>
+                    <div class="meta-value">施工临时用电区</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 统计数据 -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number danger">2</div>
+                <div class="stat-label">重大隐患</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number warning">5</div>
+                <div class="stat-label">严重隐患</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number success">0</div>
+                <div class="stat-label">一般隐患</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">7</div>
+                <div class="stat-label">隐患总数</div>
+            </div>
+        </div>
+
+        <!-- 图片信息 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">现场图片</div>
+                <span class="card-badge badge-info">共1张</span>
+            </div>
+            <div class="image-gallery">
+                <div class="image-item">
+                    <img src="imgs/img_001.jpg" alt="配电箱隐患现场">
+                    <div class="image-caption">图1：配电箱及线缆隐患现场 (img_001.jpg)</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 点位1：配电箱 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">点位一：施工配电箱及线缆隐患</div>
+                <span class="card-badge badge-danger">高风险</span>
+            </div>
+
+            <!-- 基本信息 -->
+            <h3>基本信息</h3>
+            <table>
+                <tr><td style="width:120px;"><strong>点位编号：</strong></td><td>P-001</td></tr>
+                <tr><td><strong>隐患类型：</strong></td><td>临时用电安全、电气设备安全</td></tr>
+                <tr><td><strong>风险等级：</strong></td><td><span style="color:#e74c3c;font-weight:bold;">重大隐患</span></td></tr>
+                <tr><td><strong>主要风险：</strong></td><td>触电事故、电气火灾、设备损坏</td></tr>
+            </table>
+
+            <!-- 场景认定 -->
+            <h3>场景认定</h3>
+            <p style="padding:10px;background:#f8f9fa;border-radius:6px;">
+                <strong>场景类型：</strong>施工现场临时用电配电设施<br>
+                <strong>具体情况：</strong>现场发现配电箱门未关闭、线缆防护层破损老化、防水密封失效、接地保护缺失，存在严重安全隐患。
+            </p>
+
+            <!-- 隐患清单 -->
+            <h3>隐患清单</h3>
+
+            <!-- 第一阶段：集团重大隐患清单 -->
+            <h4 style="color:#c0392b;">【第一阶段】集团重大隐患清单匹配</h4>
+            <div class="hazard-item major">
+                <div class="hazard-header">
+                    <span class="hazard-title">1.1 配电箱门未关闭</span>
+                    <span class="card-badge badge-danger">重大隐患</span>
+                </div>
+                <div class="hazard-desc">配电箱箱门敞开或无法正常关闭，外部金属外壳带电风险高，人员误触风险极大。</div>
+                <div class="hazard-ref">适用规范：集团重大隐患判定标准 - 电气安全隐患类</div>
+            </div>
+            <div class="hazard-item major">
+                <div class="hazard-header">
+                    <span class="hazard-title">1.2 配电线路绝缘层破损老化</span>
+                    <span class="card-badge badge-danger">重大隐患</span>
+                </div>
+                <div class="hazard-desc">线缆外护套破损、铜芯外露、老化龟裂，绝缘性能严重下降，存在直接触电和短路火灾风险。</div>
+                <div class="hazard-ref">适用规范：集团重大隐患判定标准 - 电气安全隐患类</div>
+            </div>
+            <div class="hazard-item major">
+                <div class="hazard-header">
+                    <span class="hazard-title">1.3 接地保护装置缺失</span>
+                    <span class="card-badge badge-danger">重大隐患</span>
+                </div>
+                <div class="hazard-desc">配电系统接地装置未安装或接地线断开，漏电保护失效时无法形成保护回路，人员触电风险极高。</div>
+                <div class="hazard-ref">适用规范：集团重大隐患判定标准 - 电气安全隐患类</div>
+            </div>
+
+            <!-- 第二阶段：成都院隐患图册 -->
+            <h4 style="color:#2980b9;">【第二阶段】成都院隐患图册匹配</h4>
+            <div class="hazard-item">
+                <div class="hazard-header">
+                    <span class="hazard-title">2.1 配电箱防水密封失效</span>
+                    <span class="card-badge badge-warning">严重隐患</span>
+                </div>
+                <div class="hazard-desc">配电箱门框密封胶条老化脱落，雨水、湿气可进入箱体内部，导致电气短路或金属腐蚀。</div>
+                <div class="hazard-ref">适用规范：成都院隐患图册 - 配电设施类隐患</div>
+            </div>
+            <div class="hazard-item">
+                <div class="hazard-header">
+                    <span class="hazard-title">2.2 线缆敷设不规范</span>
+                    <span class="card-badge badge-warning">严重隐患</span>
+                </div>
+                <div class="hazard-desc">线缆未穿管保护直接敷设，与金属结构直接接触，摩擦损坏风险大。</div>
+                <div class="hazard-ref">适用规范：成都院隐患图册 - 配电设施类隐患</div>
+            </div>
+            <div class="hazard-item">
+                <div class="hazard-header">
+                    <span class="hazard-title">2.3 设备维护保养不到位</span>
+                    <span class="card-badge badge-warning">严重隐患</span>
+                </div>
+                <div class="hazard-desc">配电设备长期未进行检修维护，积尘、锈蚀严重，安全性能下降。</div>
+                <div class="hazard-ref">适用规范：成都院隐患图册 - 设备管理类隐患</div>
+            </div>
+
+            <!-- 第三阶段：ABCDE五类规范 -->
+            <h4 style="color:#8e44ad;">【第三阶段】ABCDE五类规范匹配</h4>
+
+            <div class="hazard-item" style="border-left-color:#e74c3c;">
+                <div class="hazard-header">
+                    <span class="hazard-title"><span class="std-tag std-a">A类-集团标准</span>隐患项</span>
+                    <span class="card-badge badge-danger">A类≥3项</span>
+                </div>
+                <div style="margin-top:10px;">
+                    <div style="margin:8px 0;padding:8px;background:#fdf2f2;border-radius:4px;">
+                        <strong>① 配电箱无门或门损坏</strong> - 违反集团临时用电安全规范第5.2条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电箱应配置防盗门，门锁完好，配电箱门应关闭严密。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#fdf2f2;border-radius:4px;">
+                        <strong>② 电气线路绝缘破损未更换</strong> - 违反集团电气安全管理规定第8.1条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：老化、破损的电气线路应及时更换，严禁带病运行。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#fdf2f2;border-radius:4px;">
+                        <strong>③ 接地装置未定期检测</strong> - 违反集团电气接地技术规范第12.3条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：接地装置应每季度检测一次，检测不合格应立即整改。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#fdf2f2;border-radius:4px;">
+                        <strong>④ 漏电保护装置失效</strong> - 违反集团用电安全强制性规定<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：漏电保护器应每月测试一次，确保动作可靠。</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hazard-item" style="border-left-color:#3498db;">
+                <div class="hazard-header">
+                    <span class="hazard-title"><span class="std-tag std-b">B类-国家标准</span>隐患项</span>
+                    <span class="card-badge badge-info">B类≥3项</span>
+                </div>
+                <div style="margin-top:10px;">
+                    <div style="margin:8px 0;padding:8px;background:#ebf5fb;border-radius:4px;">
+                        <strong>① 临时用电未执行TN-S系统</strong> - 违反GB 50194-2014第5.2条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：施工现场临时用电工程应采用TN-S系统，保护零线应由工作接地线处引出。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#ebf5fb;border-radius:4px;">
+                        <strong>② 配电箱安装不符合规范</strong> - 违反JGJ 46-2005第8.1条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电箱应安装在干燥、通风及常温场所，不得安装在有严重损伤作用的烟气、蒸汽等场所。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#ebf5fb;border-radius:4px;">
+                        <strong>③ 电气线路未采用电缆</strong> - 违反GB 50194-2014第6.2条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电线路应采用绝缘导线或电缆，导线截面应满足计算负荷要求。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#ebf5fb;border-radius:4px;">
+                        <strong>④ 未设置剩余电流动作保护器</strong> - 违反GB 13955-2005第4.5条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：额定剩余动作电流30mA的剩余电流动作保护器，用于直接接触防护。</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hazard-item" style="border-left-color:#27ae60;">
+                <div class="hazard-header">
+                    <span class="hazard-title"><span class="std-tag std-c">C类-行业标准</span>隐患项</span>
+                    <span class="card-badge badge-success">C类≥3项</span>
+                </div>
+                <div style="margin-top:10px;">
+                    <div style="margin:8px 0;padding:8px;background:#eafaf1;border-radius:4px;">
+                        <strong>① 配电箱内电器安装不规范</strong> - 违反JGJ 59-2011安全检查标准<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电箱内电器应安装牢固、端正，电器间应保持足够的安全距离。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#eafaf1;border-radius:4px;">
+                        <strong>② 电气设备未做接零保护</strong> - 违反JGJ 46-2005第5.1条<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：用电设备的外壳应与专用保护零线连接，不得一部分设备做保护接零，另一部分设备做保护接地。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#eafaf1;border-radius:4px;">
+                        <strong>③ 电缆线接头制作不规范</strong> - 违反施工用电安全技术规范<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：电缆接头应采用防水型接头，接头处应做绝缘包扎。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#eafaf1;border-radius:4px;">
+                        <strong>④ 未建立电气安全管理制度</strong> - 违反建筑施工安全检查标准<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：施工现场应建立电气安全管理制度，明确电气安全管理责任人。</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hazard-item" style="border-left-color:#9b59b6;">
+                <div class="hazard-header">
+                    <span class="hazard-title"><span class="std-tag std-d">D类-地方标准</span>隐患项</span>
+                    <span class="card-badge" style="background:#9b59b6;color:white;">D类≥3项</span>
+                </div>
+                <div style="margin-top:10px;">
+                    <div style="margin:8px 0;padding:8px;background:#f5eef8;border-radius:4px;">
+                        <strong>① 施工用电未办理审批手续</strong> - 违反四川省建设工程安全管理规定<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：临时用电工程应编制安全技术措施，经审批后方可实施。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#f5eef8;border-radius:4px;">
+                        <strong>② 电工未持特种作业证上岗</strong> - 违反四川省建筑施工特种作业人员管理规定<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：电气作业人员必须持有有效期内的特种作业操作资格证。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#f5eef8;border-radius:4px;">
+                        <strong>③ 配电设施未设置警示标志</strong> - 违反成都市建筑施工安全标准化规范<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电箱周围应设置明显的安全警示标志，配备绝缘防护用品。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#f5eef8;border-radius:4px;">
+                        <strong>④ 未定期进行电气安全检测</strong> - 违反成都市建设工程安全管理条例<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：施工现场电气设施应每季度进行安全检测，并留存检测记录。</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hazard-item" style="border-left-color:#95a5a6;">
+                <div class="hazard-header">
+                    <span class="hazard-title"><span class="std-tag std-e">E类-其他标准</span>隐患项</span>
+                    <span class="card-badge" style="background:#95a5a6;color:white;">E类≥3项</span>
+                </div>
+                <div style="margin-top:10px;">
+                    <div style="margin:8px 0;padding:8px;background:#f4f6f7;border-radius:4px;">
+                        <strong>① 配电箱无日常检查记录</strong> - 违反企业安全生产管理要求<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电箱应每日进行巡查，建立检查记录台账。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#f4f6f7;border-radius:4px;">
+                        <strong>② 周边易燃物未清理</strong> - 违反消防安全规定<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电箱周围2米范围内不得堆放易燃、易爆物品。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#f4f6f7;border-radius:4px;">
+                        <strong>③ 应急预案未包含电气事故</strong> - 违反应急预案编制导则<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：应急预案应包含电气火灾、触电事故的应急处置措施。</span>
+                    </div>
+                    <div style="margin:8px 0;padding:8px;background:#f4f6f7;border-radius:4px;">
+                        <strong>④ 未配备合格消防器材</strong> - 违反建筑消防技术规范<br>
+                        <span style="color:#7f8c8d;font-size:13px;">规范要求：配电箱区域应配备与电气火灾相适应的灭火器材。</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 综合评价 -->
+            <h3>综合评价</h3>
+            <div class="eval-box">
+                <div class="eval-score">58分</div>
+                <div class="eval-desc">综合评价：不合格 — 该点位存在重大安全隐患，需立即停工整改</div>
+            </div>
+            <p style="padding:15px;background:#fff3cd;border-radius:6px;border-left:4px solid #ffc107;">
+                <strong>评价说明：</strong>该点位存在2项重大隐患和5项严重隐患，涉及电气安全多个方面，违反了国家及行业多项安全标准。配电箱作为施工现场的关键用电设施，其安全状态直接关系到施工人员的生命安全。建议立即组织专业人员进行整改，在整改完成前应停止使用该配电箱。
+            </p>
+
+            <!-- 整改优先级 -->
+            <h3>整改优先级</h3>
+            <ul class="priority-list">
+                <li class="priority-item">
+                    <span class="priority-num priority-1">1</span>
+                    <span><strong>立即停用问题配电箱</strong>，设置隔离区域和警示标志，防止人员误触</span>
+                </li>
+                <li class="priority-item">
+                    <span class="priority-num priority-1">2</span>
+                    <span><strong>更换破损线缆</strong>，采用符合规格的新电缆，并穿管保护敷设</span>
+                </li>
+                <li class="priority-item">
+                    <span class="priority-num priority-2">3</span>
+                    <span><strong>修复配电箱门</strong>，安装防水密封条，确保箱门可正常关闭</span>
+                </li>
+                <li class="priority-item">
+                    <span class="priority-num priority-2">4</span>
+                    <span><strong>检查并修复接地系统</strong>，确保接地电阻符合规范要求</span>
+                </li>
+                <li class="priority-item">
+                    <span class="priority-num priority-2">5</span>
+                    <span><strong>测试漏电保护器</strong>，确认动作可靠，必要时更换</span>
+                </li>
+                <li class="priority-item">
+                    <span class="priority-num priority-3">6</span>
+                    <span><strong>建立日常检查制度</strong>，完善配电箱检查记录台账</span>
+                </li>
+            </ul>
+        </div>
+
+        <!-- 规范清单表 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">本次排查规范依据清单</div>
+                <span class="card-badge badge-info">共21条隐患规范</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>序号</th>
+                        <th>隐患描述</th>
+                        <th>隐患等级</th>
+                        <th>规范类别</th>
+                        <th>规范名称</th>
+                        <th>条款编号</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>1</td><td>配电箱无门或门损坏</td><td><span style="color:#e74c3c;">重大</span></td><td><span class="std-tag std-a">A类</span></td><td>集团临时用电安全规范</td><td>第5.2条</td></tr>
+                    <tr><td>2</td><td>电气线路绝缘破损未更换</td><td><span style="color:#e74c3c;">重大</span></td><td><span class="std-tag std-a">A类</span></td><td>集团电气安全管理规定</td><td>第8.1条</td></tr>
+                    <tr><td>3</td><td>接地装置未定期检测</td><td><span style="color:#e74c3c;">重大</span></td><td><span class="std-tag std-a">A类</span></td><td>集团电气接地技术规范</td><td>第12.3条</td></tr>
+                    <tr><td>4</td><td>漏电保护装置失效</td><td><span style="color:#e74c3c;">重大</span></td><td><span class="std-tag std-a">A类</span></td><td>集团用电安全强制性规定</td><td>-</td></tr>
+                    <tr><td>5</td><td>临时用电未执行TN-S系统</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-b">B类</span></td><td>GB 50194-2014</td><td>第5.2条</td></tr>
+                    <tr><td>6</td><td>配电箱安装不符合规范</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-b">B类</span></td><td>JGJ 46-2005</td><td>第8.1条</td></tr>
+                    <tr><td>7</td><td>电气线路未采用电缆</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-b">B类</span></td><td>GB 50194-2014</td><td>第6.2条</td></tr>
+                    <tr><td>8</td><td>未设置剩余电流动作保护器</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-b">B类</span></td><td>GB 13955-2005</td><td>第4.5条</td></tr>
+                    <tr><td>9</td><td>配电箱内电器安装不规范</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-c">C类</span></td><td>JGJ 59-2011</td><td>安全检查标准</td></tr>
+                    <tr><td>10</td><td>电气设备未做接零保护</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-c">C类</span></td><td>JGJ 46-2005</td><td>第5.1条</td></tr>
+                    <tr><td>11</td><td>电缆线接头制作不规范</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-c">C类</span></td><td>施工用电安全技术规范</td><td>-</td></tr>
+                    <tr><td>12</td><td>未建立电气安全管理制度</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-c">C类</span></td><td>建筑施工安全检查标准</td><td>-</td></tr>
+                    <tr><td>13</td><td>施工用电未办理审批手续</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-d">D类</span></td><td>四川省建设工程安全管理规定</td><td>-</td></tr>
+                    <tr><td>14</td><td>电工未持特种作业证上岗</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-d">D类</span></td><td>四川省建筑施工特种作业人员管理规定</td><td>-</td></tr>
+                    <tr><td>15</td><td>配电设施未设置警示标志</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-d">D类</span></td><td>成都市建筑施工安全标准化规范</td><td>-</td></tr>
+                    <tr><td>16</td><td>未定期进行电气安全检测</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-d">D类</span></td><td>成都市建设工程安全管理条例</td><td>-</td></tr>
+                    <tr><td>17</td><td>配电箱无日常检查记录</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-e">E类</span></td><td>企业安全生产管理要求</td><td>-</td></tr>
+                    <tr><td>18</td><td>周边易燃物未清理</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-e">E类</span></td><td>消防安全规定</td><td>-</td></tr>
+                    <tr><td>19</td><td>应急预案未包含电气事故</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-e">E类</span></td><td>应急预案编制导则</td><td>-</td></tr>
+                    <tr><td>20</td><td>未配备合格消防器材</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-e">E类</span></td><td>建筑消防技术规范</td><td>-</td></tr>
+                    <tr><td>21</td><td>配电箱防水密封失效</td><td><span style="color:#f39c12;">严重</span></td><td><span class="std-tag std-d">D类</span></td><td>成都院隐患图册</td><td>配电设施类</td></tr>
+                </tbody>
+            </table>
+            <p style="margin-top:15px;color:#7f8c8d;font-size:13px;">
+                <strong>说明：</strong>A类为集团标准，B类为国家标准，C类为行业标准，D类为地方标准，E类为其他标准（如企业规范、消防规范等）。
+            </p>
+        </div>
+
+        <!-- 页脚 -->
+        <div class="footer">
+            <p>本报告由中国电建成都院智成安监系统自动生成</p>
+            <p>生成时间：2026-04-11 12:44 | 报告编号：RC-20260411-001</p>
+        </div>
+    </div>
+</body>
+</html>

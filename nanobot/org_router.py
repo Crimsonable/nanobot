@@ -17,6 +17,12 @@ import httpx
 import websockets
 from loguru import logger
 
+from nanobot.process_group import (
+    install_shutdown_signal_handlers,
+    subprocess_group_kwargs,
+    terminate_process_group,
+)
+
 
 PARENT_BRIDGE_URL = os.getenv("PARENT_BRIDGE_URL", "ws://container-up:8080/ws/bridge")
 ORG_ROOT = Path(os.getenv("ORG_ROOT", "/app/nanobot_workspaces")).expanduser().resolve()
@@ -71,7 +77,13 @@ class OrgRouter:
                 await asyncio.sleep(5)
 
     async def close(self) -> None:
+        parent_ws = self._parent_ws
         self._parent_ws = None
+        if parent_ws is not None:
+            try:
+                await parent_ws.close()
+            except Exception:
+                pass
         if self._cleanup_task is not None:
             self._cleanup_task.cancel()
             try:
@@ -179,8 +191,13 @@ class OrgRouter:
                 "--port",
                 str(port),
                 cwd=str(ORG_ROOT),
+                **subprocess_group_kwargs(),
             )
-            await self._wait_instance_ready(port)
+            try:
+                await self._wait_instance_ready(port)
+            except Exception:
+                await terminate_process_group(process, timeout=5)
+                raise
             instance = UserInstance(
                 user_id=user_id,
                 port=port,
@@ -294,12 +311,7 @@ class OrgRouter:
                 pass
             instance.websocket = None
         if instance.process.returncode is None:
-            instance.process.terminate()
-            try:
-                await asyncio.wait_for(instance.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                instance.process.kill()
-                await instance.process.wait()
+            await terminate_process_group(instance.process, timeout=5)
         logger.info("Stopped user instance {}", user_id)
 
     async def _send_parent(self, packet: dict[str, Any]) -> None:
@@ -403,9 +415,27 @@ class OrgRouter:
 
 async def _main_async() -> None:
     router = OrgRouter()
+    stop_event = asyncio.Event()
+    install_shutdown_signal_handlers(
+        stop_event,
+        on_signal=lambda sig: logger.info("Received {}, shutting down org router", sig.name),
+    )
+    run_task = asyncio.create_task(router.run())
+    stop_task = asyncio.create_task(stop_event.wait())
     try:
-        await router.run()
+        done, _ = await asyncio.wait(
+            {run_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_task in done and not run_task.done():
+            await router.close()
+            run_task.cancel()
+            await asyncio.gather(run_task, return_exceptions=True)
+        else:
+            await run_task
     finally:
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
         await router.close()
 
 

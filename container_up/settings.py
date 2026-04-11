@@ -7,6 +7,7 @@ from pathlib import Path
 # container_up 服务自身监听地址
 APP_HOST = os.getenv("CONTAINER_UP_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("CONTAINER_UP_PORT", "8080"))
+IM_PROVIDER = os.getenv("IM_PROVIDER", "qxt").strip().lower() or "qxt"
 
 # SQLite 数据库文件路径
 DB_PATH = Path(
@@ -78,3 +79,7 @@ SEND_MSG_RETRY_COUNT = int(os.getenv("SEND_MSG_RETRY_COUNT", "3"))
 SEND_MSG_RETRY_BACKOFF = float(os.getenv("SEND_MSG_RETRY_BACKOFF", "1"))
 # 当 content 整体为该前缀 URL 时，自动提升为附件入口
 ATTACHMENT_URL_PREFIX = os.getenv("ATTACHMENT_URL_PREFIX", "").strip()
+
+# 飞书应用凭证，默认回退到通用 APP_ID / APP_SECRET
+FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", APP_ID).strip()
+FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", APP_SECRET).strip()

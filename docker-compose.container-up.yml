@@ -17,6 +17,7 @@ services:
     environment:
       CONTAINER_UP_HOST: 0.0.0.0
       CONTAINER_UP_PORT: ${CONTAINER_UP_PORT:-8080}
+      IM_PROVIDER: ${IM_PROVIDER:-qxt}
       CONTAINER_UP_DB_PATH: /var/lib/container_up/container_up.db
       HOST_WORKSPACE_ROOT: ${HOST_WORKSPACE_ROOT:-/opt/nanobot/workspaces}
       HOST_SHARED_CONFIG: ${HOST_SHARED_CONFIG:-${PWD}/container_up/config.json}
@@ -32,6 +33,8 @@ services:
       INSTANCE_IDLE_TIMEOUT_SECONDS: ${INSTANCE_IDLE_TIMEOUT_SECONDS:-1800}
       APP_ID: ${APP_ID:-}
       APP_SECRET: ${APP_SECRET:-}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       CORP_ID: ${CORP_ID:-}
       CALLBACK_TOKEN: ${CALLBACK_TOKEN:-}
       ACCESS_URL: ${ACCESS_URL:-}

@@ -13,17 +13,21 @@
     },
     "providers": {
         "vllm": {
-            "apiKey": "3c19057182a675301cccf9f59b8463a5",
-            "apiBase": "http://169.254.247.135:8724/v1"
+            "apiKey": "empty",
+            "apiBase": "http://192.168.0.27:8724/v1"
         },
         "zhipu": {
             "apiKey": "db45743c332f4b15ad57af50c8635d3d.iWLInha7O5Bb1TIU"
+        },
+        "minimax": {
+            "apiKey": "sk-cp-DqP_25_H9NLvCBB-IRrk0LRqHC5cc1GqJvx689oy8jpR1SHIDbb536cGhbw_4dHpbuO0Kr9ljKhmlUzTLqIn9MH7ctJBycuJ_OhIgQ-04mc-9eIK5atKZ10",
+            "apiBase": "https://api.minimaxi.com/v1"
         }
     },
     "agents": {
         "defaults": {
-            "model": "GLM-4.6V-FlashX",
-            "provider": "zhipu",
+            "model": "qwen35122bsui13w",
+            "provider": "vllm",
             "timezone": "Asia/Shanghai"
         }
     }

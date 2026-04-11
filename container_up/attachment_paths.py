@@ -1,9 +1,57 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
 from container_up.settings import CHILD_WORKSPACE_TARGET, HOST_WORKSPACE_ROOT
+
+ATTACHMENTS_CACHE_DIR = Path("cache") / "attachments"
+
+
+def safe_instance_name(value: str) -> str:
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
+    cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value).strip(
+        "-."
+    )
+    return f"{cleaned[:48] or 'user'}-{digest}"
+
+
+def host_instance_workspace_path(org_id: str, user_id: str) -> Path:
+    return (HOST_WORKSPACE_ROOT / org_id / safe_instance_name(user_id)).resolve(strict=False)
+
+
+def child_instance_workspace_path(user_id: str) -> Path:
+    return (Path(CHILD_WORKSPACE_TARGET) / safe_instance_name(user_id)).resolve(strict=False)
+
+
+def host_attachment_cache_dir(
+    *,
+    org_id: str,
+    user_id: str,
+    attachment_group: str,
+    provider: str,
+) -> Path:
+    return (
+        host_instance_workspace_path(org_id, user_id)
+        / ATTACHMENTS_CACHE_DIR
+        / provider
+        / safe_instance_name(attachment_group)
+    ).resolve(strict=False)
+
+
+def child_attachment_cache_dir(
+    *,
+    user_id: str,
+    attachment_group: str,
+    provider: str,
+) -> Path:
+    return (
+        child_instance_workspace_path(user_id)
+        / ATTACHMENTS_CACHE_DIR
+        / provider
+        / safe_instance_name(attachment_group)
+    ).resolve(strict=False)
 
 
 def child_attachment_to_host_path(org_id: str, attachment: Any) -> Any:

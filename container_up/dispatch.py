@@ -11,7 +11,7 @@ from container_up.attachment_paths import normalize_outbound_attachments
 from container_up.attachments import normalize_attachments
 from container_up.bridge_state import get_bridge_hub
 from container_up.db_store import touch_org
-from container_up.im_tools import get_im_parser
+from container_up.im_tools import build_im_receive_event, get_im_parser
 from container_up.router_service import ensure_org_container
 
 
@@ -51,24 +51,21 @@ class DispatchParser:
 dispatch_parser = DispatchParser()
 
 
-async def _send_text_to_uid(
+async def _deliver_outbound_message(
     *,
-    sender_uid: str,
+    chat_id: str,
     content: str,
+    metadata: dict[str, Any] | None = None,
     attachments: list[Any] | None = None,
 ) -> dict[str, Any]:
-    if not sender_uid:
-        raise RuntimeError("missing recipient sender_uid")
     im_parser = get_im_parser()
-    payload: dict[str, Any] = {
-        "to_single_uid": sender_uid,
-        "type": "text",
-        "message": {"content": content},
-    }
-    if attachments:
-        payload["attachments"] = attachments
     return await im_parser.post_message_with_retry(
-        payload=payload
+        payload={
+            "chat_id": chat_id,
+            "content": content,
+            "metadata": dict(metadata or {}),
+            "attachments": list(attachments or []),
+        }
     )
 
 
@@ -82,20 +79,27 @@ async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
     if not content and not attachments:
         return {"ok": True, "response": None, "skipped": "empty_content"}
 
+    chat_id = str(packet.get("chat_id") or "")
     try:
-        sender_uid, conversation_id = split_delivery_target(str(packet.get("chat_id") or ""))
-    except ValueError as exc:
-        raise RuntimeError("invalid bridge delivery target") from exc
+        _, conversation_id = split_delivery_target(chat_id)
+    except ValueError:
+        conversation_id = str(
+            metadata.get("conversation_id")
+            or metadata.get("thread_id")
+            or metadata.get("chat_id")
+            or ""
+        )
 
     logger.error(
-        "bridge outbound dispatch sender_uid=%s conversation_id=%s metadata=%r",
-        sender_uid,
+        "bridge outbound dispatch chat_id=%s conversation_id=%s metadata=%r",
+        chat_id,
         conversation_id,
         metadata,
     )
-    post_result = await _send_text_to_uid(
-        sender_uid=sender_uid,
+    post_result = await _deliver_outbound_message(
+        chat_id=chat_id,
         content=content,
+        metadata=metadata,
         attachments=attachments,
     )
     return {
@@ -107,40 +111,72 @@ async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@dispatch_parser.register("p2p_chat_receive_msg")
-async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(event.get("event"))
-    message = dict(payload.get("message"))
-    sender_uid = str(payload.get("sender_uid"))
-    conversation_id = str(message.get("chat_id"))
-    content = str(message.get("content") or "")
-    attachments = normalize_attachments(content, [])
+@dispatch_parser.register("im_message_receive")
+async def parse_im_message_receive(event: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(event.get("event") or {})
+    org_id = str(payload.get("org_id") or "")
+    conversation_id = str(payload.get("conversation_id") or "")
+    user_id = str(payload.get("user_id") or "")
+    content = str(payload.get("content") or "")
+    metadata = dict(payload.get("metadata") or {})
+    raw_attachments = list(payload.get("attachments") or [])
+    attachments = (
+        raw_attachments
+        if metadata.get("attachments_materialized")
+        else normalize_attachments(content, raw_attachments)
+    )
 
-    await asyncio.to_thread(ensure_org_container, sender_uid)
-    await asyncio.to_thread(touch_org, sender_uid)
+    await asyncio.to_thread(ensure_org_container, org_id)
+    await asyncio.to_thread(touch_org, org_id)
 
     result = await get_bridge_hub().submit_message(
-        org_id=sender_uid,
+        org_id=org_id,
         conversation_id=conversation_id,
-        user_id=sender_uid,
+        user_id=user_id,
         content=content,
         attachments=attachments,
-        metadata={
-            "event_type": str(event.get("event_type", "")),
-            "chat_type": str(message.get("chat_type", "")),
-            "message_type": str(message.get("type", "")),
-            "message_id": str(message.get("message_id", "")),
-            "timestamp": str(event.get("timestamp", "")),
-            "source": "subscribe",
-            "to_single_uid": sender_uid,
-            "type": "text",
-        },
+        metadata=metadata,
     )
     logger.error("bridge processing result: %r", result)
     return {
         "ok": True,
         "response": result,
     }
+
+
+@dispatch_parser.register("p2p_chat_receive_msg")
+async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
+    parser = get_im_parser()
+    if hasattr(parser, "normalize_subscribe_payload"):
+        standardized = parser.normalize_subscribe_payload(event)
+    else:
+        payload = dict(event.get("event") or {})
+        message = dict(payload.get("message") or {})
+        sender_uid = str(payload.get("sender_uid") or "")
+        standardized = build_im_receive_event(
+            org_id=sender_uid,
+            conversation_id=str(message.get("chat_id") or ""),
+            user_id=sender_uid,
+            content=str(message.get("content") or ""),
+            attachments=[],
+            metadata={
+                "provider": "qxt",
+                "event_type": str(event.get("event_type", "")),
+                "chat_type": str(message.get("chat_type", "")),
+                "message_type": str(message.get("type", "")),
+                "message_id": str(message.get("message_id", "")),
+                "timestamp": str(event.get("timestamp", "")),
+                "source": "subscribe",
+                "reply_target": {
+                    "type": "qxt",
+                    "to_single_uid": sender_uid,
+                },
+            },
+        )
+    prepare_event = getattr(parser, "prepare_inbound_event", None)
+    if callable(prepare_event):
+        standardized = await prepare_event(standardized)
+    return await parse_im_message_receive(standardized)
 
 
 @dispatch_parser.register("bridge_outbound_message")

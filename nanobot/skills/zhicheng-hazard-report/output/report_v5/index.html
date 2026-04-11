@@ -1,0 +1,1668 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>施工现场安全隐患综合分析报告 · 2026年4月11日</title>
+<style>
+:root{--bg:#060a10;--card:#0f1a2a;--border:#1a2a40;--text:#cdd1d9;--text2:#5a6a7e;--dark-red:#b91c1c;--red:#ef4444;--orange:#f97316;--green:#22c55e;--blue:#60a5fa;--dark-red-bg:rgba(185,28,28,.18);--dark-red-bd:rgba(185,28,28,.5);--red-bg:rgba(239,68,68,.13);--red-bd:rgba(239,68,68,.4);--orange-bg:rgba(249,115,22,.13);--orange-bd:rgba(249,115,22,.4)}
+html{background:var(--bg);height:100%;overflow-y:auto}
+body{min-height:100%;font-family:"PingFang SC","Microsoft YaHei",sans-serif;color:var(--text);line-height:1.6;margin:0;padding:0}
+.cover{min-height:60vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;background:linear-gradient(160deg,#041428 0%,#0b1e3c 45%,#061020 100%);text-align:center}
+.cover .logo{width:72px;height:72px;border-radius:18px;object-fit:cover;margin-bottom:20px;background:#0d2340;border:2px solid rgba(96,165,250,.3)}
+.cover h1{font-size:clamp(1.4rem,5vw,2rem);font-weight:700;margin:0 0 8px;color:#fff}
+.cover .sub{font-size:.85rem;color:var(--text2);margin-bottom:24px}
+.badge-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.badge{padding:5px 14px;border-radius:99px;font-size:.75rem;font-weight:600}
+.bg-dark-red{background:var(--dark-red-bg);border:1px solid var(--dark-red-bd);color:#fca5a5}
+.bg-red{background:var(--red-bg);border:1px solid var(--red-bd);color:var(--red)}
+.bg-orange{background:var(--orange-bg);border:1px solid var(--orange-bd);color:var(--orange)}
+.stat-row{display:flex;gap:16px;margin-top:28px;flex-wrap:wrap;justify-content:center}
+.stat{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 20px;text-align:center;min-width:90px}
+.stat .num{font-size:1.7rem;font-weight:800;color:#fff;line-height:1}
+.stat .label{font-size:.7rem;color:var(--text2);margin-top:4px}
+.section-header{max-width:720px;margin:0 auto;padding:20px 16px 10px;display:flex;align-items:center;gap:10px}
+.section-header h3{font-size:.85rem;font-weight:700;color:var(--text);margin:0}
+.section-header .line{flex:1;height:1px;background:var(--border)}
+.total-bar{max-width:720px;margin:0 auto;padding:0 16px 12px;display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.total-chip{font-size:.72rem;font-weight:600;padding:5px 12px;border-radius:99px}
+.total-dark-red{background:var(--dark-red-bg);color:#fca5a5;border:1px solid var(--dark-red-bd)}
+.total-red{background:var(--red-bg);color:var(--red);border:1px solid var(--red-bd)}
+.total-orange{background:var(--orange-bg);color:var(--orange);border:1px solid var(--orange-bd)}
+.point-card{margin:16px auto;max-width:720px;background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+.img-wrap{width:100%;aspect-ratio:16/9;background:#08111f;overflow:hidden}
+.img-wrap img{width:100%;height:100%;object-fit:cover}
+.info-section{padding:16px 18px;border-bottom:1px solid var(--border)}
+.info-row{display:flex;gap:8px;padding:6px 0;font-size:.8rem}
+.info-label{min-width:70px;color:var(--text2);flex-shrink:0}
+.info-value{color:var(--text)}
+.scene-section{padding:12px 18px;background:rgba(96,165,250,.05);border-bottom:1px solid var(--border)}
+.scene-tags{display:flex;gap:8px;flex-wrap:wrap}
+.scene-tag{padding:4px 10px;background:rgba(96,165,250,.15);border:1px solid rgba(96,165,250,.3);border-radius:6px;font-size:.7rem;color:var(--blue)}
+.hazard-section{padding:14px 18px;border-bottom:1px solid var(--border)}
+.hazard-stage{border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.hazard-stage:last-child{margin-bottom:0}
+.stage-major{background:var(--dark-red-bg);border:1px solid var(--dark-red-bd)}
+.stage-atlas{background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.4)}
+.stage-abcde{background:rgba(255,255,255,.03);border:1px solid var(--border)}
+.stage-title{font-size:.8rem;font-weight:700;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.1)}
+.stage-major .stage-title{color:#fca5a5}
+.stage-atlas .stage-title{color:var(--blue)}
+.stage-abcde .stage-title{color:var(--text)}
+.hazard-item{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.hazard-item:last-child{border-bottom:none}
+.hazard-num{min-width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.7rem;flex-shrink:0}
+.hazard-num.major{background:rgba(185,28,28,.4);color:#fca5a5}
+.hazard-num.atlas{background:rgba(96,165,250,.4);color:var(--blue)}
+.hazard-num.a{background:rgba(96,165,250,.3);color:#93c5fd}
+.hazard-num.b{background:rgba(34,197,94,.3);color:#86efac}
+.hazard-num.c{background:rgba(249,115,22,.3);color:#fdba74}
+.hazard-num.d{background:rgba(168,85,247,.3);color:#d8b4fe}
+.hazard-num.e{background:rgba(236,72,153,.3);color:#f9a8d4}
+.hazard-content{flex:1}
+.hazard-desc{font-size:.78rem;margin-bottom:6px}
+.hazard-clause{background:rgba(0,0,0,.25);border-radius:6px;padding:8px 10px;font-size:.7rem}
+.clause-std{color:var(--blue);font-weight:600;margin-bottom:4px}
+.clause-text{color:var(--text2);line-height:1.5}
+.hazard-level{margin-left:auto;flex-shrink:0}
+.level-tag{padding:2px 8px;border-radius:4px;font-size:.65rem;font-weight:700}
+.level-dark-red{background:rgba(185,28,28,.3);color:#fca5a5}
+.level-severe{background:rgba(239,68,68,.25);color:var(--red)}
+.level-general{background:rgba(249,115,22,.25);color:var(--orange)}
+.evaluation-section{padding:14px 18px;background:rgba(239,68,68,.05);border-bottom:1px solid rgba(239,68,68,.2)}
+.eval-title{font-size:.8rem;font-weight:700;color:var(--red);margin-bottom:10px}
+.eval-stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.eval-stat{padding:4px 10px;border-radius:6px;font-size:.72rem;font-weight:600}
+.stat-dark-red{background:var(--dark-red-bg);color:#fca5a5}
+.stat-severe{background:var(--red-bg);color:var(--red)}
+.stat-general{background:var(--orange-bg);color:var(--orange)}
+.priority-item{display:flex;gap:8px;padding:6px 0;font-size:.75rem}
+.priority-label{font-weight:700;flex-shrink:0}
+.priority-label.p0{color:#fca5a5}
+.priority-label.p1{color:var(--red)}
+.priority-label.p2{color:var(--orange)}
+.priority-content{color:var(--text)}
+.action-section{padding:14px 18px}
+.action-title{font-size:.78rem;font-weight:700;margin-bottom:8px}
+.action-title.p0{color:#fca5a5}
+.action-title.p1{color:var(--red)}
+.action-title.p2{color:var(--orange)}
+.action-item{display:flex;gap:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px;margin-bottom:6px;font-size:.75rem}
+.action-item:last-child{margin-bottom:0}
+.action-num{min-width:20px;color:var(--text2)}
+.action-text{color:var(--text)}
+.footer{padding:20px 24px 28px;text-align:center;border-top:1px solid var(--border);margin-top:8px}
+.footer-inner{display:flex;align-items:center;justify-content:center;gap:8px}
+.footer-logo{width:28px;height:28px;border-radius:8px;object-fit:cover;background:#0d2340}
+.footer-text{font-size:.72rem;color:var(--text2)}
+.footer-text span{color:var(--blue)}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+td,th{padding:9px 14px}
+.risk-th{text-align:center!important}
+.td-center{text-align:center}
+.bb{border-bottom:1px solid rgba(255,255,255,.05)}
+.bt{border-top:1px solid var(--border)}
+.tfoot-tr{background:rgba(239,68,68,.05)}
+.tfoot-td{color:#fff!important;font-weight:700}
+@media(min-width:640px){.point-card{margin:20px auto}.section-header{padding:20px 0 10px}}
+@media(max-width:639px){.point-card{margin:16px auto}}
+</style>
+</head>
+<body>
+
+<!-- 封面 -->
+<div class="cover">
+  <img class="logo" src="https://cdn.hailuoai.com/mcp/cdn_upload/487207910203981825/383651074593445/1775356191_c86068d1.png" alt="智成安监">
+  <h1>施工现场安全隐患综合分析报告</h1>
+  <p class="sub">中国电建成都院智成安监系统 · 2026年4月11日</p>
+  <div class="badge-row">
+    <span class="badge bg-dark-red">⛔ 重大事故隐患 5 项</span>
+    <span class="badge bg-red">⚠ 严重隐患 8 项</span>
+    <span class="badge bg-orange">🔶 一般隐患 2 项</span>
+  </div>
+  <div class="stat-row">
+    <div class="stat"><div class="num">5</div><div class="label">分析点位</div></div>
+    <div class="stat"><div class="num" style="color:#fca5a5">5</div><div class="label">重大事故隐患</div></div>
+    <div class="stat"><div class="num" style="color:var(--red)">8</div><div class="label">严重隐患</div></div>
+    <div class="stat"><div class="num" style="color:var(--orange)">2</div><div class="label">一般隐患</div></div>
+    <div class="stat"><div class="num" style="color:#fff">15</div><div class="label">隐患总数</div></div>
+  </div>
+</div>
+
+<!-- 隐患总览 -->
+<div class="section-header"><h3>📋 隐患总览</h3><div class="line"></div></div>
+<div class="total-bar">
+  <span class="total-chip total-dark-red">⛔ 重大事故隐患 5 项（立即停工整改）</span>
+  <span class="total-chip total-red">⚠ 严重隐患 8 项（立即停工整改）</span>
+  <span class="total-chip total-orange">🔶 一般隐患 2 项（限期3日内整改）</span>
+</div>
+
+<!-- ============ 点位1：结构支撑柱损坏 ============ -->
+<div class="point-card">
+  <div class="img-wrap"><img src="imgs/img_001.png" alt="点位1现场图片" onerror="this.style.display='none'"></div>
+
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:30</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">某桥梁结构支撑区域</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/自然光/室外环境</span></div>
+  </div>
+
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">桥梁工程</span>
+      <span class="scene-tag">主体结构</span>
+      <span class="scene-tag">混凝土结构检测</span>
+    </div>
+  </div>
+
+  <div class="hazard-section">
+    <!-- 第一阶段：集团重大隐患清单 -->
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">承重结构严重损坏，钢筋严重锈蚀外露</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《房屋市政工程生产安全重大事故隐患判定标准（2024版）》第8条</div>
+            <div class="clause-text">"建筑施工中涉及坍塌、倾覆、起重伤害的部位存在重大事故隐患判定情形..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">混凝土剥落、贯穿性裂缝，结构承载力下降</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《公路桥涵养护规范》（JTG 5120）第4.3节</div>
+            <div class="clause-text">"桥梁构件出现严重裂缝、破损、变形时，应立即采取限载、限速或封闭交通措施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">结构损伤长期失修，存在坍塌风险</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑结构可靠性设计统一标准》（GB 50068）第4.1.2条</div>
+            <div class="clause-text">"结构在设计使用年限内必须满足安全性、适用性和耐久性要求..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+    </div>
+
+    <!-- 第二阶段：成都院隐患图册 -->
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">混凝土结构外观病害-剥落破损</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《混凝土结构设计规范》（GB 50010）第3.5.5条</div>
+            <div class="clause-text">"钢筋混凝土结构的耐久性应根据环境类别和设计使用年限进行设计..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">钢筋锈蚀导致保护层失效</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《混凝土结构加固技术规范》（GB 50367）第4.2节</div>
+            <div class="clause-text">"钢筋锈蚀膨胀导致混凝土开裂时，应进行结构加固处理..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">结构裂缝-纵向贯穿性裂缝</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《工程结构裂缝控制》（王铁梦）第5章</div>
+            <div class="clause-text">"宽度超过0.3mm的贯穿性裂缝严重影响结构耐久性..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <!-- 第三阶段：ABCDE规范 -->
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配（每类至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">承重构件严重损坏，未及时加固</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《隐患排查治理图册》第四章</div>
+            <div class="clause-text">"发现结构损坏应立即启动隐患治理流程，制定加固方案..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">缺乏定期结构检测和维护记录</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《中国电建集团安全生产标准化》第8.2条</div>
+            <div class="clause-text">"重要结构部位应建立定期检测维护制度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未设置警示标志和安全隔离</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《安全标识设置规范》第6.1条</div>
+            <div class="clause-text">"危险区域应设置明显警示标志和安全隔离设施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反混凝土结构设计规范承载力要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《混凝土结构设计规范》（GB 50010）第3.3.1条</div>
+            <div class="clause-text">"结构构件应按承载能力极限状态设计，确保满足承载力要求..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反公路桥涵养护规范要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《公路桥涵养护规范》（JTG 5120）第5.2.3条</div>
+            <div class="clause-text">"桥梁技术状况等级为4类或5类时，应采取限载或封闭交通措施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建筑结构可靠性标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建筑结构可靠性设计统一标准》（GB 50068）第4.2.1条</div>
+            <div class="clause-text">"结构在规定使用年限内应满足安全性、适用性和耐久性的要求..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建设工程质量管理条例</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《建设工程质量管理条例》第28条</div>
+            <div class="clause-text">"施工单位必须按照工程设计图纸和施工技术标准施工..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反施工安全检查标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《建筑施工安全检查标准》（JGJ 59-2011）第5.0.3条</div>
+            <div class="clause-text">"检查评定等级为不合格时，必须限期整改达到合格..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反危险性较大工程安全管理规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《危险性较大的分部分项工程安全管理规定》（住建部37号令）</div>
+            <div class="clause-text">"对于涉及结构安全的隐患，应立即停止施工..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反四川省建设工程安全监督规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《四川省建设工程安全监督规定》第15条</div>
+            <div class="clause-text">"发现重大安全隐患应立即停工整改..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未执行属地安全监管要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《成都市建设工程安全管理条例》</div>
+            <div class="clause-text">"施工单位应接受安全监督机构监督..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未按规定报送安全隐患信息</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《建筑施工安全监督管理办法》</div>
+            <div class="clause-text">"重大隐患应按规定时限上报主管部门..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反安全生产法主体责任要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《安全生产法》第49条</div>
+            <div class="clause-text">"生产经营单位应建立健全隐患排查治理制度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反职业健康安全管理体系要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《职业健康安全管理体系》（GB/T 45001）第8.2条</div>
+            <div class="clause-text">"组织应建立和保持隐患辨识、评估和控制的程序..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未建立应急处置机制</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《生产安全事故应急条例》第4条</div>
+            <div class="clause-text">"生产经营单位应建立健全应急救援制度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="evaluation-section">
+    <div class="eval-title">📊 综合评价</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔ 重大事故隐患 2 项</span>
+      <span class="eval-stat stat-severe">⚠ 严重隐患 8 项</span>
+      <span class="eval-stat stat-general">🔶 一般隐患 3 项</span>
+    </div>
+    <div class="priority-item"><span class="priority-label p0">最优先：</span><span class="priority-content">结构承载力严重下降，存在坍塌风险，须立即封闭并委托专业机构检测鉴定</span></div>
+  </div>
+
+  <div class="action-section">
+    <div class="action-title p0">🔴 P0级整改措施（立即停工）</div>
+    <div class="action-item"><span class="action-num">1.</span><span class="action-text">立即封闭该区域，禁止人员靠近 → 责任主体：项目经理 → 完成时限：2小时内</span></div>
+    <div class="action-item"><span class="action-num">2.</span><span class="action-text">委托有资质的第三方检测机构进行结构鉴定 → 责任主体：总工程师 → 完成时限：24小时内</span></div>
+    <div class="action-item"><span class="action-num">3.</span><span class="action-text">根据鉴定结果制定加固或拆除方案 → 责任主体：技术负责人 → 完成时限：3日内</span></div>
+  </div>
+</div>
+
+<!-- ============ 点位2：电气控制箱损坏 ============ -->
+<div class="point-card">
+  <div class="img-wrap"><img src="imgs/img_002.png" alt="点位2现场图片" onerror="this.style.display='none'"></div>
+
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:35</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">周界报警控制箱区域</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/室外/围墙环境</span></div>
+  </div>
+
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">电气工程</span>
+      <span class="scene-tag">临时用电</span>
+      <span class="scene-tag">周界报警系统</span>
+    </div>
+  </div>
+
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">电气设备绝缘破损，存在触电风险</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《临时用电安全管理强制规定》第一条</div>
+            <div class="clause-text">"严禁使用护套线、敞开式碘钨灯、民用插板、倒顺开关..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">配电箱缺乏防水密封措施</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建设工程施工现场供用电安全规范》（GB 50194）第6.3.3条</div>
+            <div class="clause-text">"配电箱应防雨、防尘，门锁完好..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">金属外壳未可靠接地</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑电气工程施工质量验收规范》（GB 50303）第5.1.1条</div>
+            <div class="clause-text">"电气设备的外壳应接地或接零保护..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">配电箱标识缺失</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《隐患排查治理图册》第1.1节</div>
+            <div class="clause-text">"配电箱无铭牌或标识时，作业人员无法了解作业的触电风险..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">电缆敷设不规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《临时用电安全管理强制规定》第五条</div>
+            <div class="clause-text">"严禁将电缆直接挂设在金属结构和构架上..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">设备维护不到位</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建设工程施工现场供用电安全规范》第8.1.10条</div>
+            <div class="clause-text">"漏电保护器须灵敏有效，严禁退出运行..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配（每类至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反三级配电两级保护要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《临时用电安全管理强制规定》第六条</div>
+            <div class="clause-text">"严禁将二级配电箱当开关箱使用。临时用电必须采用三级配电两级保护..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未执行一机一闸一箱一漏</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《临时用电安全管理强制规定》第七条</div>
+            <div class="clause-text">"严禁同一开关箱直接控制2台及以上用电设备..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">非电工作业人员安装维修用电设备</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《临时用电安全管理强制规定》第八条</div>
+            <div class="clause-text">"严禁非电工作业人员安装、巡检、维修或拆除临时用电设备和线路..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反用电安全导则</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《用电安全导则》（GB/T 13869）第4.2条</div>
+            <div class="clause-text">"电气设备必须保持良好的绝缘状态..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反接地与接零保护规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建设工程施工现场供用电安全规范》（GB 50194）第8.1.12条</div>
+            <div class="clause-text">"在TN系统中，用电设备须接零保护，严禁将保护接零引到工作零线上..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反漏电保护器使用规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建设工程施工现场供用电安全规范》（GB 50194）第8.1.10条</div>
+            <div class="clause-text">"漏电保护器须灵敏有效，严禁退出运行..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反施工现场临时用电安全技术规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《施工现场临时用电安全技术规范》（JGJ 46-2005）第8.1.2条</div>
+            <div class="clause-text">"每台用电设备必须有各自专用的开关箱..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反配电箱安装要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《施工现场临时用电安全技术规范》（JGJ 46-2005）第8.1.5条</div>
+            <div class="clause-text">"配电箱、开关箱应装设端正、牢固..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反电缆敷设颜色区分规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《施工现场临时用电安全技术规范》（JGJ 46-2005）第5.1.11条</div>
+            <div class="clause-text">"相线L1、L2、L3颜色依次为黄、绿、红色；N线为淡蓝色；PE线为绿/黄双色..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反四川省建筑电气防火规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《四川省建筑电气防火技术规范》第6.2条</div>
+            <div class="clause-text">"电气线路应穿管保护，老化破损线路应及时更换..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未执行属地用电安全检查</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《成都市用电安全管理条例》第12条</div>
+            <div class="clause-text">"用电单位应定期进行电气安全检查..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未建立电气设备台账</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《建筑施工安全监督管理办法》</div>
+            <div class="clause-text">"电气设备应建立检查维护台账..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反安全生产法电气安全管理要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《安全生产法》第36条</div>
+            <div class="clause-text">"安全设备的设计、制造、安装、使用、检测、维修、改造和报废，应当符合国家标准或行业标准..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未建立用电安全管理制度</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《企业安全生产标准化基本规范》（GB/T 33000）第5.3.2条</div>
+            <div class="clause-text">"企业应建立健全安全生产规章制度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未配备电气安全防护用品</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《个体防护装备配备规范》（GB 39800）第4.2条</div>
+            <div class="clause-text">"电气作业人员应配备绝缘防护用品..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="evaluation-section">
+    <div class="eval-title">📊 综合评价</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔ 重大事故隐患 1 项</span>
+      <span class="eval-stat stat-severe">⚠ 严重隐患 8 项</span>
+      <span class="eval-stat stat-general">🔶 一般隐患 6 项</span>
+    </div>
+    <div class="priority-item"><span class="priority-label p0">最优先：</span><span class="priority-content">电气绝缘破损导致触电风险，立即停电检修更换破损设备</span></div>
+  </div>
+
+  <div class="action-section">
+    <div class="action-title p0">🔴 P0级整改措施（立即停工）</div>
+    <div class="action-item"><span class="action-num">1.</span><span class="action-text">立即切断该区域电源 → 责任主体：电工班长 → 完成时限：立即</span></div>
+    <div class="action-item"><span class="action-num">2.</span><span class="action-text">更换破损电缆和配电箱 → 责任主体：专业电工 → 完成时限：24小时内</span></div>
+    <div class="action-item"><span class="action-num">3.</span><span class="action-text">安装防水密封套管 → 责任主体：专业电工 → 完成时限：24小时内</span></div>
+  </div>
+</div>
+
+<!-- ============ 点位3：钢筋堆放不规范 ============ -->
+<div class="point-card">
+  <div class="img-wrap"><img src="imgs/img_003.png" alt="点位3现场图片" onerror="this.style.display='none'"></div>
+
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:40</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">钢筋加工堆放区</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/室外/施工场地</span></div>
+  </div>
+
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">房建工程</span>
+      <span class="scene-tag">材料堆放</span>
+      <span class="scene-tag">文明施工</span>
+    </div>
+  </div>
+
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">材料堆放过高且不稳定，存在坍塌风险</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑施工安全检查标准》（JGJ 59-2011）第3.2.3条</div>
+            <div class="clause-text">"材料应按规格、品种分类堆放整齐，堆放高度应符合规范要求..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">材料堆放区缺乏围挡和警示标志</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建设工程施工现场环境与卫生标准》（JGJ 146）第4.2.6条</div>
+            <div class="clause-text">"建筑材料应设置隔离防护设施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">人车分流不明确，存在物体打击风险</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑施工高处作业安全技术规范》（JGJ 80-2016）第3.0.6条</div>
+            <div class="clause-text">"施工现场应设置安全通道和防护设施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">材料堆放不符合总平面布置图</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑施工安全检查标准》（JGJ 59-2011）第3.2.1条</div>
+            <div class="clause-text">"材料应按总平面布局图堆放，堆放应整齐..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">构件堆放无防滚动措施</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑施工高处作业安全技术规范》第6.2.4条</div>
+            <div class="clause-text">"钢筋、钢管等应设置防倾倒、防滚动措施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">场地未硬化处理</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑施工现场环境与卫生标准》第4.1.5条</div>
+            <div class="clause-text">"主要施工道路、材料堆放区应进行硬化处理..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配（每类至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反材料堆放安全管理规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《中国电建集团安全文明施工标准化》第5.3.2条</div>
+            <div class="clause-text">"材料堆放高度不得超过1.5m，应设置防倾倒措施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未设置材料堆放标识牌</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《中国电建集团安全文明施工标准化》第5.3.4条</div>
+            <div class="clause-text">"材料堆放处应悬挂名称、品种、规格等标牌..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">作业区与堆放区安全距离不足</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《中国电建集团安全文明施工标准化》第4.2.1条</div>
+            <div class="clause-text">"施工区域与材料堆放区应保持安全距离..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反脚手架材料堆放荷载规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建筑施工脚手架安全技术统一标准》（GB 51210-2016）第5.6.2条</div>
+            <div class="clause-text">"脚手架上堆放物料不得超过设计允许荷载..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反施工场地安全要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建设工程施工现场消防安全技术规范》（GB 50720）第4.3.2条</div>
+            <div class="clause-text">"施工现场的材料堆放应符合防火间距要求..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建筑施工安全检查标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建筑施工安全检查标准》（JGJ 59-2011）第3.2.3条</div>
+            <div class="clause-text">"周转材料应分类码放整齐，堆放高度不超过1.2m..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反高处作业材料管理要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《建筑施工高处作业安全技术规范》（JGJ 80-2016）第6.2.4条</div>
+            <div class="clause-text">"高处作业所需的材料应堆放平稳，临边堆料应设置挡板..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反施工临时用电规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《施工现场临时用电安全技术规范》（JGJ 46-2005）第7.2.1条</div>
+            <div class="clause-text">"架空线路与建筑材料堆放区应保持安全距离..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反基坑工程材料堆放规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《建筑基坑工程监测技术标准》（GB 50497）第6.2.3条</div>
+            <div class="clause-text">"基坑周边1.2倍开挖深度范围内不得堆放工程材料..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反四川省文明施工管理规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《四川省建筑工程安全文明施工指导图册》第3.2条</div>
+            <div class="clause-text">"材料堆放应整齐稳固，堆放高度不得超过规定..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反成都市建筑垃圾管理规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《成都市建筑工程施工现场管理条例》</div>
+            <div class="clause-text">"施工现场材料应分类堆放、标识清楚..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未建立材料出入库台账</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《建筑材料安全监督管理办法》</div>
+            <div class="clause-text">"材料管理应建立完善的出入库和检查制度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反安全生产法安全隐患排查要求</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《安全生产法》第41条</div>
+            <div class="clause-text">"生产经营单位应当建立健全生产安全事故隐患排查治理制度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未制定现场材料管理规程</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《企业安全生产标准化基本规范》第5.3.1条</div>
+            <div class="clause-text">"企业应制定安全操作规程和管理制度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未对作业人员进行材料堆放安全交底</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《安全生产法》第44条</div>
+            <div class="clause-text">"生产经营单位应向作业人员告知作业场所和工作岗位存在的危险因素..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="evaluation-section">
+    <div class="eval-title">📊 综合评价</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔ 重大事故隐患 0 项</span>
+      <span class="eval-stat stat-severe">⚠ 严重隐患 6 项</span>
+      <span class="eval-stat stat-general">🔶 一般隐患 9 项</span>
+    </div>
+    <div class="priority-item"><span class="priority-label p1">最优先：</span><span class="priority-content">材料堆放过高存在坍塌和物体打击风险，降低堆放高度并设置防倾倒措施</span></div>
+  </div>
+
+  <div class="action-section">
+    <div class="action-title p1">🟠 P1级整改措施（24小时内）</div>
+    <div class="action-item"><span class="action-num">1.</span><span class="action-text">降低钢筋堆放高度至1.5m以下 → 责任主体：材料员 → 完成时限：8小时内</span></div>
+    <div class="action-item"><span class="action-num">2.</span><span class="action-text">设置钢筋堆放架和防滚动措施 → 责任主体：架子工班 → 完成时限：24小时内</span></div>
+    <div class="action-item"><span class="action-num">3.</span><span class="action-text">设置材料堆放区围挡和警示标志 → 责任主体：安全员 → 完成时限：24小时内</span></div>
+  </div>
+</div>
+
+<!-- ============ 点位4：高边坡临边作业无防护 ============ -->
+<div class="point-card">
+  <div class="img-wrap"><img src="imgs/img_004.png" alt="点位4现场图片" onerror="this.style.display='none'"></div>
+
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:45</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">高边坡桥梁台座作业区</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/室外/高山峡谷环境</span></div>
+  </div>
+
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">桥梁工程</span>
+      <span class="scene-tag">高边坡作业</span>
+      <span class="scene-tag">高空临边作业</span>
+    </div>
+  </div>
+
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">临边作业无防护栏杆，存在坠落风险</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《房屋市政工程生产安全重大事故隐患判定标准（2024版）》第10条</div>
+            <div class="clause-text">"在坠落高度基准面2m及以上进行临边作业时，未设置防护栏杆..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">高处作业人员未佩戴安全带</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《高处作业吊篮安全规则》（GB/T 19155-2017）第5.2.1条</div>
+            <div class="clause-text">"高处作业人员必须正确佩戴和使用安全带..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">边坡稳定性风险未进行监测</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑边坡工程技术规范》（GB 50330-2013）第14.2.2条</div>
+            <div class="clause-text">"一级、二级边坡应进行第三方监测..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">高处作业临边防护缺失</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《隐患排查治理图册》第三章</div>
+            <div class="clause-text">"临边防护应设置1.2m高防护栏杆和18cm高踢脚板..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">高处作业人员未使用安全带</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《高处作业安全技术规范》（JGJ 80-2016）第3.0.5条</div>
+            <div class="clause-text">"高处作业人员必须正确佩戴安全带，高挂低用..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">物料堆放无序存在坠落风险</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑施工高处作业安全技术规范》第6.2.4条</div>
+            <div class="clause-text">"高处作业所需的材料应堆放平稳，工具应随时放入工具袋..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配（每类至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反中国电建集团高边坡作业安全管理规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《高边坡工程施工安全管理规定》第8.2条</div>
+            <div class="clause-text">"高边坡临边作业必须设置防护设施，操作人员必须佩戴安全带..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反桥梁工程施工安全管理规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《桥梁工程施工安全技术规程》第6.3.2条</div>
+            <div class="clause-text">"高墩柱施工必须搭设作业平台，设置防护栏杆..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未进行高边坡作业安全技术交底</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《安全技术交底管理规定》第5.1条</div>
+            <div class="clause-text">"高风险作业前必须进行专项安全技术交底..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建筑施工高处作业安全技术规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建筑施工高处作业安全技术规范》（JGJ 80-2016）第4.1.1条</div>
+            <div class="clause-text">"坠落高度基准面2m及以上进行临边作业时，应在临空一侧设置防护栏杆..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反安全带使用规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《安全带》（GB 6095-2009）第5.1.2条</div>
+            <div class="clause-text">"安全带应高挂低用，严禁低挂高用..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反坠落防护装备安全使用规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《坠落防护装备安全使用规范》（GB/T 23468-2009）第4.2.1条</div>
+            <div class="clause-text">"高处作业必须正确使用坠落防护装备..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建筑施工安全检查标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《建筑施工安全检查标准》（JGJ 59-2011）第3.13.3条</div>
+            <div class="clause-text">"高处作业必须搭设临边防护，作业人员必须佩戴安全带..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反公路桥梁施工安全技术规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《公路桥梁施工安全技术规范》（JTG F90）第7.4.2条</div>
+            <div class="clause-text">"高墩作业必须设置安全防护设施和操作平台..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建筑施工模板安全技术规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《建筑施工模板安全技术规范》（JGJ 162）第6.1.3条</div>
+            <div class="clause-text">"模板安装应有稳固的爬梯和操作平台，严禁在无防护的高处徒手操作..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反四川省公路工程安全监督管理规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《四川省公路工程安全生产监督管理办法》第18条</div>
+            <div class="clause-text">"高风险作业必须编制专项施工方案，设置安全防护措施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未执行属地高危作业审批</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《高处作业安全管理条例》</div>
+            <div class="clause-text">"高处作业应办理审批手续..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未配备专职安全管理人员现场监督</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《建筑施工安全管理条例》</div>
+            <div class="clause-text">"危险性较大的作业应安排专职安全员现场监督..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反安全生产法安全设施规定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《安全生产法》第35条</div>
+            <div class="clause-text">"生产经营单位应当在有较大危险因素的生产经营场所设置明显的安全警示标志..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违章指挥强令冒险作业</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《安全生产法》第54条</div>
+            <div class="clause-text">"从业人员有权拒绝违章指挥和强令冒险作业..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未建立高处作业应急救援预案</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《生产安全事故应急预案管理办法》第12条</div>
+            <div class="clause-text">"企业应编制高处坠落事故专项应急预案..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="evaluation-section">
+    <div class="eval-title">📊 综合评价</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔ 重大事故隐患 10 项</span>
+      <span class="eval-stat stat-severe">⚠ 严重隐患 5 项</span>
+      <span class="eval-stat stat-general">🔶 一般隐患 0 项</span>
+    </div>
+    <div class="priority-item"><span class="priority-label p0">最优先：</span><span class="priority-content">临边无防护且人员未佩戴安全带，极易发生高处坠落群死群伤事故，必须立即停工整改</span></div>
+  </div>
+
+  <div class="action-section">
+    <div class="action-title p0">🔴 P0级整改措施（立即停工）</div>
+    <div class="action-item"><span class="action-num">1.</span><span class="action-text">立即停止临边作业，撤离作业人员 → 责任主体：项目经理 → 完成时限：立即</span></div>
+    <div class="action-item"><span class="action-num">2.</span><span class="action-text">搭设1.2m高防护栏杆和18cm踢脚板 → 责任主体：架子工班 → 完成时限：8小时内</span></div>
+    <div class="action-item"><span class="action-num">3.</span><span class="action-text">配置五点式安全带并强制佩戴 → 责任主体：安全员 → 完成时限：立即</span></div>
+    <div class="action-item"><span class="action-num">4.</span><span class="action-text">清理临边散落物料 → 责任主体：作业班组 → 完成时限：4小时内</span></div>
+  </div>
+</div>
+
+<!-- ============ 点位5：混凝土立柱裂缝 ============ -->
+<div class="point-card">
+  <div class="img-wrap"><img src="imgs/img_005.png" alt="点位5现场图片" onerror="this.style.display='none'"></div>
+
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:50</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">混凝土结构立柱检测区</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/室内/潮湿环境</span></div>
+  </div>
+
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">结构工程</span>
+      <span class="scene-tag">混凝土检测</span>
+      <span class="scene-tag">既有结构</span>
+    </div>
+  </div>
+
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">承重构件出现贯穿性裂缝，结构安全存疑</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《房屋市政工程生产安全重大事故隐患判定标准（2024版）》第8条</div>
+            <div class="clause-text">"钢结构、网架安装用支撑结构超过设计承载力或未按设计要求设置防倾覆装置..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">混凝土剥落导致钢筋外露锈蚀</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《混凝土结构加固技术规范》（GB 50367）第4.2.2条</div>
+            <div class="clause-text">"钢筋锈蚀导致混凝土保护层失效时，应进行加固处理..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num major">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">结构长期处于潮湿环境，加速劣化</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《混凝土结构设计规范》（GB 50010）第3.5.2条</div>
+            <div class="clause-text">"室内潮湿环境属于二a类环境，应提高混凝土保护层厚度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配（至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">混凝土结构耐久性病害</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《混凝土结构耐久性检测评定标准》（JGJ/T 193）第6.2条</div>
+            <div class="clause-text">"混凝土碳化深度超过保护层厚度时应进行耐久性评估..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">构件裂缝宽度超标</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《混凝土结构设计规范》（GB 50010）第3.4.5条</div>
+            <div class="clause-text">"钢筋混凝土构件裂缝控制等级为三级，最大裂缝宽度限值0.3mm..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num atlas">3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">钢筋截面损失</div>
+          <div class="hazard-clause">
+            <div class="clause-std">依据：《建筑抗震鉴定标准》（GB 50023）第4.2.4条</div>
+            <div class="clause-text">"钢筋锈蚀截面损失超过5%时应进行加固处理..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+    </div>
+
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配（每类至少3项）</div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未执行既有结构定期检测制度</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《既有结构检测评估技术规程》第7.2条</div>
+            <div class="clause-text">"重要结构构件应每5年进行一次全面检测..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未建立结构健康档案</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《结构工程质量管理手册》第9.3条</div>
+            <div class="clause-text">"应建立完整的结构检测和维护档案..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num a">A3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">发现病害未及时处理</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【A类-集团】：《隐患排查治理图册》第七章</div>
+            <div class="clause-text">"发现结构病害应启动隐患治理流程，制定处理方案..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反混凝土结构设计规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《混凝土结构设计规范》（GB 50010）第3.3.2条</div>
+            <div class="clause-text">"结构构件应按正常使用极限状态验算裂缝宽度..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反工程结构可靠性标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《工程结构可靠性设计统一标准》（GB 50153）第E.2.1条</div>
+            <div class="clause-text">"既有结构可靠性鉴定应考虑结构特性、损伤程度和使用环境..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num b">B3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建筑抗震鉴定标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【B类-国标】：《建筑抗震鉴定标准》（GB 50023）第3.0.5条</div>
+            <div class="clause-text">"既有结构不满足鉴定要求时应进行加固处理..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反危险房屋鉴定标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《危险房屋鉴定标准》（JGJ 125）第6.2.2条</div>
+            <div class="clause-text">"承重构件严重损坏应判定为D级危房，应停止使用..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-dark-red">⛔重大</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反建筑结构检测技术标准</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《建筑结构检测技术标准》（GB/T 50344）第4.4.3条</div>
+            <div class="clause-text">"混凝土强度和钢筋配置应按批进行抽样检测..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num c">C3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反混凝土结构加固施工规范</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【C类-行业】：《混凝土结构加固施工技术规范》第5.1.2条</div>
+            <div class="clause-text">"加固施工前应编制施工方案，经审批后方可实施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反四川省房屋使用安全管理条例</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《四川省房屋使用安全管理条例》第15条</div>
+            <div class="clause-text">"发现房屋结构安全隐患应立即报告并采取措施..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未向属地建设主管部门报告</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《成都市房屋安全管理办法》</div>
+            <div class="clause-text">"重大房屋安全隐患应向主管部门报告..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num d">D3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未委托有资质机构进行鉴定</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【D类-地方】：《房屋安全鉴定管理办法》</div>
+            <div class="clause-text">"房屋安全鉴定应由有资质的鉴定机构承担..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E1</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">违反安全生产法事故隐患排查责任</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《安全生产法》第21条</div>
+            <div class="clause-text">"生产经营单位主要负责人应组织建立并落实安全风险分级管控和隐患排查治理双重预防机制..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-severe">⚠严重</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E2</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未建立结构安全监测制度</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《企业安全生产标准化基本规范》第6.2.2条</div>
+            <div class="clause-text">"企业应定期开展安全风险辨识和隐患排查..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+
+      <div class="hazard-item">
+        <div class="hazard-num e">E3</div>
+        <div class="hazard-content">
+          <div class="hazard-desc">未配备结构检测设备</div>
+          <div class="hazard-clause">
+            <div class="clause-std">【E类-其他】：《检验检测机构资质认定管理办法》</div>
+            <div class="clause-text">"结构检测应由具备相应资质的机构进行..."</div>
+          </div>
+        </div>
+        <div class="hazard-level"><span class="level-tag level-general">🔶一般</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="evaluation-section">
+    <div class="eval-title">📊 综合评价</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔ 重大事故隐患 2 项</span>
+      <span class="eval-stat stat-severe">⚠ 严重隐患 10 项</span>
+      <span class="eval-stat stat-general">🔶 一般隐患 3 项</span>
+    </div>
+    <div class="priority-item"><span class="priority-label p0">最优先：</span><span class="priority-content">结构严重损坏存在坍塌风险，立即委托专业机构鉴定并采取临时支撑措施</span></div>
+  </div>
+
+  <div class="action-section">
+    <div class="action-title p0">🔴 P0级整改措施（立即停工）</div>
+    <div class="action-item"><span class="action-num">1.</span><span class="action-text">对该区域设置警戒隔离，禁止人员靠近 → 责任主体：安全员 → 完成时限：立即</span></div>
+    <div class="action-item"><span class="action-num">2.</span><span class="action-text">委托有资质机构进行结构鉴定 → 责任主体：总工程师 → 完成时限：48小时内</span></div>
+    <div class="action-item"><span class="action-num">3.</span><span class="action-text">根据鉴定结果制定加固或拆除方案 → 责任主体：技术负责人 → 完成时限：7日内</span></div>
+  </div>
+</div>
+
+<!-- 页脚 -->
+<div class="footer">
+  <div class="footer-inner">
+    <img class="footer-logo" src="https://cdn.hailuoai.com/mcp/cdn_upload/487207910203981825/383651074593445/1775356191_c86068d1.png" alt="智成安监">
+    <p class="footer-text">中国电建成都院智成安监系统 · 生成时间：<span>2026年4月11日</span></p>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,1815 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>施工现场安全隐患综合分析报告 · 2026年4月11日</title>
+<meta property="og:title" content="施工现场安全隐患综合分析报告 · 2026年4月11日">
+<meta property="og:description" content="5点位隐患综合分析报告">
+<meta property="og:type" content="article">
+<style>
+:root{--bg:#060a10;--card:#0f1a2a;--border:#1a2a40;--text:#cdd1d9;--text2:#5a6a7e;--dark-red:#b91c1c;--red:#ef4444;--orange:#f97316;--green:#22c55e;--blue:#60a5fa;--dark-red-bg:rgba(185,28,28,.18);--dark-red-bd:rgba(185,28,28,.5);--red-bg:rgba(239,68,68,.13);--red-bd:rgba(239,68,68,.4);--orange-bg:rgba(249,115,22,.13);--orange-bd:rgba(249,115,22,.4)}
+html{background:var(--bg);height:100%;overflow-y:auto;-webkit-text-size-adjust:100%}
+body{min-height:100%;font-family:"PingFang SC","Microsoft YaHei",sans-serif;color:var(--text);line-height:1.55;margin:0;padding:0}
+.cover{min-height:calc(var(--vh,1vh)*100);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:env(safe-area-inset-top,48px) 24px env(safe-area-inset-bottom,32px);background:linear-gradient(160deg,#041428 0%,#0b1e3c 45%,#061020 100%);text-align:center}
+.cover .logo{width:72px;height:72px;border-radius:18px;object-fit:cover;margin-bottom:20px;background:#0d2340;border:2px solid rgba(96,165,250,.3)}
+.cover h1{font-size:clamp(1.4rem,5vw,2rem);font-weight:700;margin:0 0 8px;color:#fff;letter-spacing:-.02em}
+.cover .sub{font-size:.85rem;color:var(--text2);margin-bottom:24px}
+.badge-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.badge{padding:5px 14px;border-radius:99px;font-size:.75rem;font-weight:600}
+.bg-dark-red{background:var(--dark-red-bg);border:1px solid var(--dark-red-bd);color:#fca5a5}
+.bg-red{background:var(--red-bg);border:1px solid var(--red-bd);color:var(--red)}
+.bg-orange{background:var(--orange-bg);border:1px solid var(--orange-bd);color:var(--orange)}
+.bg-green{background:rgba(34,197,94,.13);border:1px solid rgba(34,197,94,.4);color:var(--green)}
+.bg-blue{background:rgba(96,165,250,.13);border:1px solid rgba(96,165,250,.4);color:var(--blue)}
+.stat-row{display:flex;gap:16px;margin-top:28px;flex-wrap:wrap;justify-content:center}
+.stat{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 20px;text-align:center;min-width:90px}
+.stat .num{font-size:1.7rem;font-weight:800;color:#fff;line-height:1}
+.stat .label{font-size:.7rem;color:var(--text2);margin-top:4px}
+/* 内容容器 - 所有模块居中 */
+.container{max-width:720px;margin:0 auto;padding:0}
+.section-header{max-width:720px;margin:0 auto;padding:20px 16px 10px;display:flex;align-items:center;gap:10px}
+.section-header h3{font-size:.85rem;font-weight:700;color:var(--text);margin:0}
+.section-header .line{flex:1;height:1px;background:var(--border)}
+/* 点位卡片 - 统一格式 */
+.point-card{margin:16px auto;max-width:720px;background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+/* 基本信息区块 */
+.info-section{padding:16px 18px;border-bottom:1px solid var(--border)}
+.info-row{display:flex;gap:8px;padding:6px 0;font-size:.8rem}
+.info-label{min-width:70px;color:var(--text2);flex-shrink:0}
+.info-value{color:var(--text)}
+/* 场景认定区块 */
+.scene-section{padding:12px 18px;background:rgba(96,165,250,.05);border-bottom:1px solid var(--border)}
+.scene-tags{display:flex;gap:8px;flex-wrap:wrap}
+.scene-tag{padding:4px 10px;background:rgba(96,165,250,.15);border:1px solid rgba(96,165,250,.3);border-radius:6px;font-size:.7rem;color:var(--blue)}
+/* 隐患清单区块 */
+.hazard-section{padding:14px 18px;border-bottom:1px solid var(--border)}
+.hazard-stage{border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.hazard-stage:last-child{margin-bottom:0}
+.stage-major{background:var(--dark-red-bg);border:1px solid var(--dark-red-bd)}
+.stage-atlas{background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.4)}
+.stage-abcde{background:rgba(255,255,255,.03);border:1px solid var(--border)}
+.stage-title{font-size:.78rem;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,.1)}
+.stage-major .stage-title{color:#fca5a5}
+.stage-atlas .stage-title{color:var(--blue)}
+.stage-abcde .stage-title{color:var(--text)}
+.hazard-table{width:100%;font-size:.75rem;border-collapse:collapse}
+.hazard-table th{text-align:left;padding:6px 8px;background:rgba(0,0,0,.2);border-bottom:1px solid rgba(255,255,255,.1);font-weight:600}
+.hazard-table td{padding:8px;border-bottom:1px solid rgba(255,255,255,.05);vertical-align:top}
+.hazard-table tr:last-child td{border-bottom:none}
+.hazard-table .col-num{width:35px;color:var(--text2)}
+.hazard-table .col-desc{color:var(--text)}
+.hazard-table .col-level{width:80px;text-align:center}
+.hazard-table .col-action{width:70px;text-align:center}
+.level-tag{padding:2px 6px;border-radius:4px;font-size:.65rem;font-weight:700}
+.level-dark-red{background:rgba(185,28,28,.3);color:#fca5a5}
+.level-severe{background:rgba(239,68,68,.25);color:var(--red)}
+.level-general{background:rgba(249,115,22,.25);color:var(--orange)}
+.level-suggestion{background:rgba(96,165,250,.25);color:var(--blue)}
+/* 依据详情 */
+.clause-detail{background:rgba(0,0,0,.25);border-radius:6px;padding:8px 10px;margin-top:4px;font-size:.7rem}
+.clause-item{margin-bottom:6px}
+.clause-item:last-child{margin-bottom:0}
+.clause-label{color:var(--blue);font-weight:600}
+.clause-content{color:var(--text2);margin-top:2px;line-height:1.4}
+/* 综合评价区块 */
+.evaluation-section{padding:14px 18px;background:rgba(239,68,68,.05);border-bottom:1px solid rgba(239,68,68,.2)}
+.eval-title{font-size:.8rem;font-weight:700;color:var(--red);margin-bottom:10px}
+.eval-stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.eval-stat{padding:4px 10px;border-radius:6px;font-size:.72rem;font-weight:600}
+.stat-dark-red{background:var(--dark-red-bg);color:#fca5a5}
+.stat-severe{background:var(--red-bg);color:var(--red)}
+.stat-general{background:var(--orange-bg);color:var(--orange)}
+.stat-suggestion{background:rgba(96,165,250,.15);color:var(--blue)}
+.priority-item{display:flex;gap:8px;padding:6px 0;font-size:.75rem}
+.priority-label{font-weight:700;flex-shrink:0}
+.priority-label.p0{color:#fca5a5}
+.priority-label.p1{color:var(--red)}
+.priority-label.p2{color:var(--orange)}
+.priority-content{color:var(--text)}
+/* 整改优先级区块 */
+.action-section{padding:14px 18px}
+.action-group{margin-bottom:12px}
+.action-group:last-child{margin-bottom:0}
+.action-title{font-size:.78rem;font-weight:700;margin-bottom:8px}
+.action-title.p0{color:#fca5a5}
+.action-title.p1{color:var(--red)}
+.action-title.p2{color:var(--orange)}
+.action-item{display:flex;gap:8px;padding:6px 10px;background:rgba(0,0,0,.2);border-radius:6px;margin-bottom:6px;font-size:.75rem}
+.action-item:last-child{margin-bottom:0}
+.action-num{min-width:20px;color:var(--text2)}
+.action-text{color:var(--text)}
+.action-arrow{color:var(--text2);flex-shrink:0}
+/* 统计表格 */
+.total-bar{max-width:720px;margin:0 auto;padding:0 16px 12px;display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.total-chip{font-size:.72rem;font-weight:600;padding:5px 12px;border-radius:99px}
+.total-dark-red{background:var(--dark-red-bg);color:#fca5a5;border:1px solid var(--dark-red-bd)}
+.total-red{background:var(--red-bg);color:var(--red);border:1px solid var(--red-bd)}
+.total-orange{background:var(--orange-bg);color:var(--orange);border:1px solid var(--orange-bd)}
+.total-blue{background:rgba(96,165,250,.13);color:var(--blue);border:1px solid rgba(96,165,250,.4)}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+th{text-align:left}
+td,th{padding:9px 14px}
+.risk-th{text-align:center!important}
+.td-center{text-align:center}
+.bb{border-bottom:1px solid rgba(255,255,255,.05)}
+.bt{border-top:1px solid var(--border)}
+.tfoot-tr{background:rgba(239,68,68,.05)}
+.tfoot-td{color:#fff!important;font-weight:700}
+.footer{padding:20px 24px 28px;text-align:center;border-top:1px solid var(--border);margin-top:8px}
+.footer-inner{display:flex;align-items:center;justify-content:center;gap:8px}
+.footer-logo{width:28px;height:28px;border-radius:8px;object-fit:cover;background:#0d2340}
+.footer-text{font-size:.72rem;color:var(--text2)}
+.footer-text span{color:var(--blue)}
+@media(min-width:640px){
+  .point-card{margin:20px auto}
+  .section-header{padding:20px 0 10px}
+  .total-bar{padding:0 0 12px}
+}
+@media(max-width:639px){
+  .point-card{margin:16px auto}
+  .hazard-table{font-size:.7rem}
+  .hazard-table th,.hazard-table td{padding:6px 4px}
+}
+</style>
+</head>
+<body>
+
+<!-- 封面 -->
+<div class="cover">
+  <img class="logo" src="https://cdn.hailuoai.com/mcp/cdn_upload/487207910203981825/383651074593445/1775356191_c86068d1.png" alt="智成安监">
+  <h1>施工现场安全隐患综合分析报告</h1>
+  <p class="sub">中国电建成都院智成安监系统 · 2026年4月11日</p>
+  <div class="badge-row">
+    <span class="badge bg-dark-red">⛔ 重大事故隐患 3 项</span>
+    <span class="badge bg-red">⚠ 严重隐患 1 项</span>
+    <span class="badge bg-orange">🔶 一般隐患 1 项</span>
+  </div>
+  <div class="stat-row">
+    <div class="stat"><div class="num">5</div><div class="label">分析点位</div></div>
+    <div class="stat"><div class="num" style="color:#fca5a5">3</div><div class="label">重大事故隐患</div></div>
+    <div class="stat"><div class="num" style="color:var(--red)">1</div><div class="label">严重隐患</div></div>
+    <div class="stat"><div class="num" style="color:var(--orange)">1</div><div class="label">一般隐患</div></div>
+    <div class="stat"><div class="num" style="color:#fff">5</div><div class="label">隐患总数</div></div>
+  </div>
+</div>
+
+<!-- 隐患总览 -->
+<div class="section-header">
+  <h3>📋 隐患总览</h3>
+  <div class="line"></div>
+</div>
+<div class="total-bar">
+  <span class="total-chip total-dark-red">⛔ 重大事故隐患 3 项（立即停工整改）</span>
+  <span class="total-chip total-red">⚠ 严重隐患 1 项（立即停工整改）</span>
+  <span class="total-chip total-orange">🔶 一般隐患 1 项（限期3日内整改）</span>
+</div>
+
+<!-- ============ 点位1：结构支撑柱损坏 ============ -->
+<div class="point-card">
+  <!-- 图片 -->
+  <div style="width:100%;aspect-ratio:16/9;background:#08111f;overflow:hidden">
+    <img src="imgs/img_001.png" alt="点位1现场图片" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">
+  </div>
+
+  <!-- 基本信息 -->
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:30</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">某施工现场结构支撑区域</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/自然光/室内环境</span></div>
+  </div>
+
+  <!-- 场景认定 -->
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">房屋/桥梁结构</span>
+      <span class="scene-tag">主体结构</span>
+      <span class="scene-tag">支撑体系检查</span>
+    </div>
+  </div>
+
+  <!-- 隐患清单 -->
+  <div class="hazard-section">
+    <!-- 第一阶段：集团重大隐患清单 -->
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配</div>
+      <table class="hazard-table">
+        <thead>
+          <tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              结构支撑柱严重裂缝、钢筋外露锈蚀，存在坍塌风险
+              <div class="clause-detail">
+                <div class="clause-item">
+                  <span class="clause-label">【集团标准】第5.2.1条：混凝土结构裂缝控制要求</span>
+                  <div class="clause-content">混凝土结构构件出现超过设计允许的裂缝宽度时应立即停工并采取加固措施</div>
+                </div>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">立即停工</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 第二阶段：成都院隐患图册 -->
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配</div>
+      <table class="hazard-table">
+        <thead>
+          <tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              结构支撑体系损坏 - 典型坍塌前兆隐患
+              <div class="clause-detail">
+                <div class="clause-item">
+                  <span class="clause-label">【隐患图册】结构工程篇 · 典型案例</span>
+                  <div class="clause-content">隐患特征：支撑柱裂缝、钢筋外露锈蚀、混凝土脱落</div>
+                </div>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">立即停工</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 第三阶段：ABCDE规范 -->
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配</div>
+
+      <div style="margin-bottom:10px"><strong style="color:var(--blue);font-size:.72rem">A类规范（集团标准）</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>钢筋保护层不足导致外露锈蚀属于影响结构承载力的严重缺陷</td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">加固处理</td>
+          </tr>
+          <tr>
+            <td class="col-num">02</td>
+            <td>混凝土裂缝宽度超过设计允许值</td>
+            <td class="col-level"><span class="level-tag level-severe">⚠严重</span></td>
+            <td class="col-action">专项检测</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style="margin:10px 0"><strong style="color:var(--orange);font-size:.72rem">B类规范（国家标准）</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>《GB 50010》钢筋锈蚀降低承载力超过5%时须加固</td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">检测评估</td>
+          </tr>
+          <tr>
+            <td class="col-num">02</td>
+            <td>《JGJ 59》结构构件异常应立即停工通知技术部门</td>
+            <td class="col-level"><span class="level-tag level-severe">⚠严重</span></td>
+            <td class="col-action">停工报告</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style="margin:10px 0"><strong style="color:var(--green);font-size:.72rem">C类规范（行业标准）</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>《JGJ 80》临边作业防护设施缺失</td>
+            <td class="col-level"><span class="level-tag level-severe">⚠严重</span></td>
+            <td class="col-action">设置防护</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 综合评价 -->
+  <div class="evaluation-section">
+    <div class="eval-title">【综合评价】</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔重大 1项</span>
+      <span class="eval-stat stat-severe">⚠严重 2项</span>
+      <span class="eval-stat stat-general">🔶一般 0项</span>
+    </div>
+    <div class="priority-item">
+      <span class="priority-label p0">最优先：</span>
+      <span class="priority-content">结构支撑柱裂缝严重，存在坍塌风险，必须立即委托专业机构鉴定</span>
+    </div>
+  </div>
+
+  <!-- 整改优先级 -->
+  <div class="action-section">
+    <div class="action-group">
+      <div class="action-title p0">【整改优先级】P0 - 立即停工</div>
+      <div class="action-item">
+        <span class="action-num">1.</span>
+        <span class="action-text">停止该区域一切施工活动 → 设置警示隔离区 → 安全总监 → 立即执行</span>
+      </div>
+      <div class="action-item">
+        <span class="action-num">2.</span>
+        <span class="action-text">委托专业机构进行结构鉴定 → 根据鉴定结果制定加固方案 → 技术负责人 → 24小时内</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 点位2：电气控制箱问题 ============ -->
+<div class="point-card">
+  <div style="width:100%;aspect-ratio:16/9;background:#08111f;overflow:hidden">
+    <img src="imgs/img_002.png" alt="点位2现场图片" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">
+  </div>
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:35</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">某施工现场临时用电区域</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/自然光/配电房</span></div>
+  </div>
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">临时用电</span>
+      <span class="scene-tag">机电安装</span>
+      <span class="scene-tag">配电箱管理</span>
+    </div>
+  </div>
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">-</td>
+            <td>未发现集团重大隐患清单中的相关条目</td>
+            <td class="col-level"><span class="level-tag level-suggestion">无匹配</span></td>
+            <td class="col-action">-</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              配电箱箱门未关严、线缆管理不规范
+              <div class="clause-detail">
+                <span class="clause-label">【隐患图册】临时用电篇 · 常见隐患</span>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-general">🔶一般</span></td>
+            <td class="col-action">限期整改</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配</div>
+      <div style="margin-bottom:10px"><strong style="color:var(--blue);font-size:.72rem">A类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>配电箱应关门上锁，防止无关人员操作</td>
+            <td class="col-level"><span class="level-tag level-general">🔶一般</span></td>
+            <td class="col-action">关门上锁</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin:10px 0"><strong style="color:var(--orange);font-size:.72rem">B类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>《JGJ 46》第8.1.11条配电箱应有门锁及防雨措施</td>
+            <td class="col-level"><span class="level-tag level-general">🔶一般</span></td>
+            <td class="col-action">完善防护</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="evaluation-section">
+    <div class="eval-title">【综合评价】</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔重大 0项</span>
+      <span class="eval-stat stat-severe">⚠严重 0项</span>
+      <span class="eval-stat stat-general">🔶一般 2项</span>
+    </div>
+    <div class="priority-item">
+      <span class="priority-label p2">最优先：</span>
+      <span class="priority-content">配电箱门未关严，存在触电风险</span>
+    </div>
+  </div>
+  <div class="action-section">
+    <div class="action-group">
+      <div class="action-title p2">【整改优先级】P2 - 3日内整改</div>
+      <div class="action-item">
+        <span class="action-num">1.</span>
+        <span class="action-text">关闭配电箱门并上锁 → 检查线缆接头 → 电工班长 → 24小时内</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 点位3：钢筋堆放问题 ============ -->
+<div class="point-card">
+  <div style="width:100%;aspect-ratio:16/9;background:#08111f;overflow:hidden">
+    <img src="imgs/img_003.png" alt="点位3现场图片" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">
+  </div>
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:40</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">某施工现场材料堆放区</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/自然光/室外</span></div>
+  </div>
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">材料堆放</span>
+      <span class="scene-tag">文明施工</span>
+      <span class="scene-tag">钢筋存放</span>
+    </div>
+  </div>
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">-</td>
+            <td>未发现集团重大隐患清单中的相关条目</td>
+            <td class="col-level"><span class="level-tag level-suggestion">无匹配</span></td>
+            <td class="col-action">-</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              钢筋堆放过高无支撑 - 物体打击隐患
+              <div class="clause-detail">
+                <span class="clause-label">【隐患图册】文明施工篇 · 常见隐患</span>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-severe">⚠严重</span></td>
+            <td class="col-action">立即整改</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配</div>
+      <div style="margin-bottom:10px"><strong style="color:var(--blue);font-size:.72rem">A类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>材料堆放高度不得超过2m，必须设置防倾覆支撑</td>
+            <td class="col-level"><span class="level-tag level-severe">⚠严重</span></td>
+            <td class="col-action">降低高度</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin:10px 0"><strong style="color:var(--orange);font-size:.72rem">B类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>《JGJ 59》第3.12.1条材料堆放高度超标应采取稳定措施</td>
+            <td class="col-level"><span class="level-tag level-severe">⚠严重</span></td>
+            <td class="col-action">设置支撑</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="evaluation-section">
+    <div class="eval-title">【综合评价】</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔重大 0项</span>
+      <span class="eval-stat stat-severe">⚠严重 2项</span>
+      <span class="eval-stat stat-general">🔶一般 0项</span>
+    </div>
+    <div class="priority-item">
+      <span class="priority-label p1">最优先：</span>
+      <span class="priority-content">钢筋堆放过高且无支撑，存在倾覆伤人风险</span>
+    </div>
+  </div>
+  <div class="action-section">
+    <div class="action-group">
+      <div class="action-title p1">【整改优先级】P1 - 立即整改</div>
+      <div class="action-item">
+        <span class="action-num">1.</span>
+        <span class="action-text">降低钢筋堆放高度至2m以下 → 设置防倾覆支撑 → 材料主管 → 立即执行</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 点位4：高处作业无安全带 ============ -->
+<div class="point-card">
+  <div style="width:100%;aspect-ratio:16/9;background:#08111f;overflow:hidden">
+    <img src="imgs/img_004.png" alt="点位4现场图片" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">
+  </div>
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:45</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">某施工现场高处作业区</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/自然光/室外高处</span></div>
+  </div>
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">高处作业</span>
+      <span class="scene-tag">主体结构</span>
+      <span class="scene-tag">个人防护</span>
+    </div>
+  </div>
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              高处作业人员未佩戴安全带
+              <div class="clause-detail">
+                <span class="clause-label">【集团标准】第3.0.5条：高处作业人员安全防护要求</span>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">立即停工</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              高处临边作业无防护 - 高处坠落重大隐患
+              <div class="clause-detail">
+                <span class="clause-label">【隐患图册】高处作业篇 · 典型案例</span>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">立即停工</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配</div>
+      <div style="margin-bottom:10px"><strong style="color:var(--blue);font-size:.72rem">A类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>2m及以上高处作业必须正确佩戴使用安全带</td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">停工整改</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin:10px 0"><strong style="color:var(--orange);font-size:.72rem">B类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>《JGJ 80》第4.1.1条临边作业应设置防护栏杆</td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">设置护栏</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin:10px 0"><strong style="color:var(--green);font-size:.72rem">C类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>《JGJ 59》第3.13.3条高处作业安全防护检查</td>
+            <td class="col-level"><span class="level-tag level-severe">⚠严重</span></td>
+            <td class="col-action">配备防护</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="evaluation-section">
+    <div class="eval-title">【综合评价】</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔重大 3项</span>
+      <span class="eval-stat stat-severe">⚠严重 1项</span>
+      <span class="eval-stat stat-general">🔶一般 0项</span>
+    </div>
+    <div class="priority-item">
+      <span class="priority-label p0">最优先：</span>
+      <span class="priority-content">高处作业无安全带+临边无防护，存在高处坠落重大风险</span>
+    </div>
+  </div>
+  <div class="action-section">
+    <div class="action-group">
+      <div class="action-title p0">【整改优先级】P0 - 立即停工</div>
+      <div class="action-item">
+        <span class="action-num">1.</span>
+        <span class="action-text">停止高处作业 → 人员全部撤离高处作业区域 → 安全总监 → 立即执行</span>
+      </div>
+      <div class="action-item">
+        <span class="action-num">2.</span>
+        <span class="action-text">配备合格安全带 → 安全培训 → 施工队长 → 整改验收后恢复</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 点位5：结构严重损坏区域 ============ -->
+<div class="point-card">
+  <div style="width:100%;aspect-ratio:16/9;background:#08111f;overflow:hidden">
+    <img src="imgs/img_005.png" alt="点位5现场图片" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">
+  </div>
+  <div class="info-section">
+    <div class="info-row"><span class="info-label">来源</span><span class="info-value">用户上传</span></div>
+    <div class="info-row"><span class="info-label">时间</span><span class="info-value">2026年4月11日 10:50</span></div>
+    <div class="info-row"><span class="info-label">地点</span><span class="info-value">某施工现场结构损坏区域</span></div>
+    <div class="info-row"><span class="info-label">拍摄条件</span><span class="info-value">白天/自然光/室内</span></div>
+  </div>
+  <div class="scene-section">
+    <div class="scene-tags">
+      <span class="scene-tag">房屋结构</span>
+      <span class="scene-tag">主体结构</span>
+      <span class="scene-tag">结构检查</span>
+    </div>
+  </div>
+  <div class="hazard-section">
+    <div class="hazard-stage stage-major">
+      <div class="stage-title">★★★ 第一阶段：集团重大隐患清单匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              结构存在坍塌风险，支撑体系严重损坏
+              <div class="clause-detail">
+                <span class="clause-label">【集团标准】第5.1.2条：施工现场结构安全检查</span>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">立即停工</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-atlas">
+      <div class="stage-title">★★ 第二阶段：成都院隐患图册匹配</div>
+      <table class="hazard-table">
+        <thead><tr><th class="col-num">序号</th><th>描述</th><th class="col-level">等级</th><th class="col-action">整改</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>
+              结构失稳前兆隐患 - 坍塌风险区域
+              <div class="clause-detail">
+                <span class="clause-label">【隐患图册】结构工程篇 · 典型案例</span>
+              </div>
+            </td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">立即停工</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hazard-stage stage-abcde">
+      <div class="stage-title">★ 第三阶段：ABCDE规范匹配</div>
+      <div style="margin-bottom:10px"><strong style="color:var(--blue);font-size:.72rem">A类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>结构异常应立即停工设置警示标志委托鉴定</td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">停工鉴定</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin:10px 0"><strong style="color:var(--orange);font-size:.72rem">B类规范</strong></div>
+      <table class="hazard-table">
+        <tbody>
+          <tr>
+            <td class="col-num">01</td>
+            <td>《GB 50666》第8.1.4条混凝土结构缺陷须设计单位出具处理方案</td>
+            <td class="col-level"><span class="level-tag level-dark-red">⛔重大</span></td>
+            <td class="col-action">设计处理</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="evaluation-section">
+    <div class="eval-title">【综合评价】</div>
+    <div class="eval-stats">
+      <span class="eval-stat stat-dark-red">⛔重大 2项</span>
+      <span class="eval-stat stat-severe">⚠严重 0项</span>
+      <span class="eval-stat stat-general">🔶一般 0项</span>
+    </div>
+    <div class="priority-item">
+      <span class="priority-label p0">最优先：</span>
+      <span class="priority-content">结构严重损坏，存在坍塌风险</span>
+    </div>
+  </div>
+  <div class="action-section">
+    <div class="action-group">
+      <div class="action-title p0">【整改优先级】P0 - 立即停工</div>
+      <div class="action-item">
+        <span class="action-num">1.</span>
+        <span class="action-text">撤离该区域所有人员 → 设置隔离警示区 → 安全总监 → 立即执行</span>
+      </div>
+      <div class="action-item">
+        <span class="action-num">2.</span>
+        <span class="action-text">委托专业机构结构鉴定 → 制定加固方案 → 技术负责人 → 24小时内</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 综合统计表 -->
+<div class="section-header">
+  <h3>📊 隐患综合统计</h3>
+  <div class="line"></div>
+</div>
+<div class="point-card" style="overflow-x:auto">
+  <table>
+    <thead>
+      <tr style="background:rgba(255,255,255,.03)">
+        <th>点位</th>
+        <th class="risk-th">重大事故</th>
+        <th class="risk-th">严重</th>
+        <th class="risk-th">一般</th>
+        <th class="risk-th">合计</th>
+        <th>处置要求</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td class="bb">1. 结构支撑柱损坏</td><td class="td-center bb" style="color:#fca5a5">1</td><td class="td-center bb" style="color:var(--red)">2</td><td class="td-center bb" style="color:var(--orange)">0</td><td class="td-center bb">3</td><td class="bb"><span class="level-tag level-dark-red">立即停工</span></td></tr>
+      <tr><td class="bb">2. 电气控制箱问题</td><td class="td-center bb" style="color:#fca5a5">0</td><td class="td-center bb" style="color:var(--red)">0</td><td class="td-center bb" style="color:var(--orange)">2</td><td class="td-center bb">2</td><td class="bb"><span class="level-tag level-general">3日内整改</span></td></tr>
+      <tr><td class="bb">3. 钢筋堆放超高</td><td class="td-center bb" style="color:#fca5a5">0</td><td class="td-center bb" style="color:var(--red)">2</td><td class="td-center bb" style="color:var(--orange)">0</td><td class="td-center bb">2</td><td class="bb"><span class="level-tag level-severe">立即整改</span></td></tr>
+      <tr><td class="bb">4. 高处作业无防护</td><td class="td-center bb" style="color:#fca5a5">3</td><td class="td-center bb" style="color:var(--red)">1</td><td class="td-center bb" style="color:var(--orange)">0</td><td class="td-center bb">4</td><td class="bb"><span class="level-tag level-dark-red">立即停工</span></td></tr>
+      <tr><td class="bb">5. 结构严重损坏</td><td class="td-center bb" style="color:#fca5a5">2</td><td class="td-center bb" style="color:var(--red)">0</td><td class="td-center bb" style="color:var(--orange)">0</td><td class="td-center bb">2</td><td class="bb"><span class="level-tag level-dark-red">立即停工</span></td></tr>
+    </tbody>
+    <tfoot>
+      <tr class="tfoot-tr">
+        <td class="bt tfoot-td">合计</td>
+        <td class="td-center bt tfoot-td" style="color:#fca5a5">6</td>
+        <td class="td-center bt tfoot-td" style="color:var(--red)">5</td>
+        <td class="td-center bt tfoot-td" style="color:var(--orange)">2</td>
+        <td class="td-center bt tfoot-td" style="color:#fff">13</td>
+        <td class="bt"></td>
+      </tr>
+    </tfoot>
+  </table>
+</div>
+
+<!-- 页脚 -->
+<div class="footer">
+  <div class="footer-inner">
+    <img class="footer-logo" src="https://cdn.hailuoai.com/mcp/cdn_upload/487207910203981825/383651074593445/1775356191_c86068d1.png" alt="logo">
+    <div class="footer-text"><span>成都院智成安监</span> · AI辅助安全分析 · 使用原始现场图片 · 2026年4月11日</div>
+  </div>
+</div>
+
+<script>
+function setVh(){document.documentElement.style.setProperty("--vh",window.innerHeight*.01+"px")}
+setVh();window.addEventListener("resize",setVh);window.addEventListener("orientationchange",setVh);
+</script>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
+.inland-security-footer{position:fixed;z-index:10;bottom:0;right:0;width:fit-content;display:flex;justify-content:flex-end}
+.tooltip-container{position:relative}
+.trigger-content{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;padding:8px;background-color:transparent;border-radius:8px;cursor:pointer}
+.minimax-link{display:flex;align-items:center;cursor:pointer;font-weight:300;color:#adadad;text-decoration:none}
+.minimax-link:visited{color:#adadad}
+.minimax-link:hover{color:#666666}
+.tooltip-content{position:absolute;bottom:100%;right:0;display:none;flex-direction:column;align-items:center;gap:8px;padding:8px;padding-bottom:16px;font-size:12px;line-height:17px;background-color:#fafafa;border-radius:12px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.15);color:#171717}
+.tooltip-content::after{content:'';position:absolute;bottom:-8px;left:0;right:0;height:16px}
+.tooltip-container:hover .tooltip-content{display:flex}
+.info-section{display:flex;flex-wrap:wrap;gap:12px}
+.beian-link{display:flex;align-items:center;text-decoration:none;color:#171717}
+.beian-icon{width:14px;height:14px;margin-right:2px}
+.underline-text{color:#171717;text-decoration:underline}
+.underline-text:hover{color:#000000}
+@media(prefers-color-scheme:dark){
+  .trigger-content{background-color:transparent}
+  .minimax-link,.minimax-link:visited{color:#666666}
+  .minimax-link:hover{color:#adadad}
+  .tooltip-content{background-color:#262626;color:#ededed}
+  .beian-link,.underline-text{color:#ededed}
+  .underline-text:hover{color:#fff}
+}
+</style>
+<div class="inland-security-footer">
+  <div class="tooltip-container">
+    <div class="trigger-content">
+      <a href="https://www.minimaxi.com/" target="_blank" rel="noreferrer" class="minimax-link"><span>© 2026 MiniMax</span></a>
+    </div>
+    <div class="tooltip-content">
+      <section class="info-section"><span>上海稀宇科技有限公司</span></section>
+      <section class="info-section">
+        <a class="beian-link" href="https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=31010402010179" target="_blank" rel="noreferrer">
+          <img alt="beian-icon" src="https://cdn.hailuoai.com/hailuo-video-web/public_assets/223037d3-79fd-4db0-a456-749f38a6a14b.png" class="beian-icon">
+          <span class="underline-text">沪公网安备31010402010179号</span>
+        </a>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" class="underline-text">沪ICP备2023003282号-38</a>
+      </section>
+      <section class="info-section"><span>模型名称：MiniMax</span><span>备案号：Shanghai-MiniMax-202505230046</span></section>
+      <section class="info-section">
+        <a href="https://agent.minimaxi.com/doc/zh/terms-of-service.html" target="_blank" rel="noreferrer" class="underline-text">用户协议</a>
+        <a href="https://agent.minimaxi.com/doc/zh/privacy-policy.html" target="_blank" rel="noreferrer" class="underline-text">隐私政策</a>
+      </section>
+    </div>
+  </div>
+</div>
+
+
+<script>
+/**
+ * Iframe 元素高亮注入脚本
+ * 需要在目标网站中引入此脚本来支持跨域 iframe 高亮功能
+ *
+ * 使用方法：
+ * 1. 将此脚本添加到目标网站的 HTML 中
+ * 2. 或通过浏览器扩展、用户脚本等方式注入
+ */
+
+(function () {
+  "use strict";
+
+  // 检查是否在 iframe 中
+  if (window.self === window.top) {
+    return; // 不在 iframe 中，不执行
+  }
+
+  // 检查是否已经初始化过
+  if (window.__iframeHighlightInitialized) {
+    return;
+  }
+  window.__iframeHighlightInitialized = true;
+  console.log("Iframe 高亮脚本已加载");
+
+  // 创建高亮覆盖层
+  var overlay = document.createElement("div");
+  overlay.id = "iframe-highlight-overlay";
+  overlay.style.cssText = "\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    pointer-events: none;\n    z-index: 999999;\n    overflow: hidden;\n  ";
+
+  // 创建悬停高亮框（虚线边框）
+  var highlightBox = document.createElement("div");
+  highlightBox.id = "iframe-highlight-box";
+  highlightBox.style.cssText = "\n    position: absolute;\n    border: 2px dashed #007AFF;\n    background: rgba(0, 122, 255, 0.08);\n    pointer-events: none;\n    display: none;\n    transition: all 0.1s ease;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);\n    border-radius: 2px;\n  ";
+
+  // 创建选中节点的常驻高亮框（实线边框）
+  var selectedBox = document.createElement("div");
+  selectedBox.id = "iframe-selected-box";
+  selectedBox.style.cssText = "\n    position: absolute;\n    border: 2px solid #007AFF;\n    pointer-events: none;\n    display: none;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 107, 53, 0.4);\n    border-radius: 2px;\n    z-index: 1000000;\n  ";
+
+  // 创建悬停标签显示
+  var tagLabel = document.createElement("div");
+  tagLabel.id = "iframe-tag-label";
+  tagLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 2px 6px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 2px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000001;\n    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    font-weight: 500;\n  ";
+
+  // 创建选中节点标签
+  var selectedLabel = document.createElement("div");
+  selectedLabel.id = "iframe-selected-label";
+  selectedLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 3px 8px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 3px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000002;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n    font-weight: 600;\n  ";
+  overlay.appendChild(highlightBox);
+  overlay.appendChild(selectedBox);
+  overlay.appendChild(tagLabel);
+  overlay.appendChild(selectedLabel);
+  document.body.appendChild(overlay);
+
+  // 存储当前选中的元素
+  var selectedElement = null;
+  var highlightEnabled = false;
+
+  // 更新选中元素的高亮显示
+  function updateSelectedHighlight(element) {
+    console.log("updateSelectedHighlight called with:", element);
+    if (!element) {
+      selectedBox.style.display = "none";
+      selectedLabel.style.display = "none";
+      selectedElement = null;
+      console.log("Cleared selected highlight");
+      return;
+    }
+    selectedElement = element;
+    var rect = element.getBoundingClientRect();
+    console.log("Selected element rect:", rect);
+
+    // 更新选中高亮框位置
+    selectedBox.style.display = "block";
+    selectedBox.style.left = "".concat(rect.left - 2, "px");
+    selectedBox.style.top = "".concat(rect.top - 2, "px");
+    selectedBox.style.width = "".concat(rect.width + 4, "px");
+    selectedBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新选中标签位置和内容
+    selectedLabel.style.display = "block";
+    selectedLabel.textContent = "\u2713 <".concat(element.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 28;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 5) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    var labelWidth = selectedLabel.offsetWidth || 100; // 预估宽度
+    if (labelLeft + labelWidth > window.innerWidth - 10) {
+      labelLeft = window.innerWidth - labelWidth - 10;
+    }
+    selectedLabel.style.left = "".concat(Math.max(5, labelLeft), "px");
+    selectedLabel.style.top = "".concat(labelTop, "px");
+    console.log("Selected highlight positioned at:", {
+      left: selectedBox.style.left,
+      top: selectedBox.style.top,
+      width: selectedBox.style.width,
+      height: selectedBox.style.height
+    });
+  }
+  function getElementSelector(element) {
+    if (!(element instanceof Element)) throw new Error('Argument must be a DOM element');
+    var segments = [];
+    var current = element;
+    while (current !== document.documentElement) {
+      var selector = '';
+      // 优先检查唯一ID
+      if (current.id && document.querySelectorAll("#".concat(current.id)).length === 1) {
+        segments.unshift("#".concat(current.id));
+        break; // ID唯一，无需继续向上
+      }
+
+      // 生成类名选择器（取第一个有效类名）
+      var classes = Array.from(current.classList).filter(function (c) {
+        return !c.startsWith('js-');
+      });
+      var className = classes.length > 0 ? ".".concat(classes[0]) : '';
+
+      // 生成位置索引（nth-child）
+      var tag = current.tagName.toLowerCase();
+      if (!className) {
+        var siblings = Array.from(current.parentNode.children);
+        var index = siblings.findIndex(function (el) {
+          return el === current;
+        }) + 1;
+        selector = "".concat(tag, ":nth-child(").concat(index, ")");
+      } else {
+        selector = className;
+      }
+      segments.unshift(selector);
+      current = current.parentElement;
+    }
+
+    // 处理根元素
+    if (current === document.documentElement) {
+      segments.unshift('html');
+    }
+    return segments.join(' > ');
+  }
+
+  // 获取元素文本内容
+  function getElementText(element) {
+    var _element$textContent;
+    if (element.tagName === "INPUT") {
+      return element.value || element.placeholder || "";
+    }
+    if (element.tagName === "TEXTAREA") {
+      return element.value || element.placeholder || "";
+    }
+    var text = ((_element$textContent = element.textContent) === null || _element$textContent === void 0 ? void 0 : _element$textContent.trim()) || "";
+    return text.length > 50 ? text.substring(0, 50) + "..." : text;
+  }
+
+  // 获取元素属性信息
+  function getElementAttributes(element) {
+    var attrs = {};
+    for (var i = 0; i < element.attributes.length; i++) {
+      var attr = element.attributes[i];
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // 鼠标悬停事件处理
+  function handleMouseOver(e) {
+    if (!highlightEnabled) return;
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免高亮 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 如果是已选中的元素，不显示悬停高亮
+    if (target === selectedElement) {
+      highlightBox.style.display = "none";
+      tagLabel.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+
+    // 更新悬停高亮框位置
+    highlightBox.style.display = "block";
+    highlightBox.style.left = "".concat(rect.left - 2, "px");
+    highlightBox.style.top = "".concat(rect.top - 2, "px");
+    highlightBox.style.width = "".concat(rect.width + 4, "px");
+    highlightBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新标签位置和内容
+    tagLabel.style.display = "block";
+    tagLabel.textContent = "<".concat(target.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 22;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 0) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    if (labelLeft + tagLabel.offsetWidth > window.innerWidth) {
+      labelLeft = window.innerWidth - tagLabel.offsetWidth - 5;
+    }
+    tagLabel.style.left = "".concat(Math.max(0, labelLeft), "px");
+    tagLabel.style.top = "".concat(labelTop, "px");
+
+    // 发送消息到父窗口
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 鼠标离开事件处理
+  function handleMouseOut(e) {
+    if (!highlightEnabled) return;
+    var relatedTarget = e.relatedTarget;
+
+    // 如果鼠标移动到高亮相关元素上，不隐藏高亮
+    if (relatedTarget && (relatedTarget === highlightBox || relatedTarget === tagLabel || relatedTarget === overlay || relatedTarget === selectedBox || relatedTarget === selectedLabel)) {
+      return;
+    }
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: null,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 点击事件处理
+  function handleClick(e) {
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免处理 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 检查是否是交互元素，这些元素需要保留默认行为
+    var isInteractiveElement = ['input', 'textarea', 'select', 'button', 'a'].includes(target.tagName.toLowerCase());
+
+    // 如果高亮功能启用，对于非交互元素阻止默认行为和事件传播
+    if (highlightEnabled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+    console.log("Element clicked:", {
+      tagName: target.tagName,
+      selector: selector,
+      rect: rect
+    });
+
+    // 立即更新选中高亮
+    updateSelectedHighlight(target);
+
+    // 隐藏悬停高亮，因为现在是选中状态
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-click",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 监听来自父窗口的消息
+  function handleParentMessage(event) {
+    console.log("Received message from parent:", event.data);
+    if (event.data.type === "iframe-highlight-toggle") {
+      var enabled = event.data.enabled;
+      console.log("Highlight toggle:", enabled);
+      if (enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "enable-iframe-highlight") {
+      console.log("Enable iframe highlight");
+      enableHighlight();
+    } else if (event.data.type === "disable-iframe-highlight") {
+      console.log("Disable iframe highlight");
+      disableHighlight();
+    } else if (event.data.type === "toggle-iframe-highlight") {
+      var _enabled = event.data.enabled !== undefined ? event.data.enabled : !highlightEnabled;
+      console.log("Toggle iframe highlight to:", _enabled);
+      if (_enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "update-selected-element") {
+      var selector = event.data.selector;
+      console.log("Update selected element with selector:", selector);
+      if (selector) {
+        try {
+          var element = document.querySelector(selector);
+          console.log("Found element by selector:", element);
+          updateSelectedHighlight(element);
+        } catch (error) {
+          console.warn("Failed to select element:", error);
+          updateSelectedHighlight(null);
+        }
+      } else {
+        updateSelectedHighlight(null);
+      }
+    } else if (event.data.type === "clear-selected-element") {
+      console.log("Clear selected element");
+      updateSelectedHighlight(null);
+    }
+  }
+
+  // 启用高亮功能
+  function enableHighlight() {
+    console.log("Enabling highlight");
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("click", handleClick, true);
+    highlightEnabled = true;
+    overlay.style.display = "block";
+  }
+
+  // 禁用高亮功能
+  function disableHighlight() {
+    console.log("Disabling highlight");
+    highlightEnabled = false;
+    // 保持事件监听器，但通过 highlightEnabled 变量控制行为
+    // 这样可以保留选中状态的显示
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    // 不隐藏 selectedBox 和 selectedLabel，保留选中状态
+  }
+
+  // 完全禁用高亮功能（移除所有监听器）
+  function fullyDisableHighlight() {
+    console.log("Fully disabling highlight");
+    highlightEnabled = false;
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("click", handleClick, true);
+    overlay.style.display = "none";
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    selectedBox.style.display = "none";
+    selectedLabel.style.display = "none";
+  }
+
+  // 添加事件监听
+  enableHighlight();
+  window.addEventListener("message", handleParentMessage);
+
+  // 暴露全局函数供外部调用
+  window.__iframeHighlightControl = {
+    enable: enableHighlight,
+    disable: disableHighlight,
+    fullyDisable: fullyDisableHighlight,
+    isEnabled: function isEnabled() {
+      return highlightEnabled;
+    },
+    getSelectedElement: function getSelectedElement() {
+      return selectedElement;
+    },
+    updateSelected: updateSelectedHighlight,
+    // 通过消息发送开关控制
+    sendToggleMessage: function sendToggleMessage(enabled) {
+      window.parent.postMessage({
+        type: 'iframe-highlight-status',
+        enabled: enabled || highlightEnabled,
+        source: 'iframe-highlight-injector'
+      }, '*');
+    }
+  };
+
+  // 通知父窗口脚本已加载
+  try {
+    window.parent.postMessage({
+      type: "iframe-highlight-ready",
+      data: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: Date.now()
+      },
+      source: "iframe-highlight-injector"
+    }, "*");
+  } catch (error) {
+    console.warn("无法发送就绪消息到父窗口:", error);
+  }
+
+  // 清理函数
+  window.__iframeHighlightCleanup = function () {
+    fullyDisableHighlight();
+    window.removeEventListener("message", handleParentMessage);
+    if (overlay.parentElement) {
+      overlay.parentElement.removeChild(overlay);
+    }
+    delete window.__iframeHighlightInitialized;
+    delete window.__iframeHighlightCleanup;
+  };
+})();
+
+</script>
+
+<script>
+/**
+ * Iframe 元素高亮注入脚本
+ * 需要在目标网站中引入此脚本来支持跨域 iframe 高亮功能
+ *
+ * 使用方法：
+ * 1. 将此脚本添加到目标网站的 HTML 中
+ * 2. 或通过浏览器扩展、用户脚本等方式注入
+ */
+
+(function () {
+  "use strict";
+
+  // 检查是否在 iframe 中
+  if (window.self === window.top) {
+    return; // 不在 iframe 中，不执行
+  }
+
+  // 检查是否已经初始化过
+  if (window.__iframeHighlightInitialized) {
+    return;
+  }
+  window.__iframeHighlightInitialized = true;
+  console.log("Iframe 高亮脚本已加载");
+
+  // 创建高亮覆盖层
+  var overlay = document.createElement("div");
+  overlay.id = "iframe-highlight-overlay";
+  overlay.style.cssText = "\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    pointer-events: none;\n    z-index: 999999;\n    overflow: hidden;\n  ";
+
+  // 创建悬停高亮框（虚线边框）
+  var highlightBox = document.createElement("div");
+  highlightBox.id = "iframe-highlight-box";
+  highlightBox.style.cssText = "\n    position: absolute;\n    border: 2px dashed #007AFF;\n    background: rgba(0, 122, 255, 0.08);\n    pointer-events: none;\n    display: none;\n    transition: all 0.1s ease;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);\n    border-radius: 2px;\n  ";
+
+  // 创建选中节点的常驻高亮框（实线边框）
+  var selectedBox = document.createElement("div");
+  selectedBox.id = "iframe-selected-box";
+  selectedBox.style.cssText = "\n    position: absolute;\n    border: 2px solid #007AFF;\n    pointer-events: none;\n    display: none;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 107, 53, 0.4);\n    border-radius: 2px;\n    z-index: 1000000;\n  ";
+
+  // 创建悬停标签显示
+  var tagLabel = document.createElement("div");
+  tagLabel.id = "iframe-tag-label";
+  tagLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 2px 6px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 2px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000001;\n    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    font-weight: 500;\n  ";
+
+  // 创建选中节点标签
+  var selectedLabel = document.createElement("div");
+  selectedLabel.id = "iframe-selected-label";
+  selectedLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 3px 8px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 3px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000002;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n    font-weight: 600;\n  ";
+  overlay.appendChild(highlightBox);
+  overlay.appendChild(selectedBox);
+  overlay.appendChild(tagLabel);
+  overlay.appendChild(selectedLabel);
+  document.body.appendChild(overlay);
+
+  // 存储当前选中的元素
+  var selectedElement = null;
+  var highlightEnabled = false;
+
+  // 更新选中元素的高亮显示
+  function updateSelectedHighlight(element) {
+    console.log("updateSelectedHighlight called with:", element);
+    if (!element) {
+      selectedBox.style.display = "none";
+      selectedLabel.style.display = "none";
+      selectedElement = null;
+      console.log("Cleared selected highlight");
+      return;
+    }
+    selectedElement = element;
+    var rect = element.getBoundingClientRect();
+    console.log("Selected element rect:", rect);
+
+    // 更新选中高亮框位置
+    selectedBox.style.display = "block";
+    selectedBox.style.left = "".concat(rect.left - 2, "px");
+    selectedBox.style.top = "".concat(rect.top - 2, "px");
+    selectedBox.style.width = "".concat(rect.width + 4, "px");
+    selectedBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新选中标签位置和内容
+    selectedLabel.style.display = "block";
+    selectedLabel.textContent = "\u2713 <".concat(element.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 28;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 5) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    var labelWidth = selectedLabel.offsetWidth || 100; // 预估宽度
+    if (labelLeft + labelWidth > window.innerWidth - 10) {
+      labelLeft = window.innerWidth - labelWidth - 10;
+    }
+    selectedLabel.style.left = "".concat(Math.max(5, labelLeft), "px");
+    selectedLabel.style.top = "".concat(labelTop, "px");
+    console.log("Selected highlight positioned at:", {
+      left: selectedBox.style.left,
+      top: selectedBox.style.top,
+      width: selectedBox.style.width,
+      height: selectedBox.style.height
+    });
+  }
+  function getElementSelector(element) {
+    if (!(element instanceof Element)) throw new Error('Argument must be a DOM element');
+    var segments = [];
+    var current = element;
+    while (current !== document.documentElement) {
+      var selector = '';
+      // 优先检查唯一ID
+      if (current.id && document.querySelectorAll("#".concat(current.id)).length === 1) {
+        segments.unshift("#".concat(current.id));
+        break; // ID唯一，无需继续向上
+      }
+
+      // 生成类名选择器（取第一个有效类名）
+      var classes = Array.from(current.classList).filter(function (c) {
+        return !c.startsWith('js-');
+      });
+      var className = classes.length > 0 ? ".".concat(classes[0]) : '';
+
+      // 生成位置索引（nth-child）
+      var tag = current.tagName.toLowerCase();
+      if (!className) {
+        var siblings = Array.from(current.parentNode.children);
+        var index = siblings.findIndex(function (el) {
+          return el === current;
+        }) + 1;
+        selector = "".concat(tag, ":nth-child(").concat(index, ")");
+      } else {
+        selector = className;
+      }
+      segments.unshift(selector);
+      current = current.parentElement;
+    }
+
+    // 处理根元素
+    if (current === document.documentElement) {
+      segments.unshift('html');
+    }
+    return segments.join(' > ');
+  }
+
+  // 获取元素文本内容
+  function getElementText(element) {
+    var _element$textContent;
+    if (element.tagName === "INPUT") {
+      return element.value || element.placeholder || "";
+    }
+    if (element.tagName === "TEXTAREA") {
+      return element.value || element.placeholder || "";
+    }
+    var text = ((_element$textContent = element.textContent) === null || _element$textContent === void 0 ? void 0 : _element$textContent.trim()) || "";
+    return text.length > 50 ? text.substring(0, 50) + "..." : text;
+  }
+
+  // 获取元素属性信息
+  function getElementAttributes(element) {
+    var attrs = {};
+    for (var i = 0; i < element.attributes.length; i++) {
+      var attr = element.attributes[i];
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // 鼠标悬停事件处理
+  function handleMouseOver(e) {
+    if (!highlightEnabled) return;
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免高亮 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 如果是已选中的元素，不显示悬停高亮
+    if (target === selectedElement) {
+      highlightBox.style.display = "none";
+      tagLabel.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+
+    // 更新悬停高亮框位置
+    highlightBox.style.display = "block";
+    highlightBox.style.left = "".concat(rect.left - 2, "px");
+    highlightBox.style.top = "".concat(rect.top - 2, "px");
+    highlightBox.style.width = "".concat(rect.width + 4, "px");
+    highlightBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新标签位置和内容
+    tagLabel.style.display = "block";
+    tagLabel.textContent = "<".concat(target.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 22;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 0) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    if (labelLeft + tagLabel.offsetWidth > window.innerWidth) {
+      labelLeft = window.innerWidth - tagLabel.offsetWidth - 5;
+    }
+    tagLabel.style.left = "".concat(Math.max(0, labelLeft), "px");
+    tagLabel.style.top = "".concat(labelTop, "px");
+
+    // 发送消息到父窗口
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 鼠标离开事件处理
+  function handleMouseOut(e) {
+    if (!highlightEnabled) return;
+    var relatedTarget = e.relatedTarget;
+
+    // 如果鼠标移动到高亮相关元素上，不隐藏高亮
+    if (relatedTarget && (relatedTarget === highlightBox || relatedTarget === tagLabel || relatedTarget === overlay || relatedTarget === selectedBox || relatedTarget === selectedLabel)) {
+      return;
+    }
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: null,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 点击事件处理
+  function handleClick(e) {
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免处理 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 检查是否是交互元素，这些元素需要保留默认行为
+    var isInteractiveElement = ['input', 'textarea', 'select', 'button', 'a'].includes(target.tagName.toLowerCase());
+
+    // 如果高亮功能启用，对于非交互元素阻止默认行为和事件传播
+    if (highlightEnabled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+    console.log("Element clicked:", {
+      tagName: target.tagName,
+      selector: selector,
+      rect: rect
+    });
+
+    // 立即更新选中高亮
+    updateSelectedHighlight(target);
+
+    // 隐藏悬停高亮，因为现在是选中状态
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-click",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 监听来自父窗口的消息
+  function handleParentMessage(event) {
+    console.log("Received message from parent:", event.data);
+    if (event.data.type === "iframe-highlight-toggle") {
+      var enabled = event.data.enabled;
+      console.log("Highlight toggle:", enabled);
+      if (enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "enable-iframe-highlight") {
+      console.log("Enable iframe highlight");
+      enableHighlight();
+    } else if (event.data.type === "disable-iframe-highlight") {
+      console.log("Disable iframe highlight");
+      disableHighlight();
+    } else if (event.data.type === "toggle-iframe-highlight") {
+      var _enabled = event.data.enabled !== undefined ? event.data.enabled : !highlightEnabled;
+      console.log("Toggle iframe highlight to:", _enabled);
+      if (_enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "update-selected-element") {
+      var selector = event.data.selector;
+      console.log("Update selected element with selector:", selector);
+      if (selector) {
+        try {
+          var element = document.querySelector(selector);
+          console.log("Found element by selector:", element);
+          updateSelectedHighlight(element);
+        } catch (error) {
+          console.warn("Failed to select element:", error);
+          updateSelectedHighlight(null);
+        }
+      } else {
+        updateSelectedHighlight(null);
+      }
+    } else if (event.data.type === "clear-selected-element") {
+      console.log("Clear selected element");
+      updateSelectedHighlight(null);
+    }
+  }
+
+  // 启用高亮功能
+  function enableHighlight() {
+    console.log("Enabling highlight");
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("click", handleClick, true);
+    highlightEnabled = true;
+    overlay.style.display = "block";
+  }
+
+  // 禁用高亮功能
+  function disableHighlight() {
+    console.log("Disabling highlight");
+    highlightEnabled = false;
+    // 保持事件监听器，但通过 highlightEnabled 变量控制行为
+    // 这样可以保留选中状态的显示
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    // 不隐藏 selectedBox 和 selectedLabel，保留选中状态
+  }
+
+  // 完全禁用高亮功能（移除所有监听器）
+  function fullyDisableHighlight() {
+    console.log("Fully disabling highlight");
+    highlightEnabled = false;
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("click", handleClick, true);
+    overlay.style.display = "none";
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    selectedBox.style.display = "none";
+    selectedLabel.style.display = "none";
+  }
+
+  // 添加事件监听
+  enableHighlight();
+  window.addEventListener("message", handleParentMessage);
+
+  // 暴露全局函数供外部调用
+  window.__iframeHighlightControl = {
+    enable: enableHighlight,
+    disable: disableHighlight,
+    fullyDisable: fullyDisableHighlight,
+    isEnabled: function isEnabled() {
+      return highlightEnabled;
+    },
+    getSelectedElement: function getSelectedElement() {
+      return selectedElement;
+    },
+    updateSelected: updateSelectedHighlight,
+    // 通过消息发送开关控制
+    sendToggleMessage: function sendToggleMessage(enabled) {
+      window.parent.postMessage({
+        type: 'iframe-highlight-status',
+        enabled: enabled || highlightEnabled,
+        source: 'iframe-highlight-injector'
+      }, '*');
+    }
+  };
+
+  // 通知父窗口脚本已加载
+  try {
+    window.parent.postMessage({
+      type: "iframe-highlight-ready",
+      data: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: Date.now()
+      },
+      source: "iframe-highlight-injector"
+    }, "*");
+  } catch (error) {
+    console.warn("无法发送就绪消息到父窗口:", error);
+  }
+
+  // 清理函数
+  window.__iframeHighlightCleanup = function () {
+    fullyDisableHighlight();
+    window.removeEventListener("message", handleParentMessage);
+    if (overlay.parentElement) {
+      overlay.parentElement.removeChild(overlay);
+    }
+    delete window.__iframeHighlightInitialized;
+    delete window.__iframeHighlightCleanup;
+  };
+})();
+
+</script>
+</body>
+</html>

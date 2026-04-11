@@ -14,6 +14,11 @@ from typing import Any
 import websockets
 from loguru import logger
 
+from nanobot.process_group import (
+    install_shutdown_signal_handlers,
+    terminate_process,
+)
+
 
 class LocalNanobotService:
     """Expose a local bridge websocket while delegating runtime to `nanobot gateway`."""
@@ -66,12 +71,7 @@ class LocalNanobotService:
         self._gateway_ready.clear()
 
         if self._gateway_process is not None and self._gateway_process.returncode is None:
-            self._gateway_process.terminate()
-            try:
-                await asyncio.wait_for(self._gateway_process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self._gateway_process.kill()
-                await self._gateway_process.wait()
+            await terminate_process(self._gateway_process, timeout=5)
         self._gateway_process = None
 
         if self._server is not None:
@@ -213,9 +213,27 @@ async def _main_async() -> None:
         host=args.host,
         port=args.port,
     )
+    stop_event = asyncio.Event()
+    install_shutdown_signal_handlers(
+        stop_event,
+        on_signal=lambda sig: logger.info("Received {}, shutting down local service", sig.name),
+    )
+    start_task = asyncio.create_task(service.start())
+    stop_task = asyncio.create_task(stop_event.wait())
     try:
-        await service.start()
+        done, _ = await asyncio.wait(
+            {start_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_task in done and not start_task.done():
+            await service.close()
+            start_task.cancel()
+            await asyncio.gather(start_task, return_exceptions=True)
+        else:
+            await start_task
     finally:
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
         await service.close()
 
 
