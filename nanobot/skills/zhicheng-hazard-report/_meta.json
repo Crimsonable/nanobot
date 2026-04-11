@@ -1,9 +1,0 @@
-{
-  "skill_id": 1136,
-  "name": "zhicheng-hazard-report",
-  "version": "1.0.0",
-  "author": "MiniMax Agent",
-  "created": "2026-04-10",
-  "tags": ["safety-production", "hazard-inspection", "report-generation", "powerchina", "zhicheng-system"],
-  "category": "industrial-safety"
-}
