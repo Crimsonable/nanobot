@@ -28,3 +28,5 @@ container_up_runtime/
 uv.lock
 *.tar
 *.db
+zhicheng-hazard-report/
+*/workspaces/
