@@ -24,10 +24,25 @@
             "apiBase": "https://api.minimaxi.com/v1"
         }
     },
+    "tools": {
+        "mcpServers": {
+            "minimax": {
+                "command": "minimax-coding-plan-mcp",
+                "args": [
+                    "-y"
+                ],
+                "toolTimeout": 120,
+                "env": {
+                    "MINIMAX_API_KEY": "sk-cp-DqP_25_H9NLvCBB-IRrk0LRqHC5cc1GqJvx689oy8jpR1SHIDbb536cGhbw_4dHpbuO0Kr9ljKhmlUzTLqIn9MH7ctJBycuJ_OhIgQ-04mc-9eIK5atKZ10",
+                    "MINIMAX_API_HOST": "https://api.minimaxi.com"
+                }
+            }
+        }
+    },
     "agents": {
         "defaults": {
-            "model": "qwen35122bsui13w",
-            "provider": "vllm",
+            "model": "MiniMax-M2.7",
+            "provider": "minimax",
             "timezone": "Asia/Shanghai"
         }
     }

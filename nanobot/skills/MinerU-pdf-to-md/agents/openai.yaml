@@ -1,4 +1,0 @@
-interface:
-  display_name: "MinerU PDF To Markdown"
-  short_description: "On Linux, upload a local absolute-path PDF to a remote OCR endpoint and turn the result into Markdown"
-  default_prompt: "Use this skill when a PDF must be handled in a Linux environment by calling a remote MinerU-style OCR endpoint via curl. Require a local absolute PDF path; if the user provides a URL, download it first into the agent's own working directory, then upload that downloaded local file. Do not save files into directories the agent may not have permission to write."

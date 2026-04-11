@@ -86,6 +86,31 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     assert "Return exactly: OK" in user_content
 
 
+def test_image_only_message_gets_non_empty_query_text(tmp_path) -> None:
+    """Image-only messages need text for providers that reject queryless requests."""
+    workspace = _make_workspace(tmp_path)
+    image_path = tmp_path / "hazard.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    builder = ContextBuilder(workspace)
+
+    messages = builder.build_messages(
+        history=[],
+        current_message="[empty message]",
+        media=[str(image_path)],
+        channel="bridge",
+        chat_id="room",
+    )
+
+    user_content = messages[-1]["content"]
+    assert isinstance(user_content, list)
+    assert any(item.get("type") == "image_url" for item in user_content)
+    assert any(
+        item.get("type") == "text"
+        and item.get("text") == ContextBuilder._IMAGE_ONLY_PROMPT
+        for item in user_content
+    )
+
+
 def test_subagent_result_does_not_create_consecutive_assistant_messages(tmp_path) -> None:
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)

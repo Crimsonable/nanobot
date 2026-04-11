@@ -153,27 +153,58 @@ class LLMProvider(ABC):
         self.generation: GenerationSettings = GenerationSettings()
 
     @staticmethod
+    def _is_empty_text(value: Any) -> bool:
+        """Return True for empty strings and quoted-empty strings like '""'."""
+        if not isinstance(value, str):
+            return not value
+        stripped = value.strip()
+        return not stripped or stripped in {'""', "''"}
+
+    @staticmethod
     def _sanitize_empty_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Sanitize message content: fix empty blocks, strip internal _meta fields."""
         result: list[dict[str, Any]] = []
         for msg in messages:
+            role = msg.get("role")
             content = msg.get("content")
 
-            if isinstance(content, str) and not content:
+            if role == "user" and content is None:
                 clean = dict(msg)
-                clean["content"] = None if (msg.get("role") == "assistant" and msg.get("tool_calls")) else "(empty)"
+                clean["content"] = "(empty)"
+                result.append(clean)
+                continue
+
+            if isinstance(content, str) and (
+                not content or (role == "user" and LLMProvider._is_empty_text(content))
+            ):
+                clean = dict(msg)
+                clean["content"] = None if (role == "assistant" and msg.get("tool_calls")) else "(empty)"
                 result.append(clean)
                 continue
 
             if isinstance(content, list):
+                if role == "user" and not content:
+                    clean = dict(msg)
+                    clean["content"] = "(empty)"
+                    result.append(clean)
+                    continue
+
                 new_items: list[Any] = []
                 changed = False
                 for item in content:
                     if (
                         isinstance(item, dict)
                         and item.get("type") in ("text", "input_text", "output_text")
-                        and not item.get("text")
+                        and (
+                            not item.get("text")
+                            or (role == "user" and LLMProvider._is_empty_text(item.get("text")))
+                        )
                     ):
+                        if role == "user":
+                            new_items.append({k: v for k, v in item.items() if k != "_meta"} | {"text": "(empty)"})
+                        else:
+                            changed = True
+                            continue
                         changed = True
                         continue
                     if isinstance(item, dict) and "_meta" in item:
@@ -185,7 +216,7 @@ class LLMProvider(ABC):
                     clean = dict(msg)
                     if new_items:
                         clean["content"] = new_items
-                    elif msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    elif role == "assistant" and msg.get("tool_calls"):
                         clean["content"] = None
                     else:
                         clean["content"] = "(empty)"

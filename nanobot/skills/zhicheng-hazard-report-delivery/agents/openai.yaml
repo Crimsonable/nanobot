@@ -1,0 +1,4 @@
+interface:
+  display_name: "智成隐患报告交付"
+  short_description: "从施工图片生成隐患报告并返回PDF和CSV附件"
+  default_prompt: "发送施工现场图片后，生成隐患排查报告并返回PDF和CSV附件。"

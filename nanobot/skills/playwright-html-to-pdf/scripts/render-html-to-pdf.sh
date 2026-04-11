@@ -36,6 +36,7 @@ fi
 input="$1"
 output="$2"
 shift 2
+skill_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 format="A4"
 landscape="false"
@@ -103,23 +104,16 @@ case "$wait_until" in
     ;;
 esac
 
-python3 - "$input" "$output" "$format" "$landscape" "$media" "$wait_until" "$timeout" "$print_background" "$prefer_css_page_size" <<'PY'
-import os
+python3 - "$input" "$output" "$skill_dir" "$format" "$landscape" "$media" "$wait_until" "$timeout" "$print_background" "$prefer_css_page_size" <<'PY'
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import pathname2url
 
-try:
-    from playwright.sync_api import sync_playwright
-except Exception:
-    print('Unable to load the Python "playwright" package.', file=sys.stderr)
-    print("Install it with: python3 -m pip install playwright && python3 -m playwright install chromium", file=sys.stderr)
-    sys.exit(1)
-
 (
     input_value,
     output,
+    skill_dir_raw,
     paper_format,
     landscape_raw,
     media,
@@ -152,14 +146,36 @@ if timeout <= 0:
     sys.exit(2)
 
 output_path = Path(output).resolve()
+skill_dir = Path(skill_dir_raw).resolve()
+if output_path == skill_dir or skill_dir in output_path.parents:
+    print(f"Refusing to write PDF inside the read-only skill directory: {output_path}", file=sys.stderr)
+    print("Choose an output path under the agent workspace instead.", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:
+    print('Unable to load the Python "playwright" package.', file=sys.stderr)
+    print("Install it with: python3 -m pip install playwright && python3 -m playwright install chromium", file=sys.stderr)
+    sys.exit(1)
+
 output_path.parent.mkdir(parents=True, exist_ok=True)
 
 with sync_playwright() as playwright:
-    browser = playwright.chromium.launch(headless=True)
+    browser = playwright.chromium.launch(
+        headless=True,
+        args=["--allow-file-access-from-files"],
+    )
     try:
         page = browser.new_page()
         page.emulate_media(media=media)
         page.goto(input_url, wait_until=wait_until, timeout=timeout)
+        page.wait_for_function(
+            """() => Array.from(document.images)
+                .filter(img => img.currentSrc.startsWith('file:'))
+                .every(img => img.complete && img.naturalWidth > 0)""",
+            timeout=timeout,
+        )
         page.pdf(
             path=str(output_path),
             format=paper_format,

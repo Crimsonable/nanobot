@@ -1,4 +1,0 @@
-interface:
-  display_name: "PowerChina Business Trip"
-  short_description: "Apply for PowerChina business trips"
-  default_prompt: "Use this skill when you need to log in to PowerChina and submit or scaffold a business trip application workflow."

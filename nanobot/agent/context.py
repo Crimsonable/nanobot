@@ -19,6 +19,8 @@ class ContextBuilder:
 
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
+    _IMAGE_ONLY_PROMPT = "Please process the attached image(s)."
+    _EMPTY_MESSAGE_MARKERS = frozenset({"", "[empty message]"})
 
     def __init__(self, workspace: Path, timezone: str | None = None):
         self.workspace = workspace
@@ -155,6 +157,8 @@ class ContextBuilder:
 
         if not images:
             return text
+        if (text or "").strip() in self._EMPTY_MESSAGE_MARKERS:
+            text = self._IMAGE_ONLY_PROMPT
         return images + [{"type": "text", "text": text}]
 
     def add_tool_result(
