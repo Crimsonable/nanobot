@@ -394,7 +394,8 @@ If you prefer to configure manually, add the following to `~/.nanobot/config.jso
       "enabled": true,
       "token": "YOUR_BOT_TOKEN",
       "allowFrom": ["YOUR_USER_ID"],
-      "groupPolicy": "mention"
+      "groupPolicy": "mention",
+      "streaming": true
     }
   }
 }
@@ -405,6 +406,7 @@ If you prefer to configure manually, add the following to `~/.nanobot/config.jso
 > - `"open"` — Respond to all messages
 > DMs always respond when the sender is in `allowFrom`.
 > - If you set group policy to open create new threads as private threads and then @ the bot into it. Otherwise the thread itself and the channel in which you spawned it will spawn a bot session.
+> `streaming` defaults to `true`. Disable it only if you explicitly want non-streaming replies.
 
 **5. Invite the bot**
 - OAuth2 → URL Generator
@@ -558,7 +560,11 @@ Uses **WebSocket** long connection — no public IP required.
       "verificationToken": "",
       "allowFrom": ["ou_YOUR_OPEN_ID"],
       "groupPolicy": "mention",
-      "streaming": true
+      "reactEmoji": "OnIt",
+      "doneEmoji": "DONE",
+      "toolHintPrefix": "🔧",
+      "streaming": true,
+      "domain": "feishu"
     }
   }
 }
@@ -568,6 +574,10 @@ Uses **WebSocket** long connection — no public IP required.
 > `encryptKey` and `verificationToken` are optional for Long Connection mode.
 > `allowFrom`: Add your open_id (find it in nanobot logs when you message the bot). Use `["*"]` to allow all users.
 > `groupPolicy`: `"mention"` (default — respond only when @mentioned), `"open"` (respond to all group messages). Private chats always respond.
+> `reactEmoji`: Emoji for "processing" status (default: `OnIt`). See [available emojis](https://open.larkoffice.com/document/server-docs/im-v1/message-reaction/emojis-introduce).
+> `doneEmoji`: Optional emoji for "completed" status (e.g., `DONE`, `OK`, `HEART`). When set, bot adds this reaction after removing `reactEmoji`.
+> `toolHintPrefix`: Prefix for inline tool hints in streaming cards (default: `🔧`).
+> `domain`: `"feishu"` (default) for China (open.feishu.cn), `"lark"` for international Lark (open.larksuite.com).
 
 **3. Run**
 
@@ -1304,6 +1314,7 @@ If you need to allow trusted private ranges such as Tailscale / CGNAT addresses,
 | `brave` | `apiKey` | `BRAVE_API_KEY` | No |
 | `tavily` | `apiKey` | `TAVILY_API_KEY` | No |
 | `jina` | `apiKey` | `JINA_API_KEY` | Free tier (10M tokens) |
+| `kagi` | `apiKey` | `KAGI_API_KEY` | No |
 | `searxng` | `baseUrl` | `SEARXNG_BASE_URL` | Yes (self-hosted) |
 | `duckduckgo` (default) | — | — | Yes |
 
@@ -1354,6 +1365,20 @@ If you need to allow trusted private ranges such as Tailscale / CGNAT addresses,
       "search": {
         "provider": "jina",
         "apiKey": "jina_..."
+      }
+    }
+  }
+}
+```
+
+**Kagi:**
+```json
+{
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "kagi",
+        "apiKey": "your-kagi-api-key"
       }
     }
   }
@@ -1495,6 +1520,35 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 **Docker security**: The official Docker image runs as a non-root user (`nanobot`, UID 1000) with bubblewrap pre-installed. When using `docker-compose.yml`, the container drops all Linux capabilities except `SYS_ADMIN` (required for bwrap's namespace isolation).
 
 
+### Auto Compact
+
+When a user is idle for longer than a configured threshold, nanobot **proactively** compresses the older part of the session context into a summary while keeping a recent legal suffix of live messages. This reduces token cost and first-token latency when the user returns — instead of re-processing a long stale context with an expired KV cache, the model receives a compact summary, the most recent live context, and fresh input.
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "idleCompactAfterMinutes": 15
+    }
+  }
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `agents.defaults.idleCompactAfterMinutes` | `0` (disabled) | Minutes of idle time before auto-compaction starts. Set to `0` to disable. Recommended: `15` — close to a typical LLM KV cache expiry window, so stale sessions get compacted before the user returns. |
+
+`sessionTtlMinutes` remains accepted as a legacy alias for backward compatibility, but `idleCompactAfterMinutes` is the preferred config key going forward.
+
+How it works:
+1. **Idle detection**: On each idle tick (~1 s), checks all sessions for expiration.
+2. **Background compaction**: Idle sessions summarize the older live prefix via LLM and keep the most recent legal suffix (currently 8 messages).
+3. **Summary injection**: When the user returns, the summary is injected as runtime context (one-shot, not persisted) alongside the retained recent suffix.
+4. **Restart-safe resume**: The summary is also mirrored into session metadata so it can still be recovered after a process restart.
+
+> [!TIP]
+> Think of auto compact as "summarize older context, keep the freshest live turns." It is not a hard session reset.
+
 ### Timezone
 
 Time is context. Context should be precise.
@@ -1516,6 +1570,52 @@ This affects runtime time strings shown to the model, such as runtime context an
 Common examples: `UTC`, `America/New_York`, `America/Los_Angeles`, `Europe/London`, `Europe/Berlin`, `Asia/Tokyo`, `Asia/Shanghai`, `Asia/Singapore`, `Australia/Sydney`.
 
 > Need another timezone? Browse the full [IANA Time Zone Database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).
+
+### Unified Session
+
+By default, each channel × chat ID combination gets its own session. If you use nanobot across multiple channels (e.g. Telegram + Discord + CLI) and want them to share the same conversation, enable `unifiedSession`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "unifiedSession": true
+    }
+  }
+}
+```
+
+When enabled, all incoming messages — regardless of which channel they arrive on — are routed into a single shared session. Switching from Telegram to Discord (or any other channel) continues the same conversation seamlessly.
+
+| Behavior | `false` (default) | `true` |
+|----------|-------------------|--------|
+| Session key | `channel:chat_id` | `unified:default` |
+| Cross-channel continuity | No | Yes |
+| `/new` clears | Current channel session | Shared session |
+| `/stop` finds tasks | By channel session | By shared session |
+| Existing `session_key_override` (e.g. Telegram thread) | Respected | Still respected — not overwritten |
+
+> This is designed for single-user, multi-device setups. It is **off by default** — existing users see zero behavior change.
+
+### Disabled Skills
+
+nanobot ships with built-in skills, and your workspace can also define custom skills under `skills/`. If you want to hide specific skills from the agent, set `agents.defaults.disabledSkills` to a list of skill directory names:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "disabledSkills": ["github", "weather"]
+    }
+  }
+}
+```
+
+Disabled skills are excluded from the main agent's skill summary, from always-on skill injection, and from subagent skill summaries. This is useful when some bundled skills are unnecessary for your deployment or should not be exposed to end users.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `agents.defaults.disabledSkills` | `[]` | List of skill directory names to exclude from loading. Applies to both built-in skills and workspace skills. |
 
 ## 🧩 Multiple Instances
 
