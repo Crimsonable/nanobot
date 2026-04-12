@@ -49,6 +49,17 @@ class MessageTool(Tool):
         """Reset per-turn send tracking."""
         self._sent_in_turn = False
 
+    def _normalize_current_bridge_chat_id(self, channel: str, chat_id: str) -> str:
+        if channel != "bridge" or not self._default_chat_id:
+            return chat_id
+        if channel != self._default_channel or chat_id == self._default_chat_id:
+            return chat_id
+
+        _sender_id, separator, conversation_id = self._default_chat_id.partition(":::")
+        if separator and chat_id == conversation_id:
+            return self._default_chat_id
+        return chat_id
+
     @property
     def name(self) -> str:
         return "message"
@@ -76,6 +87,7 @@ class MessageTool(Tool):
         
         channel = channel or self._default_channel
         chat_id = chat_id or self._default_chat_id
+        chat_id = self._normalize_current_bridge_chat_id(channel, chat_id)
         # Only inherit default message_id when targeting the same channel+chat.
         # Cross-chat sends must not carry the original message_id, because
         # some channels (e.g. Feishu) use it to determine the target

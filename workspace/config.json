@@ -43,7 +43,8 @@
         "defaults": {
             "model": "MiniMax-M2.7",
             "provider": "minimax",
-            "timezone": "Asia/Shanghai"
+            "timezone": "Asia/Shanghai",
+            "contextWindowTokens": 100000
         }
     }
 }

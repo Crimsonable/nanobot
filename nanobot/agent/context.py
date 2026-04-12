@@ -21,6 +21,8 @@ class ContextBuilder:
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
     _MAX_RECENT_HISTORY = 50
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
+    _EMPTY_MESSAGE_MARKERS = frozenset({"", "[empty message]"})
+    _IMAGE_ONLY_PROMPT = "Please analyze the attached image."
 
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
         self.workspace = workspace

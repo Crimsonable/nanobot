@@ -47,6 +47,27 @@ async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bridge_inbound_attachment_only_uses_analysis_placeholder() -> None:
+    channel = BridgeChannel(BridgeConfig(bridge_url="ws://bridge", allow_from=["user-1"]), MessageBus())
+
+    await channel._handle_bridge_message(
+        json.dumps(
+            {
+                "type": "inbound_message",
+                "sender_id": "user-1",
+                "chat_id": "conv-1",
+                "content": "",
+                "attachments": ["/tmp/report.pdf"],
+            }
+        )
+    )
+
+    msg = await channel.bus.consume_inbound()
+    assert msg.content == "[analysis]"
+    assert msg.media == ["/tmp/report.pdf"]
+
+
+@pytest.mark.asyncio
 async def test_bridge_cancel_maps_to_stop_message() -> None:
     channel = BridgeChannel(BridgeConfig(bridge_url="ws://bridge", allow_from=["user-1"]), MessageBus())
 

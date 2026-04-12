@@ -155,11 +155,15 @@ class BridgeChannel(BaseChannel):
     async def _publish_bridge_inbound(self, packet: dict[str, Any]) -> None:
         metadata = dict(packet.get("metadata") or {})
         sender_id = str(packet.get("sender_id") or "user")
+        attachments = [str(item) for item in packet.get("attachments") or []]
+        content = str(packet.get("content") or "")
+        if attachments and not content.strip():
+            content = "[analysis]"
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str(packet.get("chat_id") or "remote"),
-            content=str(packet.get("content") or ""),
-            media=[str(item) for item in packet.get("attachments") or []],
+            content=content,
+            media=attachments,
             metadata=metadata,
             session_key=str(packet.get("session_key") or "") or None,
         )

@@ -96,6 +96,31 @@ class DebugP2PRequest(BaseModel):
     timestamp: str = ""
 
 
+async def _dispatch_bridge_outbound_from_ws(org_id: str, forwarded: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await dispatch_parser.parse(
+            {
+                "event_type": "bridge_outbound_message",
+                "org_id": org_id,
+                "event": {
+                    "to": forwarded.get("chat_id", ""),
+                    "content": forwarded.get("content", ""),
+                    "metadata": forwarded.get("metadata", {}),
+                    "attachments": forwarded.get("attachments", []),
+                },
+            }
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "bridge outbound dispatch failed org_id=%s chat_id=%s",
+            org_id,
+            forwarded.get("chat_id", ""),
+        )
+        return {"ok": False, "error": str(exc)}
+
+
 def cleanup_loop() -> None:
     while not cleanup_stop_event.wait(CLEANUP_SCAN_INTERVAL):
         try:
@@ -169,18 +194,7 @@ async def bridge_ws(websocket: WebSocket) -> None:
             packet = await websocket.receive_json()
             forwarded = await bridge_hub.handle_child_packet(org_id, packet)
             if str(forwarded.get("type") or "") == "outbound_message":
-                await dispatch_parser.parse(
-                    {
-                        "event_type": "bridge_outbound_message",
-                        "org_id": org_id,
-                        "event": {
-                            "to": forwarded.get("chat_id", ""),
-                            "content": forwarded.get("content", ""),
-                            "metadata": forwarded.get("metadata", {}),
-                            "attachments": forwarded.get("attachments", []),
-                        },
-                    }
-                )
+                await _dispatch_bridge_outbound_from_ws(org_id, forwarded)
     except WebSocketDisconnect:
         pass
     except asyncio.TimeoutError:
