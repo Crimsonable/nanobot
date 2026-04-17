@@ -12,11 +12,21 @@ from typing import Any
 from uuid import uuid4
 
 from container_up.attachments import persist_attachment_bytes
+from container_up.frontend_config import compose_frontend_org_id
 from container_up.settings import FEISHU_APP_ID, FEISHU_APP_SECRET
 
 
 logger = logging.getLogger(__name__)
 DispatchCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+class _EventLoopProxy:
+    def __getattr__(self, name: str) -> Any:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        return getattr(loop, name)
 
 
 def _extract_interactive_content(content: dict[str, Any] | str) -> list[str]:
@@ -53,7 +63,9 @@ def _extract_interactive_content(content: dict[str, Any] | str) -> list[str]:
     if isinstance(header, dict):
         header_title = header.get("title")
         if isinstance(header_title, dict):
-            header_text = str(header_title.get("content") or header_title.get("text") or "")
+            header_text = str(
+                header_title.get("content") or header_title.get("text") or ""
+            )
             if header_text:
                 parts.append(f"title: {header_text}")
 
@@ -110,7 +122,9 @@ def _extract_element_content(element: Any) -> list[str]:
             parts.append(f"link: {url}")
     elif tag == "img":
         alt = element.get("alt")
-        parts.append(str(alt.get("content") or "[image]") if isinstance(alt, dict) else "[image]")
+        parts.append(
+            str(alt.get("content") or "[image]") if isinstance(alt, dict) else "[image]"
+        )
     elif tag == "note":
         nested = element.get("elements")
         if isinstance(nested, list):
@@ -250,16 +264,11 @@ class FeishuIMParser:
     _MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
     _MD_STRIKE_RE = re.compile(r"~~(.+?)~~")
     _COMPLEX_MD_RE = re.compile(
-        r"```"
-        r"|^\|.+\|.*\n\s*\|[-:\s|]+\|"
-        r"|^#{1,6}\s+",
+        r"```" r"|^\|.+\|.*\n\s*\|[-:\s|]+\|" r"|^#{1,6}\s+",
         re.MULTILINE,
     )
     _SIMPLE_MD_RE = re.compile(
-        r"\*\*.+?\*\*"
-        r"|__.+?__"
-        r"|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)"
-        r"|~~.+?~~",
+        r"\*\*.+?\*\*" r"|__.+?__" r"|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)" r"|~~.+?~~",
         re.DOTALL,
     )
     _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\)]+)\)")
@@ -271,17 +280,37 @@ class FeishuIMParser:
     def __init__(
         self,
         *,
+        frontend_id: str = "default",
+        app_id: str | None = None,
+        app_secret: str | None = None,
+        frontend_config: dict[str, Any] | None = None,
         dispatch_event: DispatchCallback | None = None,
         main_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
-        self.app_id = FEISHU_APP_ID
-        self.app_secret = FEISHU_APP_SECRET
+        self.frontend_id = frontend_id
+        config = dict(frontend_config or {})
+        configured_app_id = (
+            app_id
+            or config.get("app_id")
+            or config.get("APP_ID")
+            or config.get("FEISHU_APP_ID")
+        )
+        configured_app_secret = (
+            app_secret
+            or config.get("app_secret")
+            or config.get("APP_SECRET")
+            or config.get("FEISHU_APP_SECRET")
+            or config.get("secret")
+        )
+        self.app_id = str(configured_app_id or FEISHU_APP_ID).strip()
+        self.app_secret = str(configured_app_secret or FEISHU_APP_SECRET).strip()
         self._dispatch_event = dispatch_event
         self._main_loop = main_loop
         self._thread: threading.Thread | None = None
         self._started = False
-        self._api_client: Any | None = None
+        self._api_client_local = threading.local()
         self._ws_client: Any | None = None
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
 
     def start(self) -> None:
         if self._started:
@@ -294,18 +323,61 @@ class FeishuIMParser:
         self._started = True
         self._thread = threading.Thread(
             target=self._run_ws_client,
-            name="container-up-feishu-ws",
+            name=f"container-up-feishu-ws-{self.frontend_id}",
             daemon=True,
         )
         self._thread.start()
 
+    """def stop(self) -> None:
+        self._started = False"""
+
     def stop(self) -> None:
         self._started = False
+
+        ws_loop = self._ws_loop
+        ws_client = self._ws_client
+        self._ws_client = None
+
+        if ws_loop is not None and not ws_loop.is_closed():
+
+            async def _disconnect_client() -> None:
+                if ws_client is None:
+                    return
+                disconnect = getattr(ws_client, "_disconnect", None)
+                if disconnect is None:
+                    return
+                try:
+                    await disconnect()
+                except Exception:
+                    logger.exception("failed to disconnect feishu ws client")
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(_disconnect_client(), ws_loop)
+                try:
+                    future.result(timeout=3)
+                except Exception:
+                    logger.exception("failed while waiting feishu ws disconnect")
+            except Exception:
+                logger.exception("failed to schedule feishu ws disconnect")
+
+            try:
+                ws_loop.call_soon_threadsafe(ws_loop.stop)
+            except Exception:
+                logger.exception("failed to stop feishu ws loop")
+
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3)
+
+        self._ws_loop = None
 
     def supports_subscribe(self) -> bool:
         return False
 
-    async def post_message_with_retry(self, *, payload: dict[str, object]) -> dict[str, object]:
+    async def post_message_with_retry(
+        self, *, payload: dict[str, object]
+    ) -> dict[str, object]:
         metadata = dict(payload.get("metadata") or {})
         reply_target = self._resolve_reply_target(
             chat_id=str(payload.get("chat_id") or ""),
@@ -322,7 +394,11 @@ class FeishuIMParser:
         if content.strip():
             message_results: list[dict[str, Any]] = []
             for message_type, body in self._render_outbound_content(content):
-                target = reply_target if first_send else self._without_reply_target(reply_target)
+                target = (
+                    reply_target
+                    if first_send
+                    else self._without_reply_target(reply_target)
+                )
                 message_results.append(
                     await asyncio.to_thread(
                         self._send_or_reply_message_sync,
@@ -332,10 +408,14 @@ class FeishuIMParser:
                     )
                 )
                 first_send = False
-            result["message"] = message_results[0] if len(message_results) == 1 else message_results
+            result["message"] = (
+                message_results[0] if len(message_results) == 1 else message_results
+            )
 
         for attachment in attachments:
-            target = reply_target if first_send else self._without_reply_target(reply_target)
+            target = (
+                reply_target if first_send else self._without_reply_target(reply_target)
+            )
             result["attachments"].append(
                 await asyncio.to_thread(self._send_attachment_sync, target, attachment)
             )
@@ -353,7 +433,9 @@ class FeishuIMParser:
         if str(reply_target.get("type") or "") == "feishu":
             return reply_target
 
-        sender_id, separator, conversation_id = chat_id.partition(cls._DELIVERY_TARGET_SEPARATOR)
+        sender_id, separator, conversation_id = chat_id.partition(
+            cls._DELIVERY_TARGET_SEPARATOR
+        )
         receive_id = str(metadata.get("chat_id") or conversation_id or "").strip()
         sender_id = str(metadata.get("sender_id") or sender_id or "").strip()
         chat_type = str(metadata.get("chat_type") or "").strip()
@@ -375,7 +457,7 @@ class FeishuIMParser:
         if not target_receive_id:
             return {}
 
-        return {
+        target = {
             "type": "feishu",
             "receive_id_type": receive_id_type,
             "receive_id": target_receive_id,
@@ -383,8 +465,12 @@ class FeishuIMParser:
             "thread_id": thread_id,
             "reply_in_thread": bool(thread_id),
         }
+        frontend_id = str(metadata.get("frontend_id") or "").strip()
+        if frontend_id:
+            target["frontend_id"] = frontend_id
+        return target
 
-    def _run_ws_client(self) -> None:
+    """def _run_ws_client(self) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -407,12 +493,70 @@ class FeishuIMParser:
             )
             self._ws_client.start()
         except Exception:
-            logger.exception("feishu ws listener exited unexpectedly")
+            logger.exception("feishu ws listener exited unexpectedly")"""
 
-    def _schedule_dispatch(self, data: Any) -> None:
+    def _run_ws_client(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._ws_loop = loop
+        asyncio.set_event_loop(loop)
+
+        try:
+            loop.run_until_complete(self._run_ws_client_async())
+        except Exception:
+            logger.exception("feishu ws listener exited unexpectedly")
+        finally:
+            try:
+                pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            except Exception:
+                logger.exception("failed to cleanup feishu ws loop")
+            finally:
+                self._ws_client = None
+                asyncio.set_event_loop(None)
+                loop.close()
+                self._ws_loop = None
+
+    async def _run_ws_client_async(self) -> None:
+        from lark_oapi.core.enum import LogLevel
+        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+        import lark_oapi.ws.client as ws_client_module
+
+        # 关键修复：不要把 SDK 的模块级 loop 绑定成某个固定 loop，
+        # 而是换成按当前线程/当前运行时动态解析的代理。
+        if not isinstance(getattr(ws_client_module, "loop", None), _EventLoopProxy):
+            ws_client_module.loop = _EventLoopProxy()
+
+        event_handler = (
+            EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(self._on_message_receive)
+            .build()
+        )
+
+        self._ws_client = ws_client_module.Client(
+            self.app_id,
+            self.app_secret,
+            event_handler=event_handler,
+            log_level=LogLevel.INFO,
+        )
+
+        connect = getattr(self._ws_client, "_connect", None)
+        if connect is None:
+            raise RuntimeError("lark ws client has no _connect method")
+
+        await connect()
+
+        while self._started:
+            await asyncio.sleep(1)
+
+    """def _schedule_dispatch(self, data: Any) -> None:
         if self._dispatch_event is None:
             return
-        asyncio.create_task(self._normalize_and_dispatch(data))
+        asyncio.create_task(self._normalize_and_dispatch(data))"""
 
     async def _normalize_and_dispatch(self, data: Any) -> None:
         if self._dispatch_event is None:
@@ -424,10 +568,27 @@ class FeishuIMParser:
             return
         await self._dispatch_event(payload)
 
-    def _on_message_receive(self, data: Any) -> None:
+    """def _on_message_receive(self, data: Any) -> None:
         if not self._started or self._main_loop is None:
             return
-        self._main_loop.call_soon_threadsafe(self._schedule_dispatch, data)
+        self._main_loop.call_soon_threadsafe(self._schedule_dispatch, data)"""
+
+    def _on_message_receive(self, data: Any) -> None:
+        if not self._started or self._main_loop is None or self._dispatch_event is None:
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self._normalize_and_dispatch(data),
+            self._main_loop,
+        )
+
+        def _log_future_result(fut: Any) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.exception("failed to dispatch feishu event")
+
+        future.add_done_callback(_log_future_result)
 
     def _build_dispatch_event(self, data: Any) -> dict[str, Any]:
         event = getattr(data, "event", None)
@@ -440,11 +601,12 @@ class FeishuIMParser:
         if message is None or sender is None or sender_id is None:
             raise RuntimeError("incomplete feishu event")
 
-        org_id = str(
+        external_org_id = str(
             getattr(sender, "tenant_key", "")
             or getattr(data.header, "tenant_key", "")
             or ""
         ).strip()
+        org_id = compose_frontend_org_id(self.frontend_id, external_org_id)
         user_id = str(
             getattr(sender_id, "open_id", "")
             or getattr(sender_id, "user_id", "")
@@ -493,6 +655,10 @@ class FeishuIMParser:
                 "attachments": attachments,
                 "metadata": {
                     "provider": "feishu",
+                    "frontend_id": self.frontend_id,
+                    "app_id": self.app_id,
+                    "external_org_id": external_org_id,
+                    "route_org_id": org_id,
                     "chat_id": chat_id,
                     "chat_type": chat_type,
                     "thread_id": thread_id,
@@ -504,6 +670,7 @@ class FeishuIMParser:
                     "mentions": mentions,
                     "reply_target": {
                         "type": "feishu",
+                        "frontend_id": self.frontend_id,
                         "receive_id_type": receive_id_type,
                         "receive_id": receive_id,
                         "message_id": message_id,
@@ -645,22 +812,34 @@ class FeishuIMParser:
             )
             return None, None
 
-        file_data = response.file.read() if hasattr(response.file, "read") else response.file
+        file_data = (
+            response.file.read() if hasattr(response.file, "read") else response.file
+        )
         return bytes(file_data or b""), response.file_name
 
-    def _get_api_client(self) -> Any:
+    """def _get_api_client(self) -> Any:
         if self._api_client is not None:
             return self._api_client
 
         from lark_oapi.client import Client
 
         self._api_client = (
-            Client.builder()
-            .app_id(self.app_id)
-            .app_secret(self.app_secret)
-            .build()
+            Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
         )
-        return self._api_client
+        return self._api_client"""
+
+    def _get_api_client(self) -> Any:
+        client = getattr(self._api_client_local, "client", None)
+        if client is not None:
+            return client
+
+        from lark_oapi.client import Client
+
+        client = (
+            Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
+        )
+        self._api_client_local.client = client
+        return client
 
     @classmethod
     def _strip_md_formatting(cls, text: str) -> str:
@@ -672,7 +851,9 @@ class FeishuIMParser:
 
     @classmethod
     def _parse_md_table(cls, table_text: str) -> dict[str, Any] | None:
-        lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
+        lines = [
+            line.strip() for line in table_text.strip().split("\n") if line.strip()
+        ]
         if len(lines) < 3:
             return None
 
@@ -680,12 +861,20 @@ class FeishuIMParser:
             return [cell.strip() for cell in line.strip("|").split("|")]
 
         headers = [cls._strip_md_formatting(header) for header in split(lines[0])]
-        rows = [[cls._strip_md_formatting(cell) for cell in split(line)] for line in lines[2:]]
+        rows = [
+            [cls._strip_md_formatting(cell) for cell in split(line)]
+            for line in lines[2:]
+        ]
         return {
             "tag": "table",
             "page_size": len(rows) + 1,
             "columns": [
-                {"tag": "column", "name": f"c{i}", "display_name": header, "width": "auto"}
+                {
+                    "tag": "column",
+                    "name": f"c{i}",
+                    "display_name": header,
+                    "width": "auto",
+                }
                 for i, header in enumerate(headers)
             ],
             "rows": [
@@ -740,7 +929,9 @@ class FeishuIMParser:
         code_blocks: list[str] = []
         for match in self._CODE_BLOCK_RE.finditer(content):
             code_blocks.append(match.group(1))
-            protected = protected.replace(match.group(1), f"\x00CODE{len(code_blocks) - 1}\x00", 1)
+            protected = protected.replace(
+                match.group(1), f"\x00CODE{len(code_blocks) - 1}\x00", 1
+            )
 
         elements: list[dict[str, Any]] = []
         last_end = 0
@@ -800,7 +991,9 @@ class FeishuIMParser:
                 before = line[last_end : match.start()]
                 if before:
                     elements.append({"tag": "text", "text": before})
-                elements.append({"tag": "a", "text": match.group(1), "href": match.group(2)})
+                elements.append(
+                    {"tag": "a", "text": match.group(1), "href": match.group(2)}
+                )
                 last_end = match.end()
 
             remaining = line[last_end:]
@@ -882,7 +1075,11 @@ class FeishuIMParser:
             .message_id(str(reply_target.get("message_id") or ""))
             .request_body(
                 ReplyMessageRequestBody.builder()
-                .content(self._build_text_request_body(message_type=message_type, content=content))
+                .content(
+                    self._build_text_request_body(
+                        message_type=message_type, content=content
+                    )
+                )
                 .msg_type(message_type)
                 .reply_in_thread(bool(reply_target.get("reply_in_thread")))
                 .uuid(uuid4().hex)
@@ -915,7 +1112,11 @@ class FeishuIMParser:
                 CreateMessageRequestBody.builder()
                 .receive_id(str(reply_target.get("receive_id") or ""))
                 .msg_type(message_type)
-                .content(self._build_text_request_body(message_type=message_type, content=content))
+                .content(
+                    self._build_text_request_body(
+                        message_type=message_type, content=content
+                    )
+                )
                 .uuid(uuid4().hex)
                 .build()
             )

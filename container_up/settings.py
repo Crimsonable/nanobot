@@ -13,6 +13,10 @@ IM_PROVIDER = os.getenv("IM_PROVIDER", "qxt").strip().lower() or "qxt"
 DB_PATH = Path(
     os.getenv("CONTAINER_UP_DB_PATH", "/var/lib/container_up/container_up.db")
 )
+# container_up 外层配置，承载 frontend 入口配置
+CONTAINER_UP_CONFIG_PATH = Path(
+    os.getenv("CONTAINER_UP_CONFIG_PATH", "/app/container_up/container_up.json")
+)
 
 # 宿主机上的 workspace 根目录
 HOST_WORKSPACE_ROOT = Path(os.getenv("HOST_WORKSPACE_ROOT", "/opt/nanobot/workspaces"))
@@ -45,7 +49,9 @@ CHILD_READY_TIMEOUT = int(os.getenv("CHILD_READY_TIMEOUT", "90"))
 # 组织容器名称前缀
 CHILD_CONTAINER_PREFIX = os.getenv("CHILD_CONTAINER_PREFIX", "nanobot-org")
 # child 容器回连 parent bridge 的 websocket 地址
-PARENT_BRIDGE_URL = f"ws://container-up:{APP_PORT}/ws/bridge"
+PARENT_BRIDGE_URL = os.getenv(
+    "PARENT_BRIDGE_URL", f"ws://container-up:{APP_PORT}/ws/bridge"
+)
 
 # org 级别空闲回收阈值，单位秒
 IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "3600"))

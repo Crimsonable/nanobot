@@ -60,7 +60,7 @@ async def test_parse_im_message_receive_keeps_qxt_attachment_as_url_reference(
         captured.update(kwargs)
         return {"ok": True}
 
-    monkeypatch.setattr(dispatch, "ensure_org_container", lambda _org_id: None)
+    monkeypatch.setattr(dispatch, "ensure_org_container", lambda *_args: None)
     monkeypatch.setattr(dispatch, "touch_org", lambda _org_id: None)
     monkeypatch.setattr(
         dispatch,
@@ -105,7 +105,7 @@ async def test_parse_im_message_receive_skips_content_url_rebuild_when_materiali
         captured.update(kwargs)
         return {"ok": True}
 
-    monkeypatch.setattr(dispatch, "ensure_org_container", lambda _org_id: None)
+    monkeypatch.setattr(dispatch, "ensure_org_container", lambda *_args: None)
     monkeypatch.setattr(dispatch, "touch_org", lambda _org_id: None)
     monkeypatch.setattr(
         dispatch,
@@ -138,3 +138,49 @@ async def test_parse_im_message_receive_skips_content_url_rebuild_when_materiali
     assert captured["attachments"] == [
         "/app/nanobot_workspaces/user-1/cache/attachments/qxt/conv/report.pdf"
     ]
+
+
+@pytest.mark.asyncio
+async def test_parse_im_message_receive_uses_frontend_scoped_org_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    ensured: dict[str, object] = {}
+    touched: list[str] = []
+
+    async def fake_submit_message(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    def fake_ensure_org_container(org_id: str, frontend_id: str | None = None) -> None:
+        ensured["org_id"] = org_id
+        ensured["frontend_id"] = frontend_id
+
+    monkeypatch.setattr(dispatch, "ensure_org_container", fake_ensure_org_container)
+    monkeypatch.setattr(dispatch, "touch_org", lambda org_id: touched.append(org_id))
+    monkeypatch.setattr(
+        dispatch,
+        "get_bridge_hub",
+        lambda: SimpleNamespace(submit_message=fake_submit_message),
+    )
+
+    result = await dispatch.parse_im_message_receive(
+        {
+            "event_type": "im_message_receive",
+            "event": {
+                "org_id": "tenant-1",
+                "conversation_id": "chat-1",
+                "user_id": "user-1",
+                "content": "hello",
+                "attachments": [],
+                "metadata": {"provider": "feishu", "frontend_id": "feishu-main"},
+            },
+        }
+    )
+
+    assert result == {"ok": True, "response": {"ok": True}}
+    assert ensured == {"org_id": "feishu-main::tenant-1", "frontend_id": "feishu-main"}
+    assert touched == ["feishu-main::tenant-1"]
+    assert captured["org_id"] == "feishu-main::tenant-1"
+    assert captured["metadata"]["external_org_id"] == "tenant-1"
+    assert captured["metadata"]["route_org_id"] == "feishu-main::tenant-1"

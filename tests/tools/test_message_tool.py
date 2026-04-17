@@ -22,6 +22,7 @@ async def test_message_tool_maps_current_bridge_conversation_id_to_delivery_targ
         default_channel="bridge",
         default_chat_id="user-1:::oc_current",
         default_message_id="msg-1",
+        default_metadata={"frontend_id": "feishu-main"},
     )
 
     result = await tool.execute(
@@ -33,7 +34,7 @@ async def test_message_tool_maps_current_bridge_conversation_id_to_delivery_targ
 
     assert result == "Message sent to bridge:user-1:::oc_current with 1 attachments"
     assert sent[0].chat_id == "user-1:::oc_current"
-    assert sent[0].metadata == {"message_id": "msg-1"}
+    assert sent[0].metadata == {"frontend_id": "feishu-main", "message_id": "msg-1"}
 
 
 @pytest.mark.asyncio
@@ -48,6 +49,7 @@ async def test_message_tool_keeps_non_current_bridge_chat_id() -> None:
         default_channel="bridge",
         default_chat_id="user-1:::oc_current",
         default_message_id="msg-1",
+        default_metadata={"frontend_id": "feishu-main"},
     )
 
     result = await tool.execute(

@@ -16,6 +16,7 @@ from container_up.db_store import (
     org_record,
     upsert_org_record,
 )
+from container_up.frontend_config import FrontendConfig, frontend_config_for
 from container_up.settings import (
     CHILD_BRIDGE_TOKEN,
     CHILD_CONTAINER_PREFIX,
@@ -118,7 +119,10 @@ def restart_container(container: Any, org_id: str) -> None:
     wait_until_ready(org_id)
 
 
-def build_child_volumes(workspace_path: Path) -> dict[str, dict[str, str]]:
+def build_child_volumes(
+    workspace_path: Path,
+    frontend_config: FrontendConfig | None = None,
+) -> dict[str, dict[str, str]]:
     volumes: dict[str, dict[str, str]] = {
         str(workspace_path): {
             "bind": CHILD_WORKSPACE_TARGET,
@@ -136,6 +140,17 @@ def build_child_volumes(workspace_path: Path) -> dict[str, dict[str, str]]:
             "bind": CHILD_NANOBOT_SOURCE_TARGET,
             "mode": "ro",
         }
+    if frontend_config is not None:
+        if frontend_config.builtin_skills_dir is not None:
+            volumes[str(frontend_config.builtin_skills_dir)] = {
+                "bind": frontend_config.child_builtin_skills_dir,
+                "mode": "ro",
+            }
+        if frontend_config.template_dir is not None:
+            volumes[str(frontend_config.template_dir)] = {
+                "bind": frontend_config.child_template_dir,
+                "mode": "ro",
+            }
     return volumes
 
 
@@ -149,7 +164,11 @@ def ensure_child_network() -> None:
 
 
 def create_child_container(
-    org_id: str, container_name: str, workspace_path: Path, token: str
+    org_id: str,
+    container_name: str,
+    workspace_path: Path,
+    token: str,
+    frontend_config: FrontendConfig | None = None,
 ) -> dict[str, Any]:
     environment = {
         "BRIDGE_ORG_ID": org_id,
@@ -161,6 +180,11 @@ def create_child_container(
         environment["NANOBOT_LOG_LLM_REQUESTS"] = LOG_LLM_REQUESTS
     if token:
         environment["BRIDGE_TOKEN_OVERRIDE"] = token
+    if frontend_config is not None:
+        if frontend_config.builtin_skills_dir is not None:
+            environment["BUILTIN_SKILLS_DIR"] = frontend_config.child_builtin_skills_dir
+        if frontend_config.template_dir is not None:
+            environment["TEMPLATE_DIR"] = frontend_config.child_template_dir
 
     run_kwargs: dict[str, Any] = {
         "name": container_name,
@@ -168,7 +192,7 @@ def create_child_container(
         "restart_policy": {"Name": "unless-stopped"},
         "labels": {"managed-by": "container_up", "org-id": org_id},
         "environment": environment,
-        "volumes": build_child_volumes(workspace_path),
+        "volumes": build_child_volumes(workspace_path, frontend_config),
         "network": CHILD_NETWORK,
     }
 
@@ -184,6 +208,7 @@ def create_child_container(
 
     record = {
         "org_id": org_id,
+        "frontend_id": frontend_config.id if frontend_config is not None else "",
         "container_name": container_name,
         "container_id": container.id,
         "bridge_url": PARENT_BRIDGE_URL,
@@ -278,20 +303,26 @@ def sync_existing_orgs() -> None:
             container.restart(timeout=20)
 
 
-def ensure_org_container(org_id: str) -> dict[str, Any]:
+def ensure_org_container(org_id: str, frontend_id: str | None = None) -> dict[str, Any]:
     with get_org_lock(org_id):
+        frontend_config = frontend_config_for(frontend_id)
         record = org_record(org_id)
         if record:
             workspace_path, token, changed = ensure_org_workspace(org_id)
             container = get_container(record["container_name"])
+            expected_frontend_id = frontend_config.id if frontend_config is not None else ""
+            frontend_changed = str(record.get("frontend_id") or "") != expected_frontend_id
             if container and container_running(container):
                 try:
+                    if frontend_changed:
+                        raise RuntimeError("frontend configuration changed")
                     if changed:
                         restart_container(container, org_id)
                     else:
                         wait_until_ready(org_id)
                     updated = {
                         **record,
+                        "frontend_id": expected_frontend_id,
                         "bridge_url": PARENT_BRIDGE_URL,
                         "bridge_token": token,
                         "workspace_path": str(workspace_path),
@@ -315,6 +346,7 @@ def ensure_org_container(org_id: str) -> dict[str, Any]:
                 wait_until_ready(org_id)
                 record = {
                     "org_id": org_id,
+                    "frontend_id": frontend_config.id if frontend_config is not None else "",
                     "container_name": container_name,
                     "container_id": existing.id,
                     "bridge_url": PARENT_BRIDGE_URL,
@@ -328,4 +360,10 @@ def ensure_org_container(org_id: str) -> dict[str, Any]:
                 upsert_org_record(record)
                 return record
             remove_container(existing)
-        return create_child_container(org_id, container_name, workspace_path, token)
+        return create_child_container(
+            org_id,
+            container_name,
+            workspace_path,
+            token,
+            frontend_config,
+        )

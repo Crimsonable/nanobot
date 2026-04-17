@@ -6,8 +6,11 @@ import re
 import shutil
 from pathlib import Path
 
-# Default builtin skills directory (relative to this file)
-BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+# Default builtin skills directory. container_up can override this with a
+# readonly mounted path for frontend-specific public skills.
+BUILTIN_SKILLS_DIR = Path(
+    os.getenv("BUILTIN_SKILLS_DIR") or str(Path(__file__).parent.parent / "skills")
+).expanduser()
 
 # Opening ---, YAML body (group 1), closing --- on its own line; supports CRLF.
 _STRIP_SKILL_FRONTMATTER = re.compile(

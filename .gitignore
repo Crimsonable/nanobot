@@ -35,6 +35,7 @@ dmypy.json
 .tox/
 .nox/
 .hypothesis/
+common/
 
 # Build & packaging
 dist/

@@ -22,6 +22,7 @@ from container_up.attachments import (
     attachment_from_content_url,
     persist_attachment_bytes,
 )
+from container_up.frontend_config import compose_frontend_org_id
 from container_up.http_state import get_dispatch_session
 from container_up.settings import (
     ACCESS_URL,
@@ -64,11 +65,61 @@ def build_im_receive_event(
 class QxtIMParser:
     provider = "qxt"
 
-    def __init__(self, **_: Any) -> None:
-        self.appid = APP_ID
-        self.appsecret = APP_SECRET
-        self.corpid = CORP_ID
-        self.token = CALLBACK_TOKEN
+    def __init__(
+        self,
+        *,
+        frontend_id: str = "default",
+        app_id: str | None = None,
+        app_secret: str | None = None,
+        corp_id: str | None = None,
+        callback_token: str | None = None,
+        access_url: str | None = None,
+        send_msg_url: str | None = None,
+        frontend_config: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> None:
+        self.frontend_id = frontend_id
+        config = dict(frontend_config or {})
+        configured_app_id = app_id or config.get("app_id") or config.get("APP_ID")
+        configured_app_secret = (
+            app_secret
+            or config.get("app_secret")
+            or config.get("APP_SECRET")
+            or config.get("secret")
+        )
+        self.appid = str(configured_app_id or APP_ID).strip()
+        self.appsecret = str(configured_app_secret or APP_SECRET).strip()
+        self.corpid = str(
+            corp_id or config.get("corp_id") or config.get("CORP_ID") or CORP_ID
+        ).strip()
+        self.token = str(
+            callback_token
+            or config.get("callback_token")
+            or config.get("CALLBACK_TOKEN")
+            or CALLBACK_TOKEN
+        ).strip()
+        self.access_url = str(
+            access_url or config.get("access_url") or config.get("ACCESS_URL") or ""
+        ).strip()
+        self.send_msg_url = str(
+            send_msg_url or config.get("send_msg_url") or config.get("SEND_MSG_URL") or ""
+        ).strip()
+        self.send_msg_retry_count = int(
+            config.get("send_msg_retry_count")
+            or config.get("SEND_MSG_RETRY_COUNT")
+            or SEND_MSG_RETRY_COUNT
+        )
+        self.send_msg_retry_backoff = float(
+            config.get("send_msg_retry_backoff")
+            or config.get("SEND_MSG_RETRY_BACKOFF")
+            or SEND_MSG_RETRY_BACKOFF
+        )
+
+    def _access_url(self) -> str:
+        return self.access_url or ACCESS_URL
+
+    def _send_msg_url(self) -> str:
+        return self.send_msg_url or SEND_MSG_URL
 
     def start(self) -> None:
         return None
@@ -208,7 +259,8 @@ class QxtIMParser:
         }
 
     async def get_access_token(self) -> str | None:
-        if not ACCESS_URL:
+        access_url = self._access_url()
+        if not access_url:
             logger.error("ACCESS_URL is not configured")
             return None
         if not self.corpid:
@@ -219,10 +271,10 @@ class QxtIMParser:
             return None
 
         last_error: Exception | None = None
-        for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
+        for attempt in range(1, self.send_msg_retry_count + 1):
             try:
                 async with get_dispatch_session().get(
-                    ACCESS_URL,
+                    access_url,
                     params={"corpid": self.corpid, "appid": self.appid},
                 ) as response:
                     response_text = await response.text()
@@ -244,9 +296,9 @@ class QxtIMParser:
             except (asyncio.TimeoutError, ClientError, RuntimeError, json.JSONDecodeError) as exc:
                 logger.error("access_token retry attempt=%s error=%s", attempt, exc)
                 last_error = exc
-                if attempt >= SEND_MSG_RETRY_COUNT:
+                if attempt >= self.send_msg_retry_count:
                     break
-                await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
+                await asyncio.sleep(self.send_msg_retry_backoff * attempt)
         logger.error("access_token fetch failed: %s", last_error)
         return None
 
@@ -279,16 +331,21 @@ class QxtIMParser:
         event = dict(payload.get("event") or {})
         message = dict(event.get("message") or {})
         sender_uid = str(event.get("sender_uid") or "")
+        route_org_id = compose_frontend_org_id(self.frontend_id, sender_uid)
         conversation_id = str(message.get("chat_id") or "")
         content = str(message.get("content") or "")
         return build_im_receive_event(
-            org_id=sender_uid,
+            org_id=route_org_id,
             conversation_id=conversation_id,
             user_id=sender_uid,
             content=content,
             attachments=[],
             metadata={
                 "provider": "qxt",
+                "frontend_id": self.frontend_id,
+                "app_id": self.appid,
+                "external_org_id": sender_uid,
+                "route_org_id": route_org_id,
                 "event_type": str(payload.get("event_type", "")),
                 "chat_type": str(message.get("chat_type", "")),
                 "message_type": str(message.get("type", "")),
@@ -297,6 +354,7 @@ class QxtIMParser:
                 "source": "subscribe",
                 "reply_target": {
                     "type": "qxt",
+                    "frontend_id": self.frontend_id,
                     "to_single_uid": sender_uid,
                 },
             },
@@ -378,7 +436,7 @@ class QxtIMParser:
         filename_override: str | None = None,
     ) -> tuple[bytes | None, str]:
         last_error: Exception | None = None
-        for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
+        for attempt in range(1, self.send_msg_retry_count + 1):
             try:
                 async with get_dispatch_session().get(url) as response:
                     if response.status >= 400:
@@ -400,9 +458,9 @@ class QxtIMParser:
                     exc,
                 )
                 last_error = exc
-                if attempt >= SEND_MSG_RETRY_COUNT:
+                if attempt >= self.send_msg_retry_count:
                     break
-                await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
+                await asyncio.sleep(self.send_msg_retry_backoff * attempt)
         logger.error("qxt attachment download failed url=%s error=%s", url, last_error)
         return None, filename_override or self._guess_filename(url)
 
@@ -420,9 +478,8 @@ class QxtIMParser:
                 return filename
         return QxtIMParser._guess_filename(url)
 
-    @staticmethod
-    def _media_upload_url() -> str:
-        parsed = urlparse(SEND_MSG_URL)
+    def _media_upload_url(self) -> str:
+        parsed = urlparse(self._send_msg_url())
         if not parsed.scheme or not parsed.netloc:
             raise RuntimeError("SEND_MSG_URL is not configured")
         return f"{parsed.scheme}://{parsed.netloc}/v2/media/upload"
@@ -455,7 +512,7 @@ class QxtIMParser:
         log_label: str,
     ) -> dict[str, Any]:
         last_error: Exception | None = None
-        for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
+        for attempt in range(1, self.send_msg_retry_count + 1):
             try:
                 async with get_dispatch_session().post(
                     url,
@@ -485,9 +542,9 @@ class QxtIMParser:
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
                 logger.error("%s retry attempt=%s error=%s", log_label, attempt, exc)
                 last_error = exc
-                if attempt >= SEND_MSG_RETRY_COUNT:
+                if attempt >= self.send_msg_retry_count:
                     break
-                await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
+                await asyncio.sleep(self.send_msg_retry_backoff * attempt)
         raise RuntimeError(
             f"{log_label} failed after retries: {last_error}"
         ) from last_error
@@ -530,7 +587,7 @@ class QxtIMParser:
         upload_type = self._guess_upload_type(filename, content_type)
 
         last_error: Exception | None = None
-        for attempt in range(1, SEND_MSG_RETRY_COUNT + 1):
+        for attempt in range(1, self.send_msg_retry_count + 1):
             try:
                 form = aiohttp.FormData()
                 form.add_field("type", upload_type)
@@ -574,9 +631,9 @@ class QxtIMParser:
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
                 logger.error("media_upload retry attempt=%s error=%s", attempt, exc)
                 last_error = exc
-                if attempt >= SEND_MSG_RETRY_COUNT:
+                if attempt >= self.send_msg_retry_count:
                     break
-                await asyncio.sleep(SEND_MSG_RETRY_BACKOFF * attempt)
+                await asyncio.sleep(self.send_msg_retry_backoff * attempt)
         raise RuntimeError(
             f"media_upload failed after retries: {last_error}"
         ) from last_error
@@ -590,7 +647,7 @@ class QxtIMParser:
         message: dict[str, Any],
     ) -> dict[str, Any]:
         return await self._post_json_with_retry(
-            url=SEND_MSG_URL,
+            url=self._send_msg_url(),
             params={"access_token": access_token},
             json_payload=send_meta | {"type": message_type, "message": message},
             log_label="send_message",
@@ -651,7 +708,7 @@ class QxtIMParser:
         )
         if access_token is None:
             raise RuntimeError("Failed to retrieve access token for response sending")
-        if not SEND_MSG_URL:
+        if not self._send_msg_url():
             raise RuntimeError("SEND_MSG_URL is not configured")
 
         send_meta = {

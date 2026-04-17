@@ -11,7 +11,8 @@ from container_up.attachment_paths import normalize_outbound_attachments
 from container_up.attachments import normalize_attachments
 from container_up.bridge_state import get_bridge_hub
 from container_up.db_store import touch_org
-from container_up.im_tools import build_im_receive_event, get_im_parser
+from container_up.frontend_config import compose_frontend_org_id, split_frontend_org_id
+from container_up.im_tools import build_im_receive_event, get_im_manager, get_im_parser
 from container_up.router_service import ensure_org_container
 
 
@@ -23,6 +24,24 @@ def split_delivery_target(value: str) -> tuple[str, str]:
     if not separator or not sender_uid or not conversation_id:
         raise ValueError("invalid bridge delivery target")
     return sender_uid, conversation_id
+
+
+def _metadata_with_route_fallback(
+    *,
+    metadata: dict[str, Any],
+    org_id: str,
+) -> dict[str, Any]:
+    updated = dict(metadata)
+    frontend_id, external_org_id = split_frontend_org_id(org_id)
+    if frontend_id:
+        updated.setdefault("frontend_id", frontend_id)
+        updated.setdefault("external_org_id", external_org_id)
+        updated.setdefault("route_org_id", org_id)
+        reply_target = dict(updated.get("reply_target") or {})
+        if reply_target:
+            reply_target.setdefault("frontend_id", frontend_id)
+            updated["reply_target"] = reply_target
+    return updated
 
 EventHandler = Callable[[dict[str, Any]], Any]
 
@@ -58,7 +77,7 @@ async def _deliver_outbound_message(
     metadata: dict[str, Any] | None = None,
     attachments: list[Any] | None = None,
 ) -> dict[str, Any]:
-    im_parser = get_im_parser()
+    im_parser = get_im_manager().parser_for_outbound(dict(metadata or {}))
     return await im_parser.post_message_with_retry(
         payload={
             "chat_id": chat_id,
@@ -119,6 +138,11 @@ async def parse_im_message_receive(event: dict[str, Any]) -> dict[str, Any]:
     user_id = str(payload.get("user_id") or "")
     content = str(payload.get("content") or "")
     metadata = dict(payload.get("metadata") or {})
+    frontend_id = str(metadata.get("frontend_id") or "").strip()
+    route_org_id = compose_frontend_org_id(frontend_id, org_id)
+    if route_org_id != org_id:
+        metadata.setdefault("external_org_id", org_id)
+        metadata["route_org_id"] = route_org_id
     raw_attachments = list(payload.get("attachments") or [])
     attachments = (
         raw_attachments
@@ -126,11 +150,15 @@ async def parse_im_message_receive(event: dict[str, Any]) -> dict[str, Any]:
         else normalize_attachments(content, raw_attachments)
     )
 
-    await asyncio.to_thread(ensure_org_container, org_id)
-    await asyncio.to_thread(touch_org, org_id)
+    await asyncio.to_thread(
+        ensure_org_container,
+        route_org_id,
+        frontend_id or None,
+    )
+    await asyncio.to_thread(touch_org, route_org_id)
 
     result = await get_bridge_hub().submit_message(
-        org_id=org_id,
+        org_id=route_org_id,
         conversation_id=conversation_id,
         user_id=user_id,
         content=content,
@@ -146,7 +174,7 @@ async def parse_im_message_receive(event: dict[str, Any]) -> dict[str, Any]:
 
 @dispatch_parser.register("p2p_chat_receive_msg")
 async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
-    parser = get_im_parser()
+    parser = get_im_parser(str(event.get("frontend_id") or "") or None)
     if hasattr(parser, "normalize_subscribe_payload"):
         standardized = parser.normalize_subscribe_payload(event)
     else:
@@ -183,12 +211,16 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
 async def parse_bridge_outbound_message(event: dict[str, Any]) -> dict[str, Any]:
     payload = dict(event.get("event") or {})
     org_id = str(event.get("org_id") or "")
+    metadata = _metadata_with_route_fallback(
+        metadata=dict(payload.get("metadata") or {}),
+        org_id=org_id,
+    )
     return await forward_bridge_outbound(
         {
             "type": "outbound_message",
             "chat_id": str(payload.get("to") or ""),
             "content": str(payload.get("content") or ""),
-            "metadata": dict(payload.get("metadata") or {}),
+            "metadata": metadata,
             "attachments": normalize_outbound_attachments(org_id, list(payload.get("attachments") or [])),
         }
     )

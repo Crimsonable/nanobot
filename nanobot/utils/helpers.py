@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import re
 import shutil
 import time
@@ -440,10 +441,14 @@ def build_status_content(
 def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]:
     """Sync bundled templates to workspace. Only creates missing files."""
     from importlib.resources import files as pkg_files
-    try:
-        tpl = pkg_files("nanobot") / "templates"
-    except Exception:
-        return []
+    template_dir = os.getenv("TEMPLATE_DIR", "").strip()
+    if template_dir:
+        tpl = Path(template_dir).expanduser()
+    else:
+        try:
+            tpl = pkg_files("nanobot") / "templates"
+        except Exception:
+            return []
     if not tpl.is_dir():
         return []
 

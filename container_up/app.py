@@ -7,6 +7,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import uuid4
 from venv import logger
 
 import uvicorn
@@ -15,7 +16,7 @@ from container_up.bridge_state import (
     get_bridge_hub,
     init_bridge_hub,
 )
-from container_up.im_tools import get_im_parser, init_im_parser
+from container_up.im_tools import get_im_manager, get_im_parser, init_im_parser
 from container_up.db_store import (
     count_org_records,
     init_db,
@@ -23,6 +24,7 @@ from container_up.db_store import (
     touch_org,
 )
 from container_up.dispatch import dispatch_parser
+from container_up.frontend_config import compose_frontend_org_id
 from container_up.http_state import close_dispatch_session, init_dispatch_session
 from container_up.router_service import (
     cleanup_idle_orgs,
@@ -140,7 +142,7 @@ async def lifespan(_: FastAPI):
         dispatch_event=_dispatch_subscribe_event,
         main_loop=asyncio.get_running_loop(),
     )
-    get_im_parser().start()
+    get_im_manager().start()
     cleanup_stop_event.clear()
     global cleanup_thread
     cleanup_thread = threading.Thread(
@@ -152,7 +154,7 @@ async def lifespan(_: FastAPI):
     if cleanup_thread is not None:
         cleanup_thread.join(timeout=5)
     try:
-        get_im_parser().stop()
+        get_im_manager().stop()
     except RuntimeError:
         pass
     await close_dispatch_session()
@@ -174,6 +176,7 @@ def healthz() -> dict[str, Any]:
         "status": "ok" if docker_ok else "degraded",
         "docker": docker_ok,
         "im_provider": IM_PROVIDER,
+        "im_frontends": get_im_manager().frontend_ids,
         "tracked_orgs": count_org_records(),
         "connected_bridge_orgs": bridge_hub.child_count,
     }
@@ -230,7 +233,9 @@ class SubForm(BaseModel):
 
 async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
     try:
-        parser = get_im_parser()
+        event = dict(payload.get("event") or {})
+        metadata = dict(event.get("metadata") or {})
+        parser = get_im_parser(str(metadata.get("frontend_id") or "") or None)
         prepare_event = getattr(parser, "prepare_inbound_event", None)
         if callable(prepare_event):
             payload = await prepare_event(payload)
@@ -241,7 +246,12 @@ async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
 
 @app.post("/subscribe")
 async def subscribe(sub_form: SubForm) -> dict[str, Any]:
-    parser = get_im_parser()
+    return await subscribe_frontend("", sub_form)
+
+
+@app.post("/subscribe/{frontend_id}")
+async def subscribe_frontend(frontend_id: str, sub_form: SubForm) -> dict[str, Any]:
+    parser = get_im_parser(frontend_id or None)
     try:
         if not parser.supports_subscribe():
             raise HTTPException(
@@ -268,20 +278,30 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
         len(payload.attachments),
     )
     try:
-        await run_in_threadpool(ensure_org_container, payload.org_id)
+        frontend_id = str(payload.metadata.get("frontend_id") or "").strip()
+        route_org_id = compose_frontend_org_id(frontend_id, payload.org_id)
+        metadata = dict(payload.metadata)
+        if route_org_id != payload.org_id:
+            metadata.setdefault("external_org_id", payload.org_id)
+            metadata["route_org_id"] = route_org_id
+        await run_in_threadpool(
+            ensure_org_container,
+            route_org_id,
+            frontend_id or None,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    await run_in_threadpool(touch_org, payload.org_id)
+    await run_in_threadpool(touch_org, route_org_id)
     attachments = normalize_attachments(payload.content, payload.attachments)
 
     try:
         result = await get_bridge_hub().submit_message(
-            org_id=payload.org_id,
+            org_id=route_org_id,
             conversation_id=payload.conversation_id,
             user_id=payload.user_id,
             content=payload.content,
             attachments=attachments,
-            metadata=payload.metadata,
+            metadata=metadata,
         )
         return result
     except RuntimeError as exc:
@@ -360,7 +380,7 @@ async def debug_p2p(payload: DebugP2PRequest) -> dict[str, Any]:
 
 
 async def _dispatch_debug_event(payload: dict[str, Any]) -> dict[str, Any]:
-    parser = get_im_parser()
+    parser = get_im_parser(str(payload.get("frontend_id") or "") or None)
     if hasattr(parser, "normalize_subscribe_payload"):
         payload = parser.normalize_subscribe_payload(payload)
     prepare_event = getattr(parser, "prepare_inbound_event", None)

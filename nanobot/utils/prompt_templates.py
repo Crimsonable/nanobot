@@ -6,12 +6,15 @@ Shared copy lives under ``agent/_snippets/`` and is included via
 """
 
 from functools import lru_cache
+import os
 from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
-_TEMPLATES_ROOT = Path(__file__).resolve().parent.parent / "templates"
+_TEMPLATES_ROOT = Path(
+    os.getenv("TEMPLATE_DIR") or str(Path(__file__).resolve().parent.parent / "templates")
+).expanduser()
 
 
 @lru_cache

@@ -19,6 +19,7 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS org_routes (
                 org_id TEXT PRIMARY KEY,
+                frontend_id TEXT NOT NULL DEFAULT '',
                 container_name TEXT NOT NULL,
                 container_id TEXT NOT NULL,
                 bridge_url TEXT NOT NULL,
@@ -38,6 +39,8 @@ def init_db() -> None:
             conn.execute(
                 f"ALTER TABLE org_routes ADD COLUMN last_active_at TEXT NOT NULL DEFAULT '{now}'"
             )
+        if "frontend_id" not in columns:
+            conn.execute("ALTER TABLE org_routes ADD COLUMN frontend_id TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -73,10 +76,11 @@ def upsert_org_record(record: dict[str, Any]) -> None:
         conn.execute(
             """
             INSERT INTO org_routes (
-                org_id, container_name, container_id, bridge_url, bridge_token,
+                org_id, frontend_id, container_name, container_id, bridge_url, bridge_token,
                 workspace_path, status, created_at, updated_at, last_active_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(org_id) DO UPDATE SET
+                frontend_id=excluded.frontend_id,
                 container_name=excluded.container_name,
                 container_id=excluded.container_id,
                 bridge_url=excluded.bridge_url,
@@ -88,6 +92,7 @@ def upsert_org_record(record: dict[str, Any]) -> None:
             """,
             (
                 record["org_id"],
+                str(record.get("frontend_id") or ""),
                 record["container_name"],
                 record["container_id"],
                 record["bridge_url"],

@@ -1,0 +1,20 @@
+{
+  "frontends": [
+    {
+      "id": "feishu-main",
+      "provider": "feishu",
+      "app_id": "cli_a952e2004ef89bc0",
+      "app_secret": "rmDRyN80osESfA9eSuQBsTrp5Sn6cEYW",
+      "builtin_skills_dir": "/mnt/d/codes/nanobot_modify/nanobot/common/feishu-main/skills",
+      "template_dir": "/mnt/d/codes/nanobot_modify/nanobot/common/feishu-main/templates"
+    },
+    {
+      "id": "feishu-sub",
+      "provider": "feishu",
+      "app_id": "cli_a96a24b59f7a5bc8",
+      "app_secret": "OtqbUHHthRoTTocvA0u0fdiUfdjbTKvS",
+      "builtin_skills_dir": "/mnt/d/codes/nanobot_modify/nanobot/common/feishu-sub/skills",
+      "template_dir": "/mnt/d/codes/nanobot_modify/nanobot/common/feishu-sub/templates"
+    }
+  ]
+}
