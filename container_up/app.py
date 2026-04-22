@@ -98,7 +98,9 @@ class DebugP2PRequest(BaseModel):
     timestamp: str = ""
 
 
-async def _dispatch_bridge_outbound_from_ws(org_id: str, forwarded: dict[str, Any]) -> dict[str, Any]:
+async def _dispatch_bridge_outbound_from_ws(
+    org_id: str, forwarded: dict[str, Any]
+) -> dict[str, Any]:
     try:
         return await dispatch_parser.parse(
             {
@@ -244,11 +246,6 @@ async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
         logger.exception("subscribe event dispatch failed: %r", payload)
 
 
-@app.post("/subscribe")
-async def subscribe(sub_form: SubForm) -> dict[str, Any]:
-    return await subscribe_frontend("", sub_form)
-
-
 @app.post("/subscribe/{frontend_id}")
 async def subscribe_frontend(frontend_id: str, sub_form: SubForm) -> dict[str, Any]:
     parser = get_im_parser(frontend_id or None)
@@ -258,6 +255,7 @@ async def subscribe_frontend(frontend_id: str, sub_form: SubForm) -> dict[str, A
                 status_code=404,
                 detail="subscribe is not supported for current IM provider",
             )
+        print("Received subscribe request:", sub_form)
         response, payload = parser.process_subscribe_form(sub_form)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

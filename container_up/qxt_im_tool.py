@@ -24,16 +24,6 @@ from container_up.attachments import (
 )
 from container_up.frontend_config import compose_frontend_org_id
 from container_up.http_state import get_dispatch_session
-from container_up.settings import (
-    ACCESS_URL,
-    APP_ID,
-    APP_SECRET,
-    CALLBACK_TOKEN,
-    CORP_ID,
-    SEND_MSG_RETRY_BACKOFF,
-    SEND_MSG_RETRY_COUNT,
-    SEND_MSG_URL,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -75,51 +65,35 @@ class QxtIMParser:
         callback_token: str | None = None,
         access_url: str | None = None,
         send_msg_url: str | None = None,
+        user_info_url: str | None = None,
         frontend_config: dict[str, Any] | None = None,
         **_: Any,
     ) -> None:
         self.frontend_id = frontend_id
         config = dict(frontend_config or {})
-        configured_app_id = app_id or config.get("app_id") or config.get("APP_ID")
+        configured_app_id = app_id or config.get("app_id")
         configured_app_secret = (
-            app_secret
-            or config.get("app_secret")
-            or config.get("APP_SECRET")
-            or config.get("secret")
+            app_secret or config.get("app_secret") or config.get("secret")
         )
-        self.appid = str(configured_app_id or APP_ID).strip()
-        self.appsecret = str(configured_app_secret or APP_SECRET).strip()
-        self.corpid = str(
-            corp_id or config.get("corp_id") or config.get("CORP_ID") or CORP_ID
-        ).strip()
-        self.token = str(
-            callback_token
-            or config.get("callback_token")
-            or config.get("CALLBACK_TOKEN")
-            or CALLBACK_TOKEN
-        ).strip()
-        self.access_url = str(
-            access_url or config.get("access_url") or config.get("ACCESS_URL") or ""
-        ).strip()
+        self.appid = str(configured_app_id).strip()
+        self.appsecret = str(configured_app_secret).strip()
+        self.corpid = str(corp_id or config.get("corp_id")).strip()
+        self.token = str(callback_token or config.get("callback_token") or "").strip()
+        self.access_url = str(access_url or config.get("access_url") or "").strip()
         self.send_msg_url = str(
-            send_msg_url or config.get("send_msg_url") or config.get("SEND_MSG_URL") or ""
+            send_msg_url or config.get("send_msg_url") or ""
         ).strip()
-        self.send_msg_retry_count = int(
-            config.get("send_msg_retry_count")
-            or config.get("SEND_MSG_RETRY_COUNT")
-            or SEND_MSG_RETRY_COUNT
-        )
-        self.send_msg_retry_backoff = float(
-            config.get("send_msg_retry_backoff")
-            or config.get("SEND_MSG_RETRY_BACKOFF")
-            or SEND_MSG_RETRY_BACKOFF
-        )
+        self.user_info_url = str(
+            user_info_url or config.get("user_info_url") or ""
+        ).strip()
+        self.send_msg_retry_count = int(config.get("send_msg_retry_count"))
+        self.send_msg_retry_backoff = float(config.get("send_msg_retry_backoff"))
 
     def _access_url(self) -> str:
-        return self.access_url or ACCESS_URL
+        return self.access_url
 
     def _send_msg_url(self) -> str:
-        return self.send_msg_url or SEND_MSG_URL
+        return self.send_msg_url
 
     def start(self) -> None:
         return None
@@ -130,6 +104,9 @@ class QxtIMParser:
     def supports_subscribe(self) -> bool:
         return True
 
+    async def _user_info_url(self: str) -> str:
+        return self.user_info_url
+
     async def prepare_inbound_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         if str(payload.get("event_type") or "") != "im_message_receive":
             return payload
@@ -139,7 +116,10 @@ class QxtIMParser:
         if str(metadata.get("provider") or "") != "qxt":
             return payload
 
-        org_id = str(event.get("org_id") or "")
+        user_info = await self.get_user_info(event.get("user_id"))
+        org_id = user_info["deptData"][0]["did"]
+        # org_id = str(event.get("org_id") or "")
+
         user_id = str(event.get("user_id") or "")
         conversation_id = str(event.get("conversation_id") or "")
         content = str(event.get("content") or "")
@@ -293,7 +273,12 @@ class QxtIMParser:
                             f"access_token missing in response: {response_text}"
                         )
                     return str(access_token)
-            except (asyncio.TimeoutError, ClientError, RuntimeError, json.JSONDecodeError) as exc:
+            except (
+                asyncio.TimeoutError,
+                ClientError,
+                RuntimeError,
+                json.JSONDecodeError,
+            ) as exc:
                 logger.error("access_token retry attempt=%s error=%s", attempt, exc)
                 last_error = exc
                 if attempt >= self.send_msg_retry_count:
@@ -313,13 +298,14 @@ class QxtIMParser:
         )
         if not decrypted:
             raise ValueError("empty decrypted payload")
-
+        print("Decrypted subscribe payload:", decrypted)
         try:
             payload = dict(json.loads(decrypted))
         except json.JSONDecodeError as exc:
             raise ValueError("invalid payload") from exc
         event_type = str(payload.get("event_type") or "")
         if event_type == "check_url":
+            print("Received URL verification request")
             return self.encrypt(text="success"), None
 
         return self.encrypt(text="success"), self.normalize_subscribe_payload(payload)
@@ -373,7 +359,10 @@ class QxtIMParser:
         normalized = list(attachments)
         auto_attachment = attachment_from_content_url(content)
         if auto_attachment and not any(
-            (isinstance(item, dict) and str(item.get("url") or "").strip() == auto_attachment["url"])
+            (
+                isinstance(item, dict)
+                and str(item.get("url") or "").strip() == auto_attachment["url"]
+            )
             or str(item or "").strip() == auto_attachment["url"]
             for item in normalized
         ):
@@ -382,7 +371,9 @@ class QxtIMParser:
         if not normalized:
             return normalized, False
 
-        attachment_group = conversation_id or str(metadata.get("message_id") or "") or user_id
+        attachment_group = (
+            conversation_id or str(metadata.get("message_id") or "") or user_id
+        )
         local_paths: list[Any] = []
         changed = False
         for attachment in normalized:
@@ -445,9 +436,12 @@ class QxtIMParser:
                             f"qxt attachment download rejected with {response.status}: {text}"
                         )
                     data = await response.read()
-                    filename = filename_override or self._attachment_filename_from_response(
-                        url=url,
-                        headers=dict(response.headers),
+                    filename = (
+                        filename_override
+                        or self._attachment_filename_from_response(
+                            url=url,
+                            headers=dict(response.headers),
+                        )
                     )
                     return data, filename
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
@@ -467,7 +461,9 @@ class QxtIMParser:
     @staticmethod
     def _attachment_filename_from_response(url: str, headers: dict[str, str]) -> str:
         content_disposition = str(
-            headers.get("Content-Disposition") or headers.get("content-disposition") or ""
+            headers.get("Content-Disposition")
+            or headers.get("content-disposition")
+            or ""
         )
         for part in content_disposition.split(";"):
             key, _, value = part.strip().partition("=")
@@ -653,6 +649,28 @@ class QxtIMParser:
             log_label="send_message",
         )
 
+    async def get_user_info(self, user_id: str) -> dict[str, Any]:
+        user_info_url = await self._user_info_url()
+        if not user_info_url:
+            raise RuntimeError("USER_INFO_URL is not configured")
+
+        access_token = await self.get_access_token()
+        if access_token is None:
+            raise RuntimeError("Failed to retrieve access token for response sending")
+        if not self._send_msg_url():
+            raise RuntimeError("SEND_MSG_URL is not configured")
+
+        async with get_dispatch_session().get(
+            user_info_url,
+            params={"access_token": access_token, "userid": user_id},
+        ) as response:
+            response_text = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(
+                    f"user_info request rejected with {response.status}: {response_text}"
+                )
+            return json.loads(response_text or "{}")
+
     async def send_attachments_with_retry(
         self,
         send_meta: dict[str, Any],
@@ -661,7 +679,9 @@ class QxtIMParser:
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for attachment in attachments:
-            uploaded = await self._upload_attachment_with_retry(attachment, access_token)
+            uploaded = await self._upload_attachment_with_retry(
+                attachment, access_token
+            )
             response = await self._send_message_with_retry(
                 send_meta=send_meta,
                 access_token=access_token,
@@ -677,7 +697,9 @@ class QxtIMParser:
             )
         return results
 
-    def _normalize_outbound_payload(self, payload: dict[str, object]) -> dict[str, object]:
+    def _normalize_outbound_payload(
+        self, payload: dict[str, object]
+    ) -> dict[str, object]:
         if payload.get("to_single_uid") is not None:
             return payload
 

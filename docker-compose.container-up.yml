@@ -17,7 +17,7 @@ services:
     environment:
       CONTAINER_UP_HOST: 0.0.0.0
       CONTAINER_UP_PORT: ${CONTAINER_UP_PORT:-8080}
-      CONTAINER_UP_CONFIG_PATH: ${CONTAINER_UP_CONFIG_PATH:-/app/container_up/container_up.json}
+      CONTAINER_UP_CONFIG_PATH: ${CONTAINER_UP_CONFIG_PATH:-${PWD}/container_up/container_up.json}
       CONTAINER_UP_DB_PATH: /var/lib/container_up/container_up.db
       HOST_WORKSPACE_ROOT: ${HOST_WORKSPACE_ROOT:-/opt/nanobot/workspaces}
       HOST_SHARED_CONFIG: ${HOST_SHARED_CONFIG:-${PWD}/container_up/config.json}
@@ -40,6 +40,7 @@ services:
       - ${HOST_CONTAINER_UP_DATA:-/opt/nanobot/container_up}:/var/lib/container_up
       - ${HOST_WORKSPACE_ROOT:-/opt/nanobot/workspaces}:${HOST_WORKSPACE_ROOT:-/opt/nanobot/workspaces}
       - ${HOST_SHARED_CONFIG:-${PWD}/container_up/config.json}:${HOST_SHARED_CONFIG:-${PWD}/container_up/config.json}:ro
+      - ${CONTAINER_UP_CONFIG_PATH:-${PWD}/container_up/container_up.json}:${CONTAINER_UP_CONFIG_PATH:-${PWD}/container_up/container_up.json}:ro
       - ${HOST_NANOBOT_SOURCE:-${PWD}/nanobot}:${HOST_NANOBOT_SOURCE:-${PWD}/nanobot}:ro
     networks:
       - nanobot-stack

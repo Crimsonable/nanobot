@@ -526,8 +526,6 @@ class FeishuIMParser:
         from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
         import lark_oapi.ws.client as ws_client_module
 
-        # 关键修复：不要把 SDK 的模块级 loop 绑定成某个固定 loop，
-        # 而是换成按当前线程/当前运行时动态解析的代理。
         if not isinstance(getattr(ws_client_module, "loop", None), _EventLoopProxy):
             ws_client_module.loop = _EventLoopProxy()
 

@@ -15,6 +15,20 @@
       "app_secret": "OtqbUHHthRoTTocvA0u0fdiUfdjbTKvS",
       "builtin_skills_dir": "/mnt/d/codes/nanobot_modify/nanobot/common/feishu-sub/skills",
       "template_dir": "/mnt/d/codes/nanobot_modify/nanobot/common/feishu-sub/templates"
+    },
+    {
+      "id": "qxt-main",
+      "provider": "qxt",
+      "app_id": "14781834408502443",
+      "app_secret": "o23AWXizj9EB6TPkskkVFplP2NfUfEYs",
+      "corp_id": "14781834408466801",
+      "access_url": "https://im2test.chidi.com.cn:8888/v2/gettoken",
+      "send_msg_url": "https://im2test.chidi.com.cn:8888/v2/message/bot_send_to_conversation",
+      "user_info_url": "https://im2test.chidi.com.cn:8888/v2/user/get",
+      "send_msg_retry_count": 3,
+      "send_msg_retry_backoff": 1.0,
+      "builtin_skills_dir": "/data/nanobot_backend_v2/common/qxt-main/skills",
+      "template_dir": "/data/nanobot_backend_v2/common/qxt-main/templates"
     }
   ]
 }
