@@ -17,7 +17,7 @@ async def test_bridge_ws_outbound_dispatch_failure_is_returned_not_raised(monkey
     result = await app_module._dispatch_bridge_outbound_from_ws(
         "org-1",
         {
-            "chat_id": "user-1:::conv-1",
+            "chat_id": "chat-1",
             "content": "done",
             "metadata": {},
             "attachments": ["/tmp/report.pdf"],
@@ -38,7 +38,7 @@ async def test_bridge_ws_outbound_dispatch_preserves_cancellation(monkeypatch) -
         await app_module._dispatch_bridge_outbound_from_ws(
             "org-1",
             {
-                "chat_id": "user-1:::conv-1",
+                "chat_id": "chat-1",
                 "content": "done",
                 "metadata": {},
                 "attachments": [],

@@ -4,7 +4,7 @@
 
 它负责：
 
-- 接收用户请求：`org_id`、`conversation_id`、`user_id`/`usr_id`、`content`
+- 接收用户请求：`org_id`、`chat_id`、`usr_id`、`content`
 - 用 SQLite 记录 `org_id -> child container`
 - 如果组织容器已存在且可用，就通过内置的 FastAPI WebSocket bridge hub 把消息分发给该 child
 - 如果不存在，就启动新的 `nanobot-bridge` 容器，等待 child 的 `org_router` 注册到 hub 后再分发
@@ -23,7 +23,7 @@
 ```json
 {
   "org_id": "org-1",
-  "conversation_id": "conv-1",
+  "chat_id": "chat-1",
   "usr_id": "user-1",
   "content": "hello"
 }
@@ -44,7 +44,7 @@ curl -X POST http://127.0.0.1:8080/api/message \
   -H 'Content-Type: application/json' \
   -d '{
     "org_id": "org-1",
-    "conversation_id": "conv-1",
+    "chat_id": "chat-1",
     "usr_id": "user-1",
     "content": "hello"
   }'
@@ -57,8 +57,8 @@ curl -X POST http://127.0.0.1:8080/api/message \
   -H 'Content-Type: application/json' \
   -d '{
     "org_id": "org-1",
-    "conversation_id": "conv-1",
-    "user_id": "user-1",
+    "chat_id": "chat-1",
+    "usr_id": "user-1",
     "content": "请总结一下这个项目结构",
     "attachments": [],
     "metadata": {
@@ -76,7 +76,7 @@ curl -X POST http://127.0.0.1:8080/api/cancel \
   -H 'Content-Type: application/json' \
   -d '{
     "org_id": "org-1",
-    "conversation_id": "conv-1",
+    "chat_id": "chat-1",
     "usr_id": "user-1"
   }'
 ```
@@ -89,7 +89,7 @@ curl -X POST http://127.0.0.1:8080/api/bridge/outbound \
   -H 'X-Bridge-Token: <child-bridge-token>' \
   -d '{
     "org_id": "org-1",
-    "to": "user-1:::conv-1",
+    "to": "chat-1",
     "content": "后台任务完成",
     "attachments": [],
     "metadata": {
@@ -141,7 +141,7 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 
 - `org_router` 主动连接 `container_up` 的 `WS /ws/bridge`
 - `container_up` 以 `org_id -> child websocket` 路由请求
-- `org_router` 在容器内按 `user_id` 拉起本地 `nanobot.local_service`
+- `org_router` 在容器内按 `usr_id` 拉起本地 `nanobot.local_service`
 - 每个用户实例复用同一个公共 config，但使用独立 workspace
 
 也就是说，当前是：
@@ -149,7 +149,7 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 - parent WebSocket 固定
 - 容器名动态
 - 外层路由靠 `org_id -> websocket`
-- 内层路由靠 `user_id -> local instance`
+- 内层路由靠 `usr_id -> local instance`
 
 ## 环境变量
 
@@ -287,7 +287,7 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 按配置项串起来，完整调用流程是：
 
 1. client 调用 `POST /api/message`
-- 请求里传 `org_id`、`conversation_id`、`user_id`、`content`
+- 请求里传 `org_id`、`chat_id`、`usr_id`、`content`
 
 2. `container_up` 收到请求
 - 用 `HOST_WORKSPACE_ROOT` 找到或创建组织目录 `HOST_WORKSPACE_ROOT/<org_id>`
@@ -299,7 +299,7 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 - 用 `INSTANCE_IDLE_TIMEOUT_SECONDS` 管理用户实例生命周期
 
 4. `org_router` 收到 parent 转发的消息
-- 按 `user_id` 定位用户实例 workspace 目录
+- 按 `usr_id` 定位用户实例 workspace 目录
 - 若实例不存在，则创建：
   - `/app/nanobot_workspaces/<safe-user-id>-<hash>/`
 - 实例直接复用：
@@ -308,7 +308,7 @@ curl -X POST http://127.0.0.1:8080/subscribe \
 5. `org_router` 拉起用户实例
 - 用户实例运行 `nanobot.local_service`
 - 该实例只服务一个用户自己的 workspace
-- 对话历史由 `conversation_id` 映射到该用户 workspace 下的 session / history
+- 对话历史由 `chat_id` 映射到该用户 workspace 下的 session / history
 - 用户自己新增的 skills 保存在该实例自己的 `skills/`
 
 6. 用户实例开始处理请求
@@ -325,9 +325,7 @@ bridge 链路现在统一使用和 nanobot channel 一致的消息字段：
 - inbound 到 child：
   - `type: "inbound_message"`
   - `channel`
-  - `sender_id`
   - `chat_id`
-  - `session_key`
   - `content`
   - `attachments`
   - `metadata`
@@ -340,11 +338,11 @@ bridge 链路现在统一使用和 nanobot channel 一致的消息字段：
   - `metadata`
   - `reply_to`（可选）
 
-其中 `chat_id` 对 bridge 统一使用复合格式：
+其中：
 
-- `<sender_id>:::<conversation_id>`
-
-这样 parent 侧既能保留原始来源标识，也能在需要时解析出具体会话。
+- `org_id` 决定组织容器
+- `metadata.usr_id` 决定组织容器内复用哪个本地用户实例
+- `chat_id` 决定 nanobot 内部会话上下文
 
 ## 部署注意
 
@@ -403,15 +401,15 @@ bridge 链路现在统一使用和 nanobot channel 一致的消息字段：
 当前实现里，`/api/message` 的最小业务字段只有：
 
 - `org_id`
-- `conversation_id`
-- `user_id`/`usr_id`
+- `chat_id`
+- `usr_id`
 - `content`
 
 其中：
 
 - `org_id` 决定组织容器
-- `user_id` 决定组织容器内复用哪个本地用户实例
-- `conversation_id` 决定 session key 和会话上下文
+- `usr_id` 决定组织容器内复用哪个本地用户实例
+- `chat_id` 决定 session key 和会话上下文
 
 `tenant_id` 已经不再参与这条链路。
 

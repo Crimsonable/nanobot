@@ -28,12 +28,10 @@ async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
         json.dumps(
             {
                 "type": "inbound_message",
-                "session_key": "remote:conv-1",
-                "sender_id": "user-1",
                 "chat_id": "conv-1",
                 "content": "hello",
                 "attachments": ["/tmp/a.png"],
-                "metadata": {"trace_id": "trace-1"},
+                "metadata": {"trace_id": "trace-1", "usr_id": "user-1"},
             }
         )
     )
@@ -41,7 +39,7 @@ async def test_bridge_inbound_message_preserves_session_and_metadata() -> None:
     msg = await channel.bus.consume_inbound()
     assert msg.sender_id == "user-1"
     assert msg.chat_id == "conv-1"
-    assert msg.session_key == "remote:conv-1"
+    assert msg.session_key == "bridge:conv-1"
     assert msg.metadata["trace_id"] == "trace-1"
     assert msg.media == ["/tmp/a.png"]
 
@@ -54,10 +52,10 @@ async def test_bridge_inbound_attachment_only_uses_analysis_placeholder() -> Non
         json.dumps(
             {
                 "type": "inbound_message",
-                "sender_id": "user-1",
                 "chat_id": "conv-1",
                 "content": "",
                 "attachments": ["/tmp/report.pdf"],
+                "metadata": {"usr_id": "user-1"},
             }
         )
     )
@@ -75,16 +73,15 @@ async def test_bridge_cancel_maps_to_stop_message() -> None:
         json.dumps(
             {
                 "type": "cancel",
-                "session_key": "remote:conv-2",
-                "sender_id": "user-1",
                 "chat_id": "conv-2",
+                "metadata": {"usr_id": "user-1"},
             }
         )
     )
 
     msg = await channel.bus.consume_inbound()
     assert msg.content == "/stop"
-    assert msg.session_key == "remote:conv-2"
+    assert msg.session_key == "bridge:conv-2"
     assert msg.sender_id == "user-1"
 
 
@@ -192,7 +189,7 @@ async def test_bridge_send_proactive_message_includes_attachments(monkeypatch: p
 
 
 def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BRIDGE_SESSION_ID", "session-a")
+    monkeypatch.setenv("BRIDGE_ORG_ID", "org-a")
     monkeypatch.setenv("BRIDGE_CONTAINER_NAME", "nanobot-session-a")
 
     channel = BridgeChannel(
@@ -203,12 +200,12 @@ def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatc
     assert channel._build_handshake_packet() == {
         "type": "register",
         "version": 2,
-        "session_id": "session-a",
+        "org_id": "org-a",
         "container_name": "nanobot-session-a",
         "token": "secret",
     }
 
-    monkeypatch.delenv("BRIDGE_SESSION_ID")
+    monkeypatch.delenv("BRIDGE_ORG_ID")
     monkeypatch.delenv("BRIDGE_CONTAINER_NAME")
 
 

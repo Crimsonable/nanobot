@@ -433,18 +433,13 @@ class FeishuIMParser:
         if str(reply_target.get("type") or "") == "feishu":
             return reply_target
 
-        sender_id, separator, conversation_id = chat_id.partition(
-            cls._DELIVERY_TARGET_SEPARATOR
-        )
-        receive_id = str(metadata.get("chat_id") or conversation_id or "").strip()
-        sender_id = str(metadata.get("sender_id") or sender_id or "").strip()
+        receive_id = str(metadata.get("chat_id") or chat_id or "").strip()
+        usr_id = str(metadata.get("usr_id") or "").strip()
         chat_type = str(metadata.get("chat_type") or "").strip()
         message_id = str(metadata.get("message_id") or "").strip()
         thread_id = str(metadata.get("thread_id") or "").strip()
 
-        if not separator:
-            receive_id = receive_id or chat_id
-        if not receive_id and not sender_id:
+        if not receive_id and not usr_id:
             return {}
 
         if chat_type == "group":
@@ -452,7 +447,7 @@ class FeishuIMParser:
             target_receive_id = receive_id
         else:
             receive_id_type = "open_id"
-            target_receive_id = sender_id or receive_id
+            target_receive_id = usr_id or receive_id
 
         if not target_receive_id:
             return {}
@@ -605,19 +600,19 @@ class FeishuIMParser:
             or ""
         ).strip()
         org_id = compose_frontend_org_id(self.frontend_id, external_org_id)
-        user_id = str(
+        usr_id = str(
             getattr(sender_id, "open_id", "")
             or getattr(sender_id, "user_id", "")
             or getattr(sender_id, "union_id", "")
             or ""
         ).strip()
-        if not org_id or not user_id:
-            raise RuntimeError("missing feishu org_id or user_id")
+        if not org_id or not usr_id:
+            raise RuntimeError("missing feishu org_id or usr_id")
 
         chat_type = str(getattr(message, "chat_type", "") or "")
         chat_id = str(getattr(message, "chat_id", "") or "")
         thread_id = str(getattr(message, "thread_id", "") or "")
-        conversation_id = thread_id or chat_id
+        inbound_chat_id = thread_id or chat_id
         message_id = str(getattr(message, "message_id", "") or "")
         mentions = []
         for mention in list(getattr(message, "mentions", None) or []):
@@ -634,29 +629,26 @@ class FeishuIMParser:
 
         attachments, content = self._extract_inbound_content(
             org_id=org_id,
-            user_id=user_id,
-            attachment_group=conversation_id or message_id or user_id,
+            user_id=usr_id,
+            attachment_group=inbound_chat_id or message_id or usr_id,
             message=message,
         )
         content = self._resolve_mentions(content, mentions)
 
         receive_id_type = "chat_id" if chat_type == "group" else "open_id"
-        receive_id = chat_id if receive_id_type == "chat_id" else user_id
+        receive_id = chat_id if receive_id_type == "chat_id" else usr_id
 
         return {
             "event_type": "im_message_receive",
             "event": {
                 "org_id": org_id,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
+                "chat_id": inbound_chat_id,
+                "usr_id": usr_id,
                 "content": content,
                 "attachments": attachments,
                 "metadata": {
                     "provider": "feishu",
                     "frontend_id": self.frontend_id,
-                    "app_id": self.app_id,
-                    "external_org_id": external_org_id,
-                    "route_org_id": org_id,
                     "chat_id": chat_id,
                     "chat_type": chat_type,
                     "thread_id": thread_id,

@@ -15,28 +15,15 @@ from container_up.frontend_config import compose_frontend_org_id, split_frontend
 from container_up.im_tools import build_im_receive_event, get_im_manager, get_im_parser
 from container_up.router_service import ensure_org_container
 
-
-_DELIVERY_TARGET_SEPARATOR = ":::"
-
-
-def split_delivery_target(value: str) -> tuple[str, str]:
-    sender_uid, separator, conversation_id = value.partition(_DELIVERY_TARGET_SEPARATOR)
-    if not separator or not sender_uid or not conversation_id:
-        raise ValueError("invalid bridge delivery target")
-    return sender_uid, conversation_id
-
-
 def _metadata_with_route_fallback(
     *,
     metadata: dict[str, Any],
     org_id: str,
 ) -> dict[str, Any]:
     updated = dict(metadata)
-    frontend_id, external_org_id = split_frontend_org_id(org_id)
+    frontend_id, _external_org_id = split_frontend_org_id(org_id)
     if frontend_id:
         updated.setdefault("frontend_id", frontend_id)
-        updated.setdefault("external_org_id", external_org_id)
-        updated.setdefault("route_org_id", org_id)
         reply_target = dict(updated.get("reply_target") or {})
         if reply_target:
             reply_target.setdefault("frontend_id", frontend_id)
@@ -99,20 +86,9 @@ async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "response": None, "skipped": "empty_content"}
 
     chat_id = str(packet.get("chat_id") or "")
-    try:
-        _, conversation_id = split_delivery_target(chat_id)
-    except ValueError:
-        conversation_id = str(
-            metadata.get("conversation_id")
-            or metadata.get("thread_id")
-            or metadata.get("chat_id")
-            or ""
-        )
-
     logger.error(
-        "bridge outbound dispatch chat_id=%s conversation_id=%s metadata=%r",
+        "bridge outbound dispatch chat_id=%s metadata=%r",
         chat_id,
-        conversation_id,
         metadata,
     )
     post_result = await _deliver_outbound_message(
@@ -123,7 +99,7 @@ async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "ok": True,
-        "conversation_id": conversation_id,
+        "chat_id": chat_id,
         "attachments": attachments,
         "metadata": metadata,
         "response": post_result,
@@ -134,15 +110,12 @@ async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
 async def parse_im_message_receive(event: dict[str, Any]) -> dict[str, Any]:
     payload = dict(event.get("event") or {})
     org_id = str(payload.get("org_id") or "")
-    conversation_id = str(payload.get("conversation_id") or "")
-    user_id = str(payload.get("user_id") or "")
+    chat_id = str(payload.get("chat_id") or "")
+    usr_id = str(payload.get("usr_id") or "")
     content = str(payload.get("content") or "")
     metadata = dict(payload.get("metadata") or {})
     frontend_id = str(metadata.get("frontend_id") or "").strip()
     route_org_id = compose_frontend_org_id(frontend_id, org_id)
-    if route_org_id != org_id:
-        metadata.setdefault("external_org_id", org_id)
-        metadata["route_org_id"] = route_org_id
     raw_attachments = list(payload.get("attachments") or [])
     attachments = (
         raw_attachments
@@ -159,8 +132,8 @@ async def parse_im_message_receive(event: dict[str, Any]) -> dict[str, Any]:
 
     result = await get_bridge_hub().submit_message(
         org_id=route_org_id,
-        conversation_id=conversation_id,
-        user_id=user_id,
+        chat_id=chat_id,
+        usr_id=usr_id,
         content=content,
         attachments=attachments,
         metadata=metadata,
@@ -183,8 +156,8 @@ async def parse_p2p_chat_receive_msg(event: dict[str, Any]) -> dict[str, Any]:
         sender_uid = str(payload.get("sender_uid") or "")
         standardized = build_im_receive_event(
             org_id=sender_uid,
-            conversation_id=str(message.get("chat_id") or ""),
-            user_id=sender_uid,
+            chat_id=str(message.get("chat_id") or ""),
+            usr_id=sender_uid,
             content=str(message.get("content") or ""),
             attachments=[],
             metadata={

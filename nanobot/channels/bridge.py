@@ -48,7 +48,7 @@ class BridgeChannel(BaseChannel):
         self.config: BridgeConfig = config
         self._ws = None
         self._connected = False
-        self._session_id = os.getenv("BRIDGE_SESSION_ID", "").strip()
+        self._org_id = os.getenv("BRIDGE_ORG_ID", "").strip()
         self._container_name = os.getenv("BRIDGE_CONTAINER_NAME", "").strip()
 
     @staticmethod
@@ -154,7 +154,7 @@ class BridgeChannel(BaseChannel):
 
     async def _publish_bridge_inbound(self, packet: dict[str, Any]) -> None:
         metadata = dict(packet.get("metadata") or {})
-        sender_id = str(packet.get("sender_id") or "user")
+        sender_id = str(metadata.get("usr_id") or "user")
         attachments = [str(item) for item in packet.get("attachments") or []]
         content = str(packet.get("content") or "")
         if attachments and not content.strip():
@@ -165,17 +165,15 @@ class BridgeChannel(BaseChannel):
             content=content,
             media=attachments,
             metadata=metadata,
-            session_key=str(packet.get("session_key") or "") or None,
         )
 
     async def _publish_bridge_cancel(self, packet: dict[str, Any]) -> None:
         metadata = dict(packet.get("metadata") or {})
         await self._handle_message(
-            sender_id=str(packet.get("sender_id") or "remote-control"),
+            sender_id=str(metadata.get("usr_id") or "remote-control"),
             chat_id=str(packet.get("chat_id") or "remote"),
             content="/stop",
             metadata=metadata,
-            session_key=str(packet.get("session_key") or "") or None,
         )
 
     def _encode_outbound(self, msg: OutboundMessage) -> dict[str, Any]:
@@ -194,11 +192,11 @@ class BridgeChannel(BaseChannel):
         return packet
 
     def _build_handshake_packet(self) -> dict[str, Any] | None:
-        if self._session_id and self._container_name:
+        if self._org_id and self._container_name:
             packet: dict[str, Any] = {
                 "type": "register",
                 "version": self._PROTOCOL_VERSION,
-                "session_id": self._session_id,
+                "org_id": self._org_id,
                 "container_name": self._container_name,
             }
             if self.config.bridge_token:
@@ -228,9 +226,9 @@ class BridgeChannel(BaseChannel):
         url = cls._resolve_outbound_url(config)
         if not url:
             raise RuntimeError("Bridge outbound URL is not configured")
-        org_id = os.getenv("BRIDGE_ORG_ID", os.getenv("BRIDGE_SESSION_ID", "")).strip()
+        org_id = os.getenv("BRIDGE_ORG_ID", "").strip()
         if not org_id:
-            raise RuntimeError("BRIDGE_ORG_ID or BRIDGE_SESSION_ID is required for proactive bridge sends")
+            raise RuntimeError("BRIDGE_ORG_ID is required for proactive bridge sends")
 
         payload = {
             "org_id": org_id,
@@ -268,14 +266,3 @@ class BridgeChannel(BaseChannel):
             return ""
         http_scheme = "https" if parsed.scheme == "wss" else "http"
         return urlunparse((http_scheme, parsed.netloc, "/api/bridge/outbound", "", "", ""))
-
-    @classmethod
-    def _compose_delivery_target(cls, sender_id: str, conversation_id: str) -> str:
-        return f"{sender_id}{cls._DELIVERY_TARGET_SEPARATOR}{conversation_id}"
-
-    @classmethod
-    def split_delivery_target(cls, value: str) -> tuple[str, str]:
-        sender_id, separator, conversation_id = value.partition(cls._DELIVERY_TARGET_SEPARATOR)
-        if not separator or not sender_id or not conversation_id:
-            raise ValueError("invalid bridge delivery target")
-        return sender_id, conversation_id

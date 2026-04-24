@@ -64,22 +64,6 @@ def split_frontend_org_id(org_id: str) -> tuple[str | None, str]:
     return frontend_id, external_org_id
 
 
-def split_frontend_org_id(org_id: str) -> tuple[str | None, str]:
-    text = str(org_id or "").strip()
-    frontend_id, separator, external_org_id = text.partition(FRONTEND_ORG_SEPARATOR)
-    if not separator or not frontend_id or not external_org_id:
-        return None, text
-    return frontend_id, external_org_id
-
-
-def split_frontend_org_id(org_id: str) -> tuple[str | None, str]:
-    text = str(org_id or "").strip()
-    frontend_id, separator, external_org_id = text.partition(FRONTEND_ORG_SEPARATOR)
-    if not separator or not frontend_id or not external_org_id:
-        return None, text
-    return frontend_id, external_org_id
-
-
 def load_frontend_configs() -> dict[str, FrontendConfig]:
     if not CONTAINER_UP_CONFIG_PATH.exists():
         return {}

@@ -1,6 +1,6 @@
 import pytest
 
-from container_up.bridge_hub import BridgeHub, compose_delivery_target
+from container_up.bridge_hub import BridgeHub
 from container_up.bridge_protocol import PROTOCOL_VERSION, build_register_packet
 
 
@@ -40,34 +40,29 @@ async def test_register_child_and_submit_message_are_org_bound() -> None:
 
     result = await hub.submit_message(
         org_id="org-a",
-        conversation_id="conv-1",
-        user_id="user-1",
+        chat_id="chat-1",
+        usr_id="user-1",
         content="hello",
         attachments=["/tmp/a.png"],
         metadata={"trace_id": "trace-1"},
     )
 
-    delivery_target = compose_delivery_target("user-1", "conv-1")
     assert child.sent[1] == {
         "type": "inbound_message",
         "version": PROTOCOL_VERSION,
         "channel": "bridge",
-        "sender_id": "user-1",
-        "chat_id": delivery_target,
-        "session_key": f"bridge:{delivery_target}",
+        "chat_id": "chat-1",
         "content": "hello",
         "attachments": ["/tmp/a.png"],
         "metadata": {
             "trace_id": "trace-1",
-            "sender_id": "user-1",
-            "conversation_id": "conv-1",
+            "usr_id": "user-1",
         },
     }
     assert result == {
         "status": "accepted",
         "org_id": "org-a",
-        "chat_id": delivery_target,
-        "conversation_id": "conv-1",
+        "chat_id": "chat-1",
     }
 
 
@@ -82,27 +77,22 @@ async def test_submit_cancel_routes_to_bound_org() -> None:
 
     result = await hub.submit_cancel(
         org_id="org-a",
-        conversation_id="conv-2",
-        user_id="user-1",
+        chat_id="chat-2",
+        usr_id="user-1",
     )
 
-    delivery_target = compose_delivery_target("user-1", "conv-2")
     assert result == {
         "status": "accepted",
         "org_id": "org-a",
-        "chat_id": delivery_target,
-        "conversation_id": "conv-2",
+        "chat_id": "chat-2",
     }
     assert child.sent[1] == {
         "type": "cancel",
         "version": PROTOCOL_VERSION,
         "channel": "bridge",
-        "sender_id": "user-1",
-        "chat_id": delivery_target,
-        "session_key": f"bridge:{delivery_target}",
+        "chat_id": "chat-2",
         "metadata": {
-            "sender_id": "user-1",
-            "conversation_id": "conv-2",
+            "usr_id": "user-1",
         },
     }
 
@@ -118,7 +108,7 @@ async def test_handle_child_packet_returns_packet() -> None:
 
     packet = {
         "type": "outbound_message",
-        "chat_id": compose_delivery_target("user-1", "conv-3"),
+        "chat_id": "chat-3",
         "content": "done",
         "metadata": {},
     }

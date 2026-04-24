@@ -77,8 +77,8 @@ async def test_parse_im_message_receive_keeps_qxt_attachment_as_url_reference(
             "event_type": "im_message_receive",
             "event": {
                 "org_id": "org-1",
-                "conversation_id": "chat-1",
-                "user_id": "user-1",
+                "chat_id": "chat-1",
+                "usr_id": "user-1",
                 "content": "https://files.example.com/report.pdf",
                 "attachments": [],
                 "metadata": {"provider": "qxt"},
@@ -122,8 +122,8 @@ async def test_parse_im_message_receive_skips_content_url_rebuild_when_materiali
             "event_type": "im_message_receive",
             "event": {
                 "org_id": "org-1",
-                "conversation_id": "chat-1",
-                "user_id": "user-1",
+                "chat_id": "chat-1",
+                "usr_id": "user-1",
                 "content": "https://files.example.com/report.pdf",
                 "attachments": ["/app/nanobot_workspaces/user-1/cache/attachments/qxt/conv/report.pdf"],
                 "metadata": {
@@ -169,8 +169,8 @@ async def test_parse_im_message_receive_uses_frontend_scoped_org_id(
             "event_type": "im_message_receive",
             "event": {
                 "org_id": "tenant-1",
-                "conversation_id": "chat-1",
-                "user_id": "user-1",
+                "chat_id": "chat-1",
+                "usr_id": "user-1",
                 "content": "hello",
                 "attachments": [],
                 "metadata": {"provider": "feishu", "frontend_id": "feishu-main"},
@@ -182,5 +182,4 @@ async def test_parse_im_message_receive_uses_frontend_scoped_org_id(
     assert ensured == {"org_id": "feishu-main::tenant-1", "frontend_id": "feishu-main"}
     assert touched == ["feishu-main::tenant-1"]
     assert captured["org_id"] == "feishu-main::tenant-1"
-    assert captured["metadata"]["external_org_id"] == "tenant-1"
-    assert captured["metadata"]["route_org_id"] == "feishu-main::tenant-1"
+    assert captured["metadata"] == {"provider": "feishu", "frontend_id": "feishu-main"}

@@ -53,32 +53,26 @@ cleanup_thread: threading.Thread | None = None
 
 
 class MessageRequest(BaseModel):
-    org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
-    conversation_id: str = Field(
-        default="default",
-        validation_alias=AliasChoices("conversation_id", "session_id"),
-    )
-    user_id: str = Field(validation_alias=AliasChoices("user_id", "usr_id"))
+    org_id: str
+    chat_id: str = "default"
+    usr_id: str
     content: str
     attachments: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CancelRequest(BaseModel):
-    org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
-    conversation_id: str = Field(
-        default="default",
-        validation_alias=AliasChoices("conversation_id", "session_id"),
-    )
-    user_id: str = Field(validation_alias=AliasChoices("user_id", "usr_id"))
+    org_id: str
+    chat_id: str = "default"
+    usr_id: str
 
 
 class ShutdownRequest(BaseModel):
-    org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
+    org_id: str
 
 
 class BridgeOutboundRequest(BaseModel):
-    org_id: str = Field(validation_alias=AliasChoices("org_id", "organization_id"))
+    org_id: str
     to: str
     content: str
     attachments: list[Any] = Field(default_factory=list)
@@ -269,19 +263,16 @@ async def subscribe_frontend(frontend_id: str, sub_form: SubForm) -> dict[str, A
 @app.post("/api/message")
 async def post_message(payload: MessageRequest) -> dict[str, Any]:
     logger.error(
-        "api message start org_id=%s conversation_id=%s user_id=%s attachments_count=%s",
+        "api message start org_id=%s chat_id=%s usr_id=%s attachments_count=%s",
         payload.org_id,
-        payload.conversation_id,
-        payload.user_id,
+        payload.chat_id,
+        payload.usr_id,
         len(payload.attachments),
     )
     try:
         frontend_id = str(payload.metadata.get("frontend_id") or "").strip()
         route_org_id = compose_frontend_org_id(frontend_id, payload.org_id)
         metadata = dict(payload.metadata)
-        if route_org_id != payload.org_id:
-            metadata.setdefault("external_org_id", payload.org_id)
-            metadata["route_org_id"] = route_org_id
         await run_in_threadpool(
             ensure_org_container,
             route_org_id,
@@ -295,8 +286,8 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
     try:
         result = await get_bridge_hub().submit_message(
             org_id=route_org_id,
-            conversation_id=payload.conversation_id,
-            user_id=payload.user_id,
+            chat_id=payload.chat_id,
+            usr_id=payload.usr_id,
             content=payload.content,
             attachments=attachments,
             metadata=metadata,
@@ -334,8 +325,8 @@ async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
     try:
         return await get_bridge_hub().submit_cancel(
             org_id=payload.org_id,
-            conversation_id=payload.conversation_id,
-            user_id=payload.user_id,
+            chat_id=payload.chat_id,
+            usr_id=payload.usr_id,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

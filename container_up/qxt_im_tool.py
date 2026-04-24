@@ -33,8 +33,8 @@ _AES_BLOCK_SIZE = 16
 def build_im_receive_event(
     *,
     org_id: str,
-    conversation_id: str,
-    user_id: str,
+    chat_id: str,
+    usr_id: str,
     content: str,
     attachments: list[Any] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -43,8 +43,8 @@ def build_im_receive_event(
         "event_type": "im_message_receive",
         "event": {
             "org_id": org_id,
-            "conversation_id": conversation_id,
-            "user_id": user_id,
+            "chat_id": chat_id,
+            "usr_id": usr_id,
             "content": content,
             "attachments": list(attachments or []),
             "metadata": dict(metadata or {}),
@@ -86,8 +86,8 @@ class QxtIMParser:
         self.user_info_url = str(
             user_info_url or config.get("user_info_url") or ""
         ).strip()
-        self.send_msg_retry_count = int(config.get("send_msg_retry_count"))
-        self.send_msg_retry_backoff = float(config.get("send_msg_retry_backoff"))
+        self.send_msg_retry_count = int(config.get("send_msg_retry_count") or 3)
+        self.send_msg_retry_backoff = float(config.get("send_msg_retry_backoff") or 1.0)
 
     def _access_url(self) -> str:
         return self.access_url
@@ -116,28 +116,28 @@ class QxtIMParser:
         if str(metadata.get("provider") or "") != "qxt":
             return payload
 
-        user_info = await self.get_user_info(event.get("user_id"))
-        org_id = user_info["deptData"][0]["did"]
-        # org_id = str(event.get("org_id") or "")
+        usr_id = str(event.get("usr_id") or "")
+        user_info = await self.get_user_info(usr_id)
+        org_id = str(user_info["deptData"][0]["did"] or "").strip()
 
-        user_id = str(event.get("user_id") or "")
-        conversation_id = str(event.get("conversation_id") or "")
+        chat_id = str(event.get("chat_id") or "")
         content = str(event.get("content") or "")
         attachments = list(event.get("attachments") or [])
 
         materialized, downloaded = await self._materialize_inbound_attachments(
             org_id=org_id,
-            user_id=user_id,
-            conversation_id=conversation_id,
+            usr_id=usr_id,
+            chat_id=chat_id,
             content=content,
             metadata=metadata,
             attachments=attachments,
         )
-        if materialized == attachments:
-            return payload
-
         updated_event = dict(event)
-        updated_event["attachments"] = materialized
+        updated_event["org_id"] = org_id
+        updated_event["chat_id"] = chat_id
+        updated_event["usr_id"] = usr_id
+        if materialized != attachments:
+            updated_event["attachments"] = materialized
         updated_metadata = dict(metadata)
         if downloaded:
             updated_metadata["attachments_materialized"] = True
@@ -318,20 +318,17 @@ class QxtIMParser:
         message = dict(event.get("message") or {})
         sender_uid = str(event.get("sender_uid") or "")
         route_org_id = compose_frontend_org_id(self.frontend_id, sender_uid)
-        conversation_id = str(message.get("chat_id") or "")
+        chat_id = str(message.get("chat_id") or "")
         content = str(message.get("content") or "")
         return build_im_receive_event(
             org_id=route_org_id,
-            conversation_id=conversation_id,
-            user_id=sender_uid,
+            chat_id=chat_id,
+            usr_id=sender_uid,
             content=content,
             attachments=[],
             metadata={
                 "provider": "qxt",
                 "frontend_id": self.frontend_id,
-                "app_id": self.appid,
-                "external_org_id": sender_uid,
-                "route_org_id": route_org_id,
                 "event_type": str(payload.get("event_type", "")),
                 "chat_type": str(message.get("chat_type", "")),
                 "message_type": str(message.get("type", "")),
@@ -350,8 +347,8 @@ class QxtIMParser:
         self,
         *,
         org_id: str,
-        user_id: str,
-        conversation_id: str,
+        usr_id: str,
+        chat_id: str,
         content: str,
         metadata: dict[str, Any],
         attachments: list[Any],
@@ -372,14 +369,14 @@ class QxtIMParser:
             return normalized, False
 
         attachment_group = (
-            conversation_id or str(metadata.get("message_id") or "") or user_id
+            chat_id or str(metadata.get("message_id") or "") or usr_id
         )
         local_paths: list[Any] = []
         changed = False
         for attachment in normalized:
             local_path = await self._download_inbound_attachment(
                 org_id=org_id,
-                user_id=user_id,
+                usr_id=usr_id,
                 attachment_group=attachment_group,
                 attachment=attachment,
             )
@@ -395,7 +392,7 @@ class QxtIMParser:
         self,
         *,
         org_id: str,
-        user_id: str,
+        usr_id: str,
         attachment_group: str,
         attachment: Any,
     ) -> str | None:
@@ -414,7 +411,7 @@ class QxtIMParser:
             return None
         return persist_attachment_bytes(
             org_id=org_id,
-            user_id=user_id,
+            user_id=usr_id,
             data=data,
             filename=filename,
             provider="qxt",

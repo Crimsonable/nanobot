@@ -107,12 +107,8 @@ async def test_post_message_with_attachment_uploads_then_sends_file(
         ]
     )
     parser = im_tools.QxtIMParser()
+    parser.send_msg_url = "https://im.example.com/v2/message/bot_send_to_conversation"
 
-    monkeypatch.setattr(
-        qxt_im_tool,
-        "SEND_MSG_URL",
-        "https://im.example.com/v2/message/bot_send_to_conversation",
-    )
     monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
     monkeypatch.setattr(parser, "get_access_token", lambda: "token-1")
 
@@ -208,9 +204,9 @@ async def test_feishu_post_message_rebuilds_target_from_bridge_chat_id() -> None
 
     result = await parser.post_message_with_retry(
         payload={
-            "chat_id": "ou_1:::oc_1",
+            "chat_id": "oc_1",
             "content": "done",
-            "metadata": {"message_id": "om_1"},
+            "metadata": {"message_id": "om_1", "usr_id": "ou_1"},
         }
     )
 
@@ -275,12 +271,8 @@ async def test_post_message_skips_empty_text_and_sends_attachments_only(
         ]
     )
     parser = im_tools.QxtIMParser()
+    parser.send_msg_url = "https://im.example.com/v2/message/bot_send_to_conversation"
 
-    monkeypatch.setattr(
-        qxt_im_tool,
-        "SEND_MSG_URL",
-        "https://im.example.com/v2/message/bot_send_to_conversation",
-    )
     monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
     monkeypatch.setattr(parser, "get_access_token", lambda: "token-2")
 
@@ -310,12 +302,8 @@ async def test_qxt_post_message_accepts_unified_payload_format(
 ) -> None:
     session = FakeSession([FakeResponse(status=200, text='{"ok":true}')])
     parser = im_tools.QxtIMParser()
+    parser.send_msg_url = "https://im.example.com/v2/message/bot_send_to_conversation"
 
-    monkeypatch.setattr(
-        qxt_im_tool,
-        "SEND_MSG_URL",
-        "https://im.example.com/v2/message/bot_send_to_conversation",
-    )
     monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
     monkeypatch.setattr(parser, "get_access_token", lambda: "token-3")
 
@@ -377,13 +365,14 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event() -> None:
     assert payload == {
         "event_type": "im_message_receive",
         "event": {
-            "org_id": "user-1",
-            "conversation_id": "chat-1",
-            "user_id": "user-1",
+            "org_id": "default?user-1",
+            "chat_id": "chat-1",
+            "usr_id": "user-1",
             "content": "hello",
             "attachments": [],
             "metadata": {
                 "provider": "qxt",
+                "frontend_id": "default",
                 "event_type": "p2p_chat_receive_msg",
                 "chat_type": "single",
                 "message_type": "text",
@@ -392,6 +381,7 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event() -> None:
                 "source": "subscribe",
                 "reply_target": {
                     "type": "qxt",
+                    "frontend_id": "default",
                     "to_single_uid": "user-1",
                 },
             },
@@ -419,14 +409,22 @@ async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_wor
     monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
     monkeypatch.setattr(attachment_paths, "HOST_WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(attachment_paths, "CHILD_WORKSPACE_TARGET", "/app/nanobot_workspaces")
+    monkeypatch.setattr(
+        "container_up.attachments.ATTACHMENT_URL_PREFIX",
+        "https://files.example.com/",
+    )
+    async def _fake_get_user_info(_usr_id: str) -> dict[str, Any]:
+        return {"deptData": [{"did": "dept-1"}]}
+
+    monkeypatch.setattr(parser, "get_user_info", _fake_get_user_info)
 
     prepared = await parser.prepare_inbound_event(
         {
             "event_type": "im_message_receive",
             "event": {
                 "org_id": "org-1",
-                "conversation_id": "conv-1",
-                "user_id": "user-1",
+                "chat_id": "conv-1",
+                "usr_id": "user-1",
                 "content": "https://files.example.com/report.pdf",
                 "attachments": [],
                 "metadata": {
@@ -439,6 +437,7 @@ async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_wor
 
     event = prepared["event"]
     attachments = event["attachments"]
+    assert event["org_id"] == "dept-1"
     assert event["metadata"]["attachments_materialized"] is True
     assert len(attachments) == 1
     local_path = Path(attachments[0])
@@ -447,7 +446,7 @@ async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_wor
     assert session.calls[0]["method"] == "GET"
     assert session.calls[0]["url"] == "https://files.example.com/report.pdf"
 
-    host_workspace = attachment_paths.host_instance_workspace_path("org-1", "user-1")
+    host_workspace = attachment_paths.host_instance_workspace_path("dept-1", "user-1")
     host_file = (
         tmp_path
         / host_workspace.relative_to(tmp_path)

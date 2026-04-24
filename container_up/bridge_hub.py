@@ -12,14 +12,6 @@ from container_up.bridge_protocol import (
     parse_register_packet,
 )
 
-
-_DELIVERY_TARGET_SEPARATOR = ":::"
-
-
-def compose_delivery_target(sender_id: str, conversation_id: str) -> str:
-    return f"{sender_id}{_DELIVERY_TARGET_SEPARATOR}{conversation_id}"
-
-
 @dataclass
 class ChildConnection:
     org_id: str
@@ -79,8 +71,8 @@ class BridgeHub:
         self,
         *,
         org_id: str,
-        conversation_id: str,
-        user_id: str,
+        chat_id: str,
+        usr_id: str,
         content: str,
         attachments: list[Any] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -89,61 +81,51 @@ class BridgeHub:
         if child is None:
             raise RuntimeError(f"No bridge channel connected for org {org_id}")
 
-        delivery_target = compose_delivery_target(user_id, conversation_id)
         packet = {
             "type": "inbound_message",
             "version": PROTOCOL_VERSION,
             "channel": "bridge",
-            "sender_id": user_id,
-            "chat_id": delivery_target,
-            "session_key": f"bridge:{delivery_target}",
+            "chat_id": chat_id,
             "content": content,
             "attachments": attachments or [],
             "metadata": {
                 **dict(metadata or {}),
-                "sender_id": user_id,
-                "conversation_id": conversation_id,
+                "usr_id": usr_id,
             },
         }
         await child.websocket.send_json(packet)
         return {
             "status": "accepted",
             "org_id": org_id,
-            "chat_id": delivery_target,
-            "conversation_id": conversation_id,
+            "chat_id": chat_id,
         }
 
     async def submit_cancel(
         self,
         *,
         org_id: str,
-        conversation_id: str,
-        user_id: str,
+        chat_id: str,
+        usr_id: str,
     ) -> dict[str, Any]:
         child = self.child_for_org(org_id)
         if child is None:
             raise RuntimeError(f"No bridge channel connected for org {org_id}")
 
-        delivery_target = compose_delivery_target(user_id, conversation_id)
         await child.websocket.send_json(
             {
                 "type": "cancel",
                 "version": PROTOCOL_VERSION,
                 "channel": "bridge",
-                "sender_id": user_id,
-                "chat_id": delivery_target,
-                "session_key": f"bridge:{delivery_target}",
+                "chat_id": chat_id,
                 "metadata": {
-                    "sender_id": user_id,
-                    "conversation_id": conversation_id,
+                    "usr_id": usr_id,
                 },
             }
         )
         return {
             "status": "accepted",
             "org_id": org_id,
-            "chat_id": delivery_target,
-            "conversation_id": conversation_id,
+            "chat_id": chat_id,
         }
 
     async def handle_child_packet(self, org_id: str, packet: dict[str, Any]) -> dict[str, Any]:

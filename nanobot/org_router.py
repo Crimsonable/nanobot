@@ -27,7 +27,7 @@ from nanobot.process_group import (
 PARENT_BRIDGE_URL = os.getenv("PARENT_BRIDGE_URL", "ws://container-up:8080/ws/bridge")
 ORG_ROOT = Path(os.getenv("ORG_ROOT", "/app/nanobot_workspaces")).expanduser().resolve()
 ORG_TEMPLATE_CONFIG = Path(os.getenv("ORG_TEMPLATE_CONFIG", str(ORG_ROOT / "config.json"))).expanduser().resolve()
-BRIDGE_ORG_ID = os.getenv("BRIDGE_ORG_ID", os.getenv("BRIDGE_SESSION_ID", "")).strip()
+BRIDGE_ORG_ID = os.getenv("BRIDGE_ORG_ID", "").strip()
 BRIDGE_CONTAINER_NAME = os.getenv("BRIDGE_CONTAINER_NAME", "").strip()
 BRIDGE_TOKEN_OVERRIDE = os.getenv("BRIDGE_TOKEN_OVERRIDE", "").strip()
 INSTANCE_IDLE_TIMEOUT = int(os.getenv("INSTANCE_IDLE_TIMEOUT_SECONDS", "1800"))
@@ -124,30 +124,30 @@ class OrgRouter:
         return packet
 
     async def _handle_parent_message(self, packet: dict[str, Any]) -> None:
-        user_id = str(packet.get("sender_id") or "user")
-        instance = await self._ensure_instance(user_id)
+        metadata = dict(packet.get("metadata") or {})
+        usr_id = str(metadata.get("usr_id") or "").strip() or "user"
+        instance = await self._ensure_instance(usr_id)
         instance.last_active = asyncio.get_running_loop().time()
         attachments = await self._materialize_attachments(
             instance.workspace_path,
-            attachment_group=str(packet.get("chat_id") or user_id),
+            attachment_group=str(packet.get("chat_id") or usr_id),
             attachments=packet.get("attachments") or [],
         )
         await self._ensure_instance_socket(instance)
         outbound_packet = {
             "type": "inbound_message",
             "channel": str(packet.get("channel") or "bridge"),
-            "sender_id": user_id,
             "chat_id": str(packet.get("chat_id") or ""),
-            "session_key": str(packet.get("session_key") or "") or None,
             "content": str(packet.get("content") or ""),
             "attachments": attachments,
-            "metadata": dict(packet.get("metadata") or {}),
+            "metadata": metadata,
         }
         await self._send_instance(instance, outbound_packet)
 
     async def _handle_parent_cancel(self, packet: dict[str, Any]) -> None:
-        user_id = str(packet.get("sender_id") or "user")
-        instance = self._instances.get(user_id)
+        metadata = dict(packet.get("metadata") or {})
+        usr_id = str(metadata.get("usr_id") or "").strip() or "user"
+        instance = self._instances.get(usr_id)
         if instance is None or instance.process.returncode is not None:
             return
         await self._ensure_instance_socket(instance)
@@ -156,10 +156,8 @@ class OrgRouter:
             {
                 "type": "cancel",
                 "channel": str(packet.get("channel") or "bridge"),
-                "sender_id": user_id,
                 "chat_id": str(packet.get("chat_id") or ""),
-                "session_key": str(packet.get("session_key") or "") or None,
-                "metadata": dict(packet.get("metadata") or {}),
+                "metadata": metadata,
             },
         )
 

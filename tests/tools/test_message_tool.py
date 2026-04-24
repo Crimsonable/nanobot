@@ -11,7 +11,7 @@ async def test_message_tool_returns_error_when_no_target_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_message_tool_maps_current_bridge_conversation_id_to_delivery_target() -> None:
+async def test_message_tool_keeps_current_bridge_chat_id() -> None:
     sent = []
 
     async def _send(msg):
@@ -20,7 +20,7 @@ async def test_message_tool_maps_current_bridge_conversation_id_to_delivery_targ
     tool = MessageTool(
         send_callback=_send,
         default_channel="bridge",
-        default_chat_id="user-1:::oc_current",
+        default_chat_id="oc_current",
         default_message_id="msg-1",
         default_metadata={"frontend_id": "feishu-main"},
     )
@@ -32,8 +32,8 @@ async def test_message_tool_maps_current_bridge_conversation_id_to_delivery_targ
         media=["/tmp/report.pdf"],
     )
 
-    assert result == "Message sent to bridge:user-1:::oc_current with 1 attachments"
-    assert sent[0].chat_id == "user-1:::oc_current"
+    assert result == "Message sent to bridge:oc_current with 1 attachments"
+    assert sent[0].chat_id == "oc_current"
     assert sent[0].metadata == {"frontend_id": "feishu-main", "message_id": "msg-1"}
 
 
@@ -47,7 +47,7 @@ async def test_message_tool_keeps_non_current_bridge_chat_id() -> None:
     tool = MessageTool(
         send_callback=_send,
         default_channel="bridge",
-        default_chat_id="user-1:::oc_current",
+        default_chat_id="oc_current",
         default_message_id="msg-1",
         default_metadata={"frontend_id": "feishu-main"},
     )

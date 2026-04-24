@@ -34,7 +34,7 @@ def parse_register_packet(packet: Mapping[str, Any]) -> tuple[str, str]:
     if packet.get("type") != REGISTER_PACKET_TYPE:
         raise ValueError("expected register packet")
 
-    org_id = str(packet.get("org_id") or packet.get("session_id") or "").strip()
+    org_id = str(packet.get("org_id") or "").strip()
     if not org_id:
         raise ValueError("missing org_id")
 
