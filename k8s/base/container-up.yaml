@@ -17,7 +17,7 @@ metadata:
   name: container-up
   namespace: nanobot
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: container-up
@@ -30,13 +30,14 @@ spec:
         - name: container-up
           image: nanobot-container-up:v1.0.0
           imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "container_up.app"]
           ports:
             - containerPort: 8080
           env:
             - name: CONTAINER_UP_PORT
               value: "8080"
             - name: CONTAINER_UP_DB_PATH
-              value: /var/lib/container_up/container_up.db
+              value: /mnt/nanobot/route-db/container_up.db
             - name: FRONTENDS_CONFIG_PATH
               value: /mnt/nanobot/frontends/frontends.json
             - name: BUCKET_SERVICE_NAME
@@ -54,8 +55,8 @@ spec:
             - name: NANOBOT_WORKSPACE_LAYOUT
               value: frontend-user
           volumeMounts:
-            - name: gateway-data
-              mountPath: /var/lib/container_up
+            - name: route-db
+              mountPath: /mnt/nanobot/route-db
             - name: common
               mountPath: /mnt/nanobot/common
               readOnly: true
@@ -78,8 +79,9 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
       volumes:
-        - name: gateway-data
-          emptyDir: {}
+        - name: route-db
+          persistentVolumeClaim:
+            claimName: nanobot-route-db-pvc
         - name: common
           persistentVolumeClaim:
             claimName: nanobot-common-pvc

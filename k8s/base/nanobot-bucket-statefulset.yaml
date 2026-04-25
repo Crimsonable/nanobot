@@ -5,6 +5,7 @@ metadata:
   namespace: nanobot
 spec:
   serviceName: nanobot-bucket
+  # Keep this in sync with container-up BUCKET_COUNT.
   replicas: 4
   selector:
     matchLabels:
@@ -18,11 +19,14 @@ spec:
         - name: bucket-runtime
           image: nanobot-bucket-runtime:v1.0.0
           imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "bucket_runtime.main"]
           ports:
             - containerPort: 8080
           env:
             - name: CONTAINER_UP_PORT
               value: "8080"
+            - name: BUCKET_COUNT
+              value: "4"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

@@ -6,8 +6,10 @@
 
 1. `container_up`
    - 统一对外入口。
+   - 默认单副本部署，横向扩容对象是 bucket，而不是网关。
    - 接收订阅事件、调试请求和标准入站请求。
    - 根据 `frontend_id + user_id` 维护 bucket 绑定。
+   - bucket 数量以 `BUCKET_COUNT` 为准；StatefulSet `replicas` 必须与其保持一致。
    - 将请求转发到固定的 bucket pod。
    - 负责统一出站发送。
 
@@ -96,6 +98,8 @@ common/
   - frontend 公共目录
 - `nanobot-frontends` PV/PVC
   - 全局 frontends registry
+- `nanobot-route-db` PV/PVC
+  - `frontend_id + user_id -> bucket_id` 持久化路由库
 - `nanobot-workspaces` PV/PVC
   - 用户持久化 workspace
 
@@ -115,10 +119,12 @@ common/
 
 - `FRONTENDS_CONFIG_PATH`
   - frontend registry 路径
+- `CONTAINER_UP_DB_PATH`
+  - 路由绑定数据库文件路径
 - `HOST_WORKSPACE_ROOT`
   - 用户 workspace 根目录
 - `BUCKET_COUNT`
-  - bucket 数量
+  - bucket 数量主配置
 - `BUCKET_SERVICE_NAME`
   - bucket service 名称
 - `BUCKET_STATEFULSET_NAME`

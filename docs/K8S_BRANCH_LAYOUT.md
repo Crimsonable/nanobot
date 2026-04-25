@@ -5,7 +5,8 @@
 ## 保留的核心目录
 
 - `container_up/`
-  - 统一网关入口，负责 `frontend_id + user_id` 绑定、分桶转发、订阅接入、出站代理，以及 IM/frontend 配置解析。
+  - 统一网关入口，默认单副本部署。
+  - 负责 `frontend_id + user_id` 绑定、分桶转发、订阅接入、出站代理，以及 IM/frontend 配置解析。
 - `bucket_runtime/`
   - StatefulSet Pod 内的桶运行时，负责用户实例启动、workspace 初始化、空闲回收。
 - `nanobot/`
@@ -46,6 +47,8 @@
 
 - `frontends/frontends.json`
   - 对应 `workspace/frontends.json`
+- `route-db/container_up.db`
+  - `container_up` 的用户到 bucket 持久化路由数据库
 - `common/<frontend-id>/config.json`
   - 该 frontend 的公共 Nanobot 配置
 - `common/<frontend-id>/skills/`
