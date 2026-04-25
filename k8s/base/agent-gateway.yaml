@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-gateway
+  namespace: nanobot
+spec:
+  selector:
+    app: agent-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-gateway
+  namespace: nanobot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agent-gateway
+  template:
+    metadata:
+      labels:
+        app: agent-gateway
+    spec:
+      containers:
+        - name: agent-gateway
+          image: nanobot-agent-gateway:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AGENT_GATEWAY_DB_PATH
+              value: /var/lib/agent_gateway/agent_gateway.db
+            - name: BUCKET_SERVICE_NAME
+              value: nanobot-bucket
+            - name: BUCKET_STATEFULSET_NAME
+              value: nanobot-bucket
+            - name: BUCKET_NAMESPACE
+              value: nanobot
+            - name: BUCKET_COUNT
+              value: "4"
+            - name: HOST_WORKSPACE_ROOT
+              value: /mnt/nanobot/workspaces
+            - name: CHILD_WORKSPACE_TARGET
+              value: /mnt/nanobot/workspaces
+            - name: NANOBOT_WORKSPACE_LAYOUT
+              value: frontend-user
+          volumeMounts:
+            - name: gateway-data
+              mountPath: /var/lib/agent_gateway
+            - name: workspaces
+              mountPath: /mnt/nanobot/workspaces
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: gateway-data
+          emptyDir: {}
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: nanobot-workspaces-pvc

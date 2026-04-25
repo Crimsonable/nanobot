@@ -771,6 +771,7 @@ class FeishuIMParser:
             filename=filename or fallback_filename,
             provider="feishu",
             attachment_group=attachment_group,
+            frontend_id=self.frontend_id,
         )
 
     def _download_message_resource_sync(

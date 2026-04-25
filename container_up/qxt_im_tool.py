@@ -416,6 +416,7 @@ class QxtIMParser:
             filename=filename,
             provider="qxt",
             attachment_group=attachment_group,
+            frontend_id=self.frontend_id,
         )
 
     async def _download_attachment_bytes(

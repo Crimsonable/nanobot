@@ -62,6 +62,7 @@ def persist_attachment_bytes(
     filename: str,
     provider: str,
     attachment_group: str,
+    frontend_id: str | None = None,
 ) -> str:
     if not data:
         raise RuntimeError("empty attachment data")
@@ -72,11 +73,13 @@ def persist_attachment_bytes(
         user_id=user_id,
         attachment_group=attachment_group,
         provider=provider,
+        frontend_id=frontend_id,
     )
     child_dir = child_attachment_cache_dir(
         user_id=user_id,
         attachment_group=attachment_group,
         provider=provider,
+        frontend_id=frontend_id,
     )
     host_dir.mkdir(parents=True, exist_ok=True)
 

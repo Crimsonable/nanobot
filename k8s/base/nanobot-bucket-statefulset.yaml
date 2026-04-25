@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nanobot-bucket
+  namespace: nanobot
+spec:
+  serviceName: nanobot-bucket
+  replicas: 4
+  selector:
+    matchLabels:
+      app: nanobot-bucket
+  template:
+    metadata:
+      labels:
+        app: nanobot-bucket
+    spec:
+      containers:
+        - name: bucket-runtime
+          image: nanobot-bucket-runtime:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SOURCE_ROOT
+              value: /mnt/nanobot/source
+            - name: CONFIG_PATH
+              value: /mnt/nanobot/config/config.json
+            - name: SKILLS_ROOT
+              value: /mnt/nanobot/skills
+            - name: TEMPLATES_ROOT
+              value: /mnt/nanobot/templates
+            - name: WORKSPACE_ROOT
+              value: /mnt/nanobot/workspaces
+            - name: CHILD_WORKSPACE_TARGET
+              value: /mnt/nanobot/workspaces
+            - name: HOST_WORKSPACE_ROOT
+              value: /mnt/nanobot/workspaces
+            - name: NANOBOT_WORKSPACE_LAYOUT
+              value: frontend-user
+            - name: OUTBOUND_GATEWAY_URL
+              value: http://agent-gateway.nanobot.svc.cluster.local:8080/outbound
+            - name: INSTANCE_IDLE_TTL_SECONDS
+              value: "1800"
+            - name: INSTANCE_STOP_GRACE_SECONDS
+              value: "10"
+            - name: INSTANCE_EVICT_INTERVAL_SECONDS
+              value: "60"
+            - name: MAX_PROCESSES_PER_BUCKET
+              value: "30"
+            - name: NANOBOT_PORT_START
+              value: "20000"
+            - name: NANOBOT_PORT_END
+              value: "29999"
+          volumeMounts:
+            - name: source
+              mountPath: /mnt/nanobot/source
+              readOnly: true
+            - name: config
+              mountPath: /mnt/nanobot/config
+              readOnly: true
+            - name: skills
+              mountPath: /mnt/nanobot/skills
+              readOnly: true
+            - name: templates
+              mountPath: /mnt/nanobot/templates
+              readOnly: true
+            - name: workspaces
+              mountPath: /mnt/nanobot/workspaces
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: source
+          persistentVolumeClaim:
+            claimName: nanobot-source-pvc
+        - name: config
+          persistentVolumeClaim:
+            claimName: nanobot-config-pvc
+        - name: skills
+          persistentVolumeClaim:
+            claimName: nanobot-skills-pvc
+        - name: templates
+          persistentVolumeClaim:
+            claimName: nanobot-templates-pvc
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: nanobot-workspaces-pvc

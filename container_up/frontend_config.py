@@ -8,7 +8,7 @@ from typing import Any
 
 from container_up.settings import CONTAINER_UP_CONFIG_PATH
 
-FRONTEND_ORG_SEPARATOR = "?"
+FRONTEND_ORG_SEPARATOR = "::"
 
 
 @dataclass(frozen=True)
