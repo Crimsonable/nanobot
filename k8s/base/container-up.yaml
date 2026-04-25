@@ -29,7 +29,7 @@ spec:
       containers:
         - name: container-up
           image: nanobot-container-up:v1.0.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           command: ["python", "-m", "container_up.app"]
           ports:
             - containerPort: 8080

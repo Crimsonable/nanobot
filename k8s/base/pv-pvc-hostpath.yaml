@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-route-db-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: standard
+  hostPath:
+    path: /tmp/nanobot-pv-data/route-db
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-route-db-pvc
+  namespace: nanobot
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-source-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: standard
+  hostPath:
+    path: /tmp/nanobot-pv-data/source
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-source-pvc
+  namespace: nanobot
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-common-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: standard
+  hostPath:
+    path: /tmp/nanobot-pv-data/common
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-common-pvc
+  namespace: nanobot
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-frontends-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: standard
+  hostPath:
+    path: /tmp/nanobot-pv-data/frontends
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-frontends-pvc
+  namespace: nanobot
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-workspaces-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: standard
+  hostPath:
+    path: /tmp/nanobot-pv-data/workspaces
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-workspaces-pvc
+  namespace: nanobot
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: standard

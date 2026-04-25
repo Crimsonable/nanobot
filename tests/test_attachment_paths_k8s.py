@@ -12,7 +12,6 @@ def test_frontend_user_layout_uses_frontend_scoped_workspace(tmp_path: Path, mon
     monkeypatch.setattr(attachment_paths, "WORKSPACE_LAYOUT", "frontend-user")
 
     saved = attachments.persist_attachment_bytes(
-        org_id="ignored-org",
         user_id="user-1",
         frontend_id="feishu-main",
         data=b"hello",
@@ -36,7 +35,6 @@ def test_normalize_outbound_attachments_frontend_user_layout(
     monkeypatch.setattr(attachment_paths, "WORKSPACE_LAYOUT", "frontend-user")
 
     result = attachment_paths.normalize_outbound_attachments(
-        "ignored-org",
         ["/mnt/nanobot/workspaces/feishu-main/user-1/report.txt"],
         frontend_id="feishu-main",
     )

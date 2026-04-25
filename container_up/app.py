@@ -38,7 +38,7 @@ class InboundRequest(BaseModel):
 
 
 class MessageRequest(BaseModel):
-    org_id: str
+    frontend_id: str = ""
     chat_id: str = "default"
     usr_id: str
     content: str
@@ -47,14 +47,13 @@ class MessageRequest(BaseModel):
 
 
 class CancelRequest(BaseModel):
-    org_id: str = ""
     chat_id: str = "default"
     usr_id: str
     frontend_id: str = ""
 
 
 class BridgeOutboundRequest(BaseModel):
-    org_id: str
+    frontend_id: str = ""
     to: str
     content: str
     attachments: list[Any] = Field(default_factory=list)
@@ -144,13 +143,14 @@ async def _dispatch_im_event(payload: dict[str, Any]) -> dict[str, Any]:
         content=str(event.get("content") or ""),
         attachments=attachments,
         metadata=metadata,
-        raw={"org_id": str(event.get("org_id") or ""), "event": event},
+        raw={"event": event},
     )
     return {
         "ok": True,
         "response": {
             "status": "accepted",
-            "org_id": str(event.get("org_id") or ""),
+            "frontend_id": frontend_id,
+            "user_id": str(event.get("usr_id") or "").strip() or "user",
             "chat_id": str(event.get("chat_id") or "default"),
             "bucket_id": binding["bucket_id"],
         },
@@ -283,7 +283,7 @@ async def inbound(frontend_id: str, payload: InboundRequest) -> dict[str, Any]:
 @app.post("/api/message")
 async def post_message(payload: MessageRequest) -> dict[str, Any]:
     try:
-        frontend_id = _resolve_frontend_id(None, payload.metadata)
+        frontend_id = _resolve_frontend_id(payload.frontend_id, payload.metadata)
         binding = await _route_message(
             frontend_id=frontend_id,
             user_id=payload.usr_id,
@@ -291,13 +291,14 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
             content=payload.content,
             attachments=normalize_attachments(payload.content, payload.attachments),
             metadata=payload.metadata,
-            raw={"org_id": payload.org_id},
+            raw={},
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {
         "status": "accepted",
-        "org_id": payload.org_id,
+        "frontend_id": frontend_id,
+        "user_id": payload.usr_id,
         "chat_id": payload.chat_id,
         "bucket_id": binding["bucket_id"],
     }
@@ -325,14 +326,15 @@ async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
                 "user_id": payload.usr_id,
                 "chat_id": payload.chat_id,
                 "metadata": {"frontend_id": frontend_id, "usr_id": payload.usr_id},
-                "raw": {"org_id": payload.org_id},
+                "raw": {},
             },
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "status": "accepted",
-        "org_id": payload.org_id,
+        "frontend_id": frontend_id,
+        "user_id": payload.usr_id,
         "chat_id": payload.chat_id,
     }
 
@@ -356,7 +358,7 @@ async def outbound(payload: OutboundRequest) -> dict[str, Any]:
 @app.post("/api/bridge/outbound")
 async def post_bridge_outbound(payload: BridgeOutboundRequest) -> dict[str, Any]:
     metadata = dict(payload.metadata)
-    frontend_id = str(metadata.get("frontend_id") or "").strip() or None
+    frontend_id = str(payload.frontend_id or metadata.get("frontend_id") or "").strip() or None
     return await _forward_outbound_message(
         {
             "type": "outbound_message",
@@ -364,7 +366,6 @@ async def post_bridge_outbound(payload: BridgeOutboundRequest) -> dict[str, Any]
             "content": payload.content,
             "metadata": metadata,
             "attachments": normalize_outbound_attachments(
-                payload.org_id,
                 list(payload.attachments),
                 frontend_id=frontend_id,
             ),
@@ -407,7 +408,6 @@ async def debug_p2p(payload: DebugP2PRequest) -> dict[str, Any]:
         standardized = parser.normalize_subscribe_payload(event)
     else:
         standardized = build_im_receive_event(
-            org_id=payload.sender_uid,
             chat_id=payload.chat_id,
             usr_id=payload.sender_uid,
             content=payload.content,
@@ -418,6 +418,27 @@ async def debug_p2p(payload: DebugP2PRequest) -> dict[str, Any]:
     if callable(prepare_event):
         standardized = await prepare_event(standardized)
     return await _dispatch_im_event(standardized)
+
+
+@app.post("/debug/message")
+async def debug_message(
+    usr_id: str,
+    chat_id: str = "default",
+    content: str = "Hello from debug",
+) -> dict[str, Any]:
+    """Simple debug endpoint to simulate a QXT message and test instance startup."""
+    event = build_im_receive_event(
+        chat_id=chat_id,
+        usr_id=usr_id,
+        content=content,
+        attachments=[],
+        metadata={"frontend_id": "qxt-main", "provider": "qxt"},
+    )
+    parser = get_im_parser("qxt-main")
+    prepare_event = getattr(parser, "prepare_inbound_event", None)
+    if callable(prepare_event):
+        event = await prepare_event(event)
+    return await _dispatch_im_event(event)
 
 
 def main() -> None:

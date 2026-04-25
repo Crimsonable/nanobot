@@ -14,7 +14,6 @@ def test_persist_attachment_bytes_returns_absolute_local_path(
     monkeypatch.setattr(attachment_paths, "CHILD_WORKSPACE_TARGET", "/app/nanobot_workspaces")
 
     saved = attachments.persist_attachment_bytes(
-        org_id="org-1",
         user_id="user-1",
         data=b"hello",
         filename="demo file.txt",
@@ -28,7 +27,7 @@ def test_persist_attachment_bytes_returns_absolute_local_path(
     assert "feishu" in saved
     assert "cache/attachments" in saved
 
-    host_workspace = attachment_paths.host_instance_workspace_path("org-1", "user-1")
+    host_workspace = attachment_paths.host_instance_workspace_path("user-1")
     host_file = (
         tmp_path
         / host_workspace.relative_to(tmp_path)

@@ -158,7 +158,6 @@ def test_bridge_send_keeps_attachment_refs_as_is() -> None:
 @pytest.mark.asyncio
 async def test_bridge_send_proactive_message_includes_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PARENT_BRIDGE_URL", "ws://bridge/ws/bridge")
-    monkeypatch.setenv("BRIDGE_ORG_ID", "org-1")
 
     captured: dict[str, object] = {}
 
@@ -180,7 +179,6 @@ async def test_bridge_send_proactive_message_includes_attachments(monkeypatch: p
     assert captured["url"] == "http://bridge/api/bridge/outbound"
     assert captured["token"] == "secret"
     assert captured["payload"] == {
-        "org_id": "org-1",
         "to": "user-1:::conv-1",
         "content": "done",
         "attachments": ["/app/nanobot_workspaces/user-a/a.png"],
@@ -189,7 +187,6 @@ async def test_bridge_send_proactive_message_includes_attachments(monkeypatch: p
 
 
 def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BRIDGE_ORG_ID", "org-a")
     monkeypatch.setenv("BRIDGE_CONTAINER_NAME", "nanobot-session-a")
 
     channel = BridgeChannel(
@@ -200,7 +197,6 @@ def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatc
     assert channel._build_handshake_packet() == {
         "type": "register",
         "version": 2,
-        "org_id": "org-a",
         "container_name": "nanobot-session-a",
         "token": "secret",
     }

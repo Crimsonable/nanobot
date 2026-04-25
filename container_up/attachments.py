@@ -56,7 +56,6 @@ def sanitize_attachment_filename(filename: str, fallback: str = "attachment.bin"
 
 def persist_attachment_bytes(
     *,
-    org_id: str,
     user_id: str,
     data: bytes,
     filename: str,
@@ -69,7 +68,6 @@ def persist_attachment_bytes(
 
     safe_filename = sanitize_attachment_filename(filename)
     host_dir = host_attachment_cache_dir(
-        org_id=org_id,
         user_id=user_id,
         attachment_group=attachment_group,
         provider=provider,

@@ -247,7 +247,6 @@ def test_feishu_inbound_interactive_extracts_card_text() -> None:
     )()
 
     attachments, content = parser._extract_inbound_content(
-        org_id="org-1",
         user_id="ou_1",
         attachment_group="oc_1",
         message=message,
@@ -365,7 +364,6 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event() -> None:
     assert payload == {
         "event_type": "im_message_receive",
         "event": {
-            "org_id": "default::user-1",
             "chat_id": "chat-1",
             "usr_id": "user-1",
             "content": "hello",
@@ -413,16 +411,10 @@ async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_wor
         "container_up.attachments.ATTACHMENT_URL_PREFIX",
         "https://files.example.com/",
     )
-    async def _fake_get_user_info(_usr_id: str) -> dict[str, Any]:
-        return {"deptData": [{"did": "dept-1"}]}
-
-    monkeypatch.setattr(parser, "get_user_info", _fake_get_user_info)
-
     prepared = await parser.prepare_inbound_event(
         {
             "event_type": "im_message_receive",
             "event": {
-                "org_id": "org-1",
                 "chat_id": "conv-1",
                 "usr_id": "user-1",
                 "content": "https://files.example.com/report.pdf",
@@ -437,7 +429,7 @@ async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_wor
 
     event = prepared["event"]
     attachments = event["attachments"]
-    assert event["org_id"] == "dept-1"
+    assert "org_id" not in event
     assert event["metadata"]["attachments_materialized"] is True
     assert len(attachments) == 1
     local_path = Path(attachments[0])
@@ -446,7 +438,7 @@ async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_wor
     assert session.calls[0]["method"] == "GET"
     assert session.calls[0]["url"] == "https://files.example.com/report.pdf"
 
-    host_workspace = attachment_paths.host_instance_workspace_path("dept-1", "user-1")
+    host_workspace = attachment_paths.host_instance_workspace_path("user-1")
     host_file = (
         tmp_path
         / host_workspace.relative_to(tmp_path)

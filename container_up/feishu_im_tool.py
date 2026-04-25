@@ -12,7 +12,6 @@ from typing import Any
 from uuid import uuid4
 
 from container_up.attachments import persist_attachment_bytes
-from container_up.frontend_config import compose_frontend_org_id
 from container_up.settings import FEISHU_APP_ID, FEISHU_APP_SECRET
 
 
@@ -594,20 +593,14 @@ class FeishuIMParser:
         if message is None or sender is None or sender_id is None:
             raise RuntimeError("incomplete feishu event")
 
-        external_org_id = str(
-            getattr(sender, "tenant_key", "")
-            or getattr(data.header, "tenant_key", "")
-            or ""
-        ).strip()
-        org_id = compose_frontend_org_id(self.frontend_id, external_org_id)
         usr_id = str(
             getattr(sender_id, "open_id", "")
             or getattr(sender_id, "user_id", "")
             or getattr(sender_id, "union_id", "")
             or ""
         ).strip()
-        if not org_id or not usr_id:
-            raise RuntimeError("missing feishu org_id or usr_id")
+        if not usr_id:
+            raise RuntimeError("missing feishu usr_id")
 
         chat_type = str(getattr(message, "chat_type", "") or "")
         chat_id = str(getattr(message, "chat_id", "") or "")
@@ -628,7 +621,6 @@ class FeishuIMParser:
             )
 
         attachments, content = self._extract_inbound_content(
-            org_id=org_id,
             user_id=usr_id,
             attachment_group=inbound_chat_id or message_id or usr_id,
             message=message,
@@ -641,7 +633,6 @@ class FeishuIMParser:
         return {
             "event_type": "im_message_receive",
             "event": {
-                "org_id": org_id,
                 "chat_id": inbound_chat_id,
                 "usr_id": usr_id,
                 "content": content,
@@ -674,7 +665,6 @@ class FeishuIMParser:
     def _extract_inbound_content(
         self,
         *,
-        org_id: str,
         user_id: str,
         attachment_group: str,
         message: Any,
@@ -695,7 +685,6 @@ class FeishuIMParser:
             content, image_keys = _extract_post_content(content_json)
             for image_key in image_keys:
                 local_path = self._download_resource_to_local(
-                    org_id=org_id,
                     user_id=user_id,
                     attachment_group=attachment_group,
                     message_id=message_id,
@@ -707,7 +696,6 @@ class FeishuIMParser:
                     attachments.append(local_path)
         elif message_type == "image":
             local_path = self._download_resource_to_local(
-                org_id=org_id,
                 user_id=user_id,
                 attachment_group=attachment_group,
                 message_id=message_id,
@@ -720,7 +708,6 @@ class FeishuIMParser:
         elif message_type in {"file", "audio", "media"}:
             fallback_name = str(content_json.get("file_name") or f"{message_type}.bin")
             local_path = self._download_resource_to_local(
-                org_id=org_id,
                 user_id=user_id,
                 attachment_group=attachment_group,
                 message_id=message_id,
@@ -747,7 +734,6 @@ class FeishuIMParser:
     def _download_resource_to_local(
         self,
         *,
-        org_id: str,
         user_id: str,
         attachment_group: str,
         message_id: str,
@@ -765,7 +751,6 @@ class FeishuIMParser:
         if not data:
             return None
         return persist_attachment_bytes(
-            org_id=org_id,
             user_id=user_id,
             data=data,
             filename=filename or fallback_filename,

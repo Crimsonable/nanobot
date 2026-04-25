@@ -18,7 +18,7 @@ spec:
       containers:
         - name: bucket-runtime
           image: nanobot-bucket-runtime:v1.0.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           command: ["python", "-m", "bucket_runtime.main"]
           ports:
             - containerPort: 8080

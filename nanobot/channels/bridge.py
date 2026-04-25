@@ -48,7 +48,6 @@ class BridgeChannel(BaseChannel):
         self.config: BridgeConfig = config
         self._ws = None
         self._connected = False
-        self._org_id = os.getenv("BRIDGE_ORG_ID", "").strip()
         self._container_name = os.getenv("BRIDGE_CONTAINER_NAME", "").strip()
 
     @staticmethod
@@ -192,11 +191,10 @@ class BridgeChannel(BaseChannel):
         return packet
 
     def _build_handshake_packet(self) -> dict[str, Any] | None:
-        if self._org_id and self._container_name:
+        if self._container_name:
             packet: dict[str, Any] = {
                 "type": "register",
                 "version": self._PROTOCOL_VERSION,
-                "org_id": self._org_id,
                 "container_name": self._container_name,
             }
             if self.config.bridge_token:
@@ -226,12 +224,8 @@ class BridgeChannel(BaseChannel):
         url = cls._resolve_outbound_url(config)
         if not url:
             raise RuntimeError("Bridge outbound URL is not configured")
-        org_id = os.getenv("BRIDGE_ORG_ID", "").strip()
-        if not org_id:
-            raise RuntimeError("BRIDGE_ORG_ID is required for proactive bridge sends")
 
         payload = {
-            "org_id": org_id,
             "to": to,
             "content": content,
             "attachments": list(media or []),

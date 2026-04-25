@@ -22,7 +22,6 @@ from container_up.attachments import (
     attachment_from_content_url,
     persist_attachment_bytes,
 )
-from container_up.frontend_config import compose_frontend_org_id
 from container_up.http_state import get_dispatch_session
 
 
@@ -32,7 +31,6 @@ _AES_BLOCK_SIZE = 16
 
 def build_im_receive_event(
     *,
-    org_id: str,
     chat_id: str,
     usr_id: str,
     content: str,
@@ -42,7 +40,6 @@ def build_im_receive_event(
     return {
         "event_type": "im_message_receive",
         "event": {
-            "org_id": org_id,
             "chat_id": chat_id,
             "usr_id": usr_id,
             "content": content,
@@ -117,15 +114,12 @@ class QxtIMParser:
             return payload
 
         usr_id = str(event.get("usr_id") or "")
-        user_info = await self.get_user_info(usr_id)
-        org_id = str(user_info["deptData"][0]["did"] or "").strip()
 
         chat_id = str(event.get("chat_id") or "")
         content = str(event.get("content") or "")
         attachments = list(event.get("attachments") or [])
 
         materialized, downloaded = await self._materialize_inbound_attachments(
-            org_id=org_id,
             usr_id=usr_id,
             chat_id=chat_id,
             content=content,
@@ -133,7 +127,6 @@ class QxtIMParser:
             attachments=attachments,
         )
         updated_event = dict(event)
-        updated_event["org_id"] = org_id
         updated_event["chat_id"] = chat_id
         updated_event["usr_id"] = usr_id
         if materialized != attachments:
@@ -317,11 +310,9 @@ class QxtIMParser:
         event = dict(payload.get("event") or {})
         message = dict(event.get("message") or {})
         sender_uid = str(event.get("sender_uid") or "")
-        route_org_id = compose_frontend_org_id(self.frontend_id, sender_uid)
         chat_id = str(message.get("chat_id") or "")
         content = str(message.get("content") or "")
         return build_im_receive_event(
-            org_id=route_org_id,
             chat_id=chat_id,
             usr_id=sender_uid,
             content=content,
@@ -346,7 +337,6 @@ class QxtIMParser:
     async def _materialize_inbound_attachments(
         self,
         *,
-        org_id: str,
         usr_id: str,
         chat_id: str,
         content: str,
@@ -375,7 +365,6 @@ class QxtIMParser:
         changed = False
         for attachment in normalized:
             local_path = await self._download_inbound_attachment(
-                org_id=org_id,
                 usr_id=usr_id,
                 attachment_group=attachment_group,
                 attachment=attachment,
@@ -391,7 +380,6 @@ class QxtIMParser:
     async def _download_inbound_attachment(
         self,
         *,
-        org_id: str,
         usr_id: str,
         attachment_group: str,
         attachment: Any,
@@ -410,7 +398,6 @@ class QxtIMParser:
         if not data:
             return None
         return persist_attachment_bytes(
-            org_id=org_id,
             user_id=usr_id,
             data=data,
             filename=filename,

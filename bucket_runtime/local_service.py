@@ -82,7 +82,6 @@ class LocalNanobotService:
         env = os.environ.copy()
         env["BRIDGE_SESSION_ID"] = ""
         env["BRIDGE_CONTAINER_NAME"] = ""
-        env["BRIDGE_ORG_ID"] = ""
         env["PARENT_BRIDGE_URL"] = ""
         env["BRIDGE_URL_OVERRIDE"] = f"ws://{self.host}:{self.port}"
         env["BRIDGE_TOKEN_OVERRIDE"] = self._bridge_token

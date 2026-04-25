@@ -31,7 +31,6 @@ def safe_instance_name(value: str) -> str:
 
 
 def host_instance_workspace_path(
-    org_id: str,
     user_id: str,
     frontend_id: str | None = None,
 ) -> Path:
@@ -41,7 +40,7 @@ def host_instance_workspace_path(
             / safe_frontend_id(frontend_id)
             / safe_workspace_component(user_id)
         ).resolve(strict=False)
-    return (HOST_WORKSPACE_ROOT / org_id / safe_instance_name(user_id)).resolve(strict=False)
+    return (HOST_WORKSPACE_ROOT / safe_instance_name(user_id)).resolve(strict=False)
 
 
 def child_instance_workspace_path(
@@ -58,14 +57,13 @@ def child_instance_workspace_path(
 
 def host_attachment_cache_dir(
     *,
-    org_id: str,
     user_id: str,
     attachment_group: str,
     provider: str,
     frontend_id: str | None = None,
 ) -> Path:
     return (
-        host_instance_workspace_path(org_id, user_id, frontend_id=frontend_id)
+        host_instance_workspace_path(user_id, frontend_id=frontend_id)
         / ATTACHMENTS_CACHE_DIR
         / provider
         / safe_instance_name(attachment_group)
@@ -88,7 +86,6 @@ def child_attachment_cache_dir(
 
 
 def child_attachment_to_host_path(
-    org_id: str,
     attachment: Any,
     *,
     frontend_id: str | None = None,
@@ -99,7 +96,6 @@ def child_attachment_to_host_path(
             return attachment
         mapped = dict(attachment)
         mapped["url"] = child_attachment_to_host_path(
-            org_id,
             url,
             frontend_id=frontend_id,
         )
@@ -125,17 +121,20 @@ def child_attachment_to_host_path(
     if WORKSPACE_LAYOUT == "frontend-user" and frontend_id:
         host_path = (HOST_WORKSPACE_ROOT / relative).resolve(strict=False)
     else:
-        host_path = (HOST_WORKSPACE_ROOT / org_id / relative).resolve(strict=False)
+        host_path = (HOST_WORKSPACE_ROOT / relative).resolve(strict=False)
     return str(host_path)
 
 
 def normalize_outbound_attachments(
-    org_id: str,
-    attachments: list[Any] | None,
+    attachments: list[Any] | None = None,
     *,
     frontend_id: str | None = None,
 ) -> list[Any]:
+    attachments = attachments or []
     return [
-        child_attachment_to_host_path(org_id, item, frontend_id=frontend_id)
-        for item in (attachments or [])
+        child_attachment_to_host_path(
+            item,
+            frontend_id=frontend_id,
+        )
+        for item in attachments
     ]
