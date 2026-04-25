@@ -1,5 +1,11 @@
 # Nanobot 分桶架构 K8s 重构 SDD
 
+> 说明：该 SDD 记录的是最初设计稿。当前分支的实际实现已经进一步调整：
+> 1. `agent-gateway` 已并入统一的 `container_up` 网关。
+> 2. frontend 公共资源改为 `frontends/frontends.json + common/<frontend>/config.json|skills|templates` 布局。
+> 3. bucket runtime 相关本地 relay / 进程组逻辑已从 `nanobot/` 移到 `bucket_runtime/`。
+> 请以 [docs/PROJECT_ARCHITECTURE.md](docs/PROJECT_ARCHITECTURE.md) 和 [docs/K8S_BRANCH_LAYOUT.md](docs/K8S_BRANCH_LAYOUT.md) 为准。
+
 版本：v1.0  
 日期：2026-04-25  
 文档类型：Software Design Document（SDD）  
@@ -1493,4 +1499,3 @@ agent-gateway + nanobot-bucket StatefulSet + NFS 公共挂载 + 用户 workspace
 7. 用户 workspace 通过 NFS 读写挂载并持久化。
 8. 闲置实例释放只停止进程，不删除 workspace。
 9. K8s 负责 bucket Pod 生命周期、健康检查、跨节点调度和资源隔离。
-

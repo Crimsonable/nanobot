@@ -1,22 +1,19 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
-WORKDIR /tmp/container_up_build
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY container_up/pyproject.toml container_up/README.md ./
-RUN mkdir -p container_up && touch container_up/__init__.py
-
-RUN uv pip install --system --no-cache . && rm -rf /tmp/container_up_build
-
 WORKDIR /app
 
-EXPOSE 8080
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["python", "-m", "container_up.app"]
+COPY pyproject.toml README.md LICENSE ./
+COPY nanobot/ nanobot/
+COPY container_up/ container_up/
+
+RUN pip install --no-cache-dir ".[api]" fastapi uvicorn pycryptodome
+
+CMD ["python", "-m", "container_up.app"]

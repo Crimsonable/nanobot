@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from agent_gateway.config import (
+from container_up.settings import (
     BUCKET_BASE_URL_TEMPLATE,
     BUCKET_NAMESPACE,
     BUCKET_PORT,

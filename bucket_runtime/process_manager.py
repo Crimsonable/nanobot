@@ -14,7 +14,7 @@ import websockets
 from loguru import logger
 
 from bucket_runtime.config import (
-    CONFIG_PATH,
+    DEFAULT_CONFIG_PATH,
     INSTANCE_HOST,
     INSTANCE_STOP_GRACE_SECONDS,
     MAX_PROCESSES_PER_BUCKET,
@@ -26,9 +26,9 @@ from bucket_runtime.config import (
     WORKSPACE_ROOT,
 )
 from bucket_runtime.port_allocator import PortAllocator
+from bucket_runtime.process_utils import subprocess_group_kwargs, terminate_process_group
 from bucket_runtime.workspace_manager import WorkspaceManager
 from container_up.frontend_config import frontend_config_for
-from nanobot.process_group import subprocess_group_kwargs, terminate_process_group
 
 
 @dataclass
@@ -90,6 +90,13 @@ class ProcessManager:
                 if frontend_config is not None and frontend_config.template_dir is not None
                 else TEMPLATES_ROOT
             )
+            config_path = (
+                frontend_config.config_path
+                if frontend_config is not None and frontend_config.config_path is not None
+                else DEFAULT_CONFIG_PATH
+            )
+            if config_path is None:
+                raise RuntimeError(f"frontend {frontend_id} does not define a config_path")
             workspace_path = self._workspace_manager.ensure_workspace(
                 frontend_id,
                 user_id,
@@ -99,9 +106,9 @@ class ProcessManager:
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
-                "nanobot.local_service",
+                "bucket_runtime.local_service",
                 "--config",
-                str(CONFIG_PATH),
+                str(config_path),
                 "--workspace",
                 str(workspace_path),
                 "--host",

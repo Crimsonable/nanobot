@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_gateway.clients.bucket_client import BucketClient
-from agent_gateway.repositories.binding_repository import BindingRepository
-from agent_gateway.services.bucket_allocator import BucketAllocator
+from container_up.binding_repository import BindingRepository
+from container_up.bucket_allocator import BucketAllocator
+from container_up.bucket_client import BucketClient
 
 
 class GatewayRouter:

@@ -21,18 +21,20 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: CONTAINER_UP_PORT
+              value: "8080"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: FRONTENDS_CONFIG_PATH
+              value: /mnt/nanobot/frontends/frontends.json
             - name: SOURCE_ROOT
               value: /mnt/nanobot/source
-            - name: CONFIG_PATH
-              value: /mnt/nanobot/config/config.json
             - name: SKILLS_ROOT
-              value: /mnt/nanobot/skills
+              value: /mnt/nanobot/common/default/skills
             - name: TEMPLATES_ROOT
-              value: /mnt/nanobot/templates
+              value: /mnt/nanobot/common/default/templates
             - name: WORKSPACE_ROOT
               value: /mnt/nanobot/workspaces
             - name: CHILD_WORKSPACE_TARGET
@@ -42,7 +44,7 @@ spec:
             - name: NANOBOT_WORKSPACE_LAYOUT
               value: frontend-user
             - name: OUTBOUND_GATEWAY_URL
-              value: http://agent-gateway.nanobot.svc.cluster.local:8080/outbound
+              value: http://container-up.nanobot.svc.cluster.local:8080/outbound
             - name: INSTANCE_IDLE_TTL_SECONDS
               value: "1800"
             - name: INSTANCE_STOP_GRACE_SECONDS
@@ -59,14 +61,11 @@ spec:
             - name: source
               mountPath: /mnt/nanobot/source
               readOnly: true
-            - name: config
-              mountPath: /mnt/nanobot/config
+            - name: common
+              mountPath: /mnt/nanobot/common
               readOnly: true
-            - name: skills
-              mountPath: /mnt/nanobot/skills
-              readOnly: true
-            - name: templates
-              mountPath: /mnt/nanobot/templates
+            - name: frontends
+              mountPath: /mnt/nanobot/frontends
               readOnly: true
             - name: workspaces
               mountPath: /mnt/nanobot/workspaces
@@ -86,15 +85,12 @@ spec:
         - name: source
           persistentVolumeClaim:
             claimName: nanobot-source-pvc
-        - name: config
+        - name: common
           persistentVolumeClaim:
-            claimName: nanobot-config-pvc
-        - name: skills
+            claimName: nanobot-common-pvc
+        - name: frontends
           persistentVolumeClaim:
-            claimName: nanobot-skills-pvc
-        - name: templates
-          persistentVolumeClaim:
-            claimName: nanobot-templates-pvc
+            claimName: nanobot-frontends-pvc
         - name: workspaces
           persistentVolumeClaim:
             claimName: nanobot-workspaces-pvc

@@ -365,7 +365,7 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event() -> None:
     assert payload == {
         "event_type": "im_message_receive",
         "event": {
-            "org_id": "default?user-1",
+            "org_id": "default::user-1",
             "chat_id": "chat-1",
             "usr_id": "user-1",
             "content": "hello",

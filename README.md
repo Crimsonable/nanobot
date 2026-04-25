@@ -19,6 +19,11 @@
 
 📏 Real-time line count: run `bash core_agent_lines.sh` to verify anytime.
 
+## Project Docs
+
+- Overall architecture: [docs/PROJECT_ARCHITECTURE.md](docs/PROJECT_ARCHITECTURE.md)
+- K8s branch layout: [docs/K8S_BRANCH_LAYOUT.md](docs/K8S_BRANCH_LAYOUT.md)
+
 ## 📢 News
 
 - **2026-04-05** 🚀 Released **v0.1.5** — sturdier long-running tasks, Dream two-stage memory, production-ready sandboxing and programming Agent SDK. Please see [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.5) for details.

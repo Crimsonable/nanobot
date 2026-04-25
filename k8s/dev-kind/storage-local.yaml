@@ -3,6 +3,7 @@ kind: PersistentVolume
 metadata:
   name: nanobot-source-pv
 spec:
+  storageClassName: ""
   capacity:
     storage: 10Gi
   accessModes:
@@ -13,52 +14,83 @@ spec:
     type: DirectoryOrCreate
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-source-pvc
+  namespace: nanobot
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 10Gi
+  volumeName: nanobot-source-pv
+---
+apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: nanobot-config-pv
+  name: nanobot-common-pv
 spec:
+  storageClassName: ""
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/nanobot-kind/common
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-common-pvc
+  namespace: nanobot
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 20Gi
+  volumeName: nanobot-common-pv
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-frontends-pv
+spec:
+  storageClassName: ""
   capacity:
     storage: 1Gi
   accessModes:
     - ReadOnlyMany
   persistentVolumeReclaimPolicy: Retain
   hostPath:
-    path: /data/nanobot-kind/config
+    path: /data/nanobot-kind/frontends
     type: DirectoryOrCreate
 ---
 apiVersion: v1
-kind: PersistentVolume
+kind: PersistentVolumeClaim
 metadata:
-  name: nanobot-skills-pv
+  name: nanobot-frontends-pvc
+  namespace: nanobot
 spec:
-  capacity:
-    storage: 10Gi
+  storageClassName: ""
   accessModes:
     - ReadOnlyMany
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: /data/nanobot-kind/skills
-    type: DirectoryOrCreate
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: nanobot-templates-pv
-spec:
-  capacity:
-    storage: 5Gi
-  accessModes:
-    - ReadOnlyMany
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: /data/nanobot-kind/templates
-    type: DirectoryOrCreate
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: nanobot-frontends-pv
 ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: nanobot-workspaces-pv
 spec:
+  storageClassName: ""
   capacity:
     storage: 50Gi
   accessModes:
@@ -67,3 +99,17 @@ spec:
   hostPath:
     path: /data/nanobot-kind/workspaces
     type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-workspaces-pvc
+  namespace: nanobot
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  volumeName: nanobot-workspaces-pv

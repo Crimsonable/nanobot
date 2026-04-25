@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_gateway.repositories.binding_repository import BindingRepository
+from container_up.binding_repository import BindingRepository
 
 
 class BucketAllocator:

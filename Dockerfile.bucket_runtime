@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential curl && \
+    apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md LICENSE ./
@@ -15,6 +15,6 @@ COPY nanobot/ nanobot/
 COPY container_up/ container_up/
 COPY bucket_runtime/ bucket_runtime/
 
-RUN pip install --no-cache-dir ".[api,wecom,weixin]" fastapi uvicorn docker pycryptodome
+RUN pip install --no-cache-dir . fastapi uvicorn
 
 CMD ["python", "-m", "bucket_runtime.main"]

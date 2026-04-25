@@ -9,7 +9,8 @@ APP_HOST = os.getenv("BUCKET_RUNTIME_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BUCKET_RUNTIME_PORT", "8080"))
 
 SOURCE_ROOT = Path(os.getenv("SOURCE_ROOT", "/mnt/nanobot/source"))
-CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "/mnt/nanobot/config/config.json"))
+_default_config_path = os.getenv("DEFAULT_CONFIG_PATH", "").strip()
+DEFAULT_CONFIG_PATH = Path(_default_config_path) if _default_config_path else None
 SKILLS_ROOT = Path(os.getenv("SKILLS_ROOT", "/mnt/nanobot/skills"))
 TEMPLATES_ROOT = Path(os.getenv("TEMPLATES_ROOT", "/mnt/nanobot/templates"))
 WORKSPACE_ROOT = Path(os.getenv("WORKSPACE_ROOT", "/mnt/nanobot/workspaces"))
@@ -17,7 +18,7 @@ WORKSPACE_ROOT = Path(os.getenv("WORKSPACE_ROOT", "/mnt/nanobot/workspaces"))
 INSTANCE_HOST = os.getenv("INSTANCE_HOST", "127.0.0.1")
 OUTBOUND_GATEWAY_URL = os.getenv(
     "OUTBOUND_GATEWAY_URL",
-    "http://agent-gateway.nanobot.svc.cluster.local:8080/outbound",
+    "http://container-up.nanobot.svc.cluster.local:8080/outbound",
 ).strip()
 OUTBOUND_TIMEOUT = float(os.getenv("OUTBOUND_TIMEOUT_SECONDS", "120"))
 

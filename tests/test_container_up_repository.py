@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_gateway.repositories.binding_repository import BindingRepository
-from agent_gateway.services.bucket_allocator import BucketAllocator
+from container_up.binding_repository import BindingRepository
+from container_up.bucket_allocator import BucketAllocator
 
 
 def test_binding_repository_upsert_and_get(tmp_path) -> None:

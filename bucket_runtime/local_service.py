@@ -14,7 +14,7 @@ from typing import Any
 import websockets
 from loguru import logger
 
-from nanobot.process_group import (
+from bucket_runtime.process_utils import (
     install_shutdown_signal_handlers,
     terminate_process,
 )

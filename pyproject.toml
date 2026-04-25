@@ -106,21 +106,23 @@ include = [
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
+    "container_up/**/*.py",
+    "bucket_runtime/**/*.py",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanobot"]
+packages = ["nanobot", "container_up", "bucket_runtime"]
 
 [tool.hatch.build.targets.wheel.sources]
 "nanobot" = "nanobot"
-
-[tool.hatch.build.targets.wheel.force-include]
-"bridge" = "nanobot/bridge"
+"container_up" = "container_up"
+"bucket_runtime" = "bucket_runtime"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "nanobot/",
-    "bridge/",
+    "container_up/",
+    "bucket_runtime/",
     "README.md",
     "LICENSE",
 ]

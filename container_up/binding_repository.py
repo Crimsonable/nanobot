@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
-from agent_gateway.config import DB_PATH
+from container_up.settings import DB_PATH
 
 
 class BindingRepository:
