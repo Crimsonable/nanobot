@@ -1,0 +1,4 @@
+interface:
+  display_name: "Compress Image"
+  short_description: "Compress large images before vision processing"
+  default_prompt: "Use $compress-image to reduce a large image before sending it to vision tools."

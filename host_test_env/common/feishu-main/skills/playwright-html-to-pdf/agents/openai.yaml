@@ -1,0 +1,4 @@
+interface:
+  display_name: "Playwright HTML to PDF"
+  short_description: "Render HTML files to PDF with Playwright"
+  default_prompt: "Use $playwright-html-to-pdf to render this HTML file into a PDF."
