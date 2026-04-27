@@ -10,7 +10,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: standard
   hostPath:
-    path: /tmp/nanobot-pv-data/route-db
+    path: /data/nanobot-kind/host_test_env/route-db
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -37,7 +37,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: standard
   hostPath:
-    path: /tmp/nanobot-pv-data/source
+    path: /data/nanobot-kind
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -64,7 +64,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: standard
   hostPath:
-    path: /tmp/nanobot-pv-data/common
+    path: /data/nanobot-kind/host_test_env/common
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -91,7 +91,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: standard
   hostPath:
-    path: /tmp/nanobot-pv-data/frontends
+    path: /data/nanobot-kind/host_test_env/frontends
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -118,7 +118,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: standard
   hostPath:
-    path: /tmp/nanobot-pv-data/workspaces
+    path: /data/nanobot-kind/host_test_env/workspaces
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -101,7 +101,8 @@ spec:
               readOnly: true
             - name: workspaces
               mountPath: /mnt/nanobot/workspaces
-              readOnly: true
+              # 网关需要先在这里创建用户 workspace，再把路径交给 bucket runtime。
+              readOnly: false
           readinessProbe:
             httpGet:
               path: /health/ready

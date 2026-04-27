@@ -193,7 +193,7 @@ cd nanobot
 
 当前网关和 bucket runtime 都会读取：
 
-- [workspace/frontends.json](../workspace/frontends.json)
+- [host_test_env/frontends/frontends.json](../host_test_env/frontends/frontends.json)
 
 在 K8s 中要把它放到：
 
@@ -248,7 +248,7 @@ mkdir -p /tmp/nanobot-kind/workspaces
 
 ```bash
 rsync -av --delete ./ /tmp/nanobot-kind/source/
-cp ./workspace/frontends.json /tmp/nanobot-kind/frontends/frontends.json
+cp ./host_test_env/frontends/frontends.json /tmp/nanobot-kind/frontends/frontends.json
 ```
 
 准备 frontend 公共目录。下面以 `feishu-main` 为例：
@@ -336,11 +336,16 @@ curl http://127.0.0.1:8080/healthz
 
 ### 6.8 验证 bucket 动态创建
 
+注意：
+
+- `container_up` 在创建 bucket 之前，会先在 `workspaces/` 下创建用户 workspace
+- 该目录在网关 Pod 内必须是可写的
+- 触发入口是 `POST /inbound/{frontend_id}`，不是 `POST /inbound`
+
 ```bash
-curl -X POST http://127.0.0.1:8080/inbound \
+curl --noproxy '*' -X POST http://127.0.0.1:8080/inbound/feishu-main \
   -H 'Content-Type: application/json' \
   -d '{
-    "frontend_id": "feishu-main",
     "user_id": "demo-user",
     "chat_id": "default",
     "content": "hello",
@@ -393,7 +398,7 @@ sudo exportfs -v
 
 ```bash
 sudo rsync -av --delete ./ /data/nanobot-nfs/source/
-sudo cp ./workspace/frontends.json /data/nanobot-nfs/frontends/frontends.json
+sudo cp ./host_test_env/frontends/frontends.json /data/nanobot-nfs/frontends/frontends.json
 ```
 
 准备 frontend 公共目录：
