@@ -7,7 +7,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential && \
+    apt-get install -y --no-install-recommends build-essential curl ca-certificates && \
+    ARCH="$(dpkg --print-architecture)" && \
+    case "${ARCH}" in \
+      amd64) KUBECTL_ARCH=amd64 ;; \
+      arm64) KUBECTL_ARCH=arm64 ;; \
+      *) echo "unsupported architecture: ${ARCH}" && exit 1 ;; \
+    esac && \
+    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.33.1/bin/linux/${KUBECTL_ARCH}/kubectl" && \
+    chmod +x /usr/local/bin/kubectl && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md LICENSE ./
