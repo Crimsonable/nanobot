@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: container-up
+  namespace: nanobot
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: container-up-bucket-manager
+  namespace: nanobot
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: container-up-bucket-manager
+  namespace: nanobot
+subjects:
+  - kind: ServiceAccount
+    name: container-up
+    namespace: nanobot
+roleRef:
+  kind: Role
+  name: container-up-bucket-manager
+  apiGroup: rbac.authorization.k8s.io

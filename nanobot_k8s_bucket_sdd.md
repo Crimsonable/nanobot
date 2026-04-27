@@ -4,6 +4,8 @@
 > 1. `agent-gateway` 已并入统一的 `container_up` 网关。
 > 2. frontend 公共资源改为 `frontends/frontends.json + common/<frontend>/config.json|skills|templates` 布局。
 > 3. bucket runtime 相关本地 relay / 进程组逻辑已从 `nanobot/` 移到 `bucket_runtime/`。
+> 4. bucket 部署模型已从“固定副本 StatefulSet + Headless Service”切换为“按需创建的 Deployment + Service”。
+> 5. 调度依据已从“用户固定 bucket”切换为 `user_instances + buckets` 运行态表。
 > 请以 [docs/PROJECT_ARCHITECTURE.md](docs/PROJECT_ARCHITECTURE.md) 和 [docs/K8S_BRANCH_LAYOUT.md](docs/K8S_BRANCH_LAYOUT.md) 为准。
 
 版本：v1.0  

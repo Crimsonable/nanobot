@@ -12,20 +12,30 @@ from pydantic import BaseModel, Field
 from container_up.attachment_paths import normalize_outbound_attachments
 from container_up.attachments import normalize_attachments
 from container_up.binding_repository import BindingRepository
-from container_up.bucket_allocator import BucketAllocator
 from container_up.bucket_client import BucketClient
-from container_up.gateway_router import GatewayRouter
+from container_up.bucket_manager import BucketManager
+from container_up.bucket_scheduler import BucketScheduler
 from container_up.http_state import close_dispatch_session, init_dispatch_session
 from container_up.im_tools import get_im_manager, get_im_parser, init_im_parser
 from container_up.qxt_im_tool import build_im_receive_event
-from container_up.settings import APP_HOST, APP_PORT, BUCKET_COUNT
+from container_up.settings import (
+    APP_HOST,
+    APP_PORT,
+    BUCKET_MAX_INSTANCES_PER_BUCKET,
+    BUCKET_IDLE_SWEEP_INTERVAL_SECONDS,
+    BUCKET_WORKSPACE_ROOT,
+)
+from container_up.workspace_manager import WorkspaceManager
 
 repo = BindingRepository()
-router = GatewayRouter(
+bucket_manager = BucketManager()
+scheduler = BucketScheduler(
     repo=repo,
-    allocator=BucketAllocator(repo, BUCKET_COUNT),
+    workspace_manager=WorkspaceManager(BUCKET_WORKSPACE_ROOT),
+    bucket_manager=bucket_manager,
     bucket_client=BucketClient(),
 )
+cleanup_task: asyncio.Task[None] | None = None
 
 
 class InboundRequest(BaseModel):
@@ -50,6 +60,13 @@ class CancelRequest(BaseModel):
     chat_id: str = "default"
     usr_id: str
     frontend_id: str = ""
+
+
+class ReleaseRequest(BaseModel):
+    user_id: str
+    bucket_id: str = ""
+    instance_id: str = ""
+    reason: str = ""
 
 
 class BridgeOutboundRequest(BaseModel):
@@ -114,10 +131,10 @@ async def _route_message(
     route_metadata = dict(metadata)
     route_metadata.setdefault("frontend_id", frontend_id)
     route_metadata.setdefault("usr_id", user_id)
-    return await router.route_inbound(
-        frontend_id,
-        user_id,
-        {
+    runtime = await scheduler.route_inbound(
+        frontend_id=frontend_id,
+        user_id=user_id,
+        payload={
             "frontend_id": frontend_id,
             "user_id": user_id,
             "chat_id": chat_id,
@@ -127,6 +144,7 @@ async def _route_message(
             "raw": raw,
         },
     )
+    return runtime.to_dict()
 
 
 async def _dispatch_im_event(payload: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +171,7 @@ async def _dispatch_im_event(payload: dict[str, Any]) -> dict[str, Any]:
             "user_id": str(event.get("usr_id") or "").strip() or "user",
             "chat_id": str(event.get("chat_id") or "default"),
             "bucket_id": binding["bucket_id"],
+            "instance_id": binding["instance_id"],
         },
     }
 
@@ -211,8 +230,20 @@ async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
     await _dispatch_im_event(payload)
 
 
+async def _cleanup_idle_buckets() -> None:
+    while True:
+        await asyncio.sleep(BUCKET_IDLE_SWEEP_INTERVAL_SECONDS)
+        for bucket in repo.list_idle_buckets_ready_for_scale_down():
+            try:
+                await bucket_manager.scale_bucket_to_zero(bucket)
+                repo.touch_bucket(str(bucket["bucket_id"]), status="idle")
+            except Exception:
+                continue
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global cleanup_task
     repo.init_db()
     init_dispatch_session()
     init_im_parser(
@@ -220,15 +251,19 @@ async def lifespan(_: FastAPI):
         main_loop=asyncio.get_running_loop(),
     )
     get_im_manager().start()
+    cleanup_task = asyncio.create_task(_cleanup_idle_buckets())
     yield
     try:
         get_im_manager().stop()
     except RuntimeError:
         pass
+    if cleanup_task is not None:
+        cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
     await close_dispatch_session()
 
 
-app = FastAPI(title="container-up", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="container-up", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/health/live")
@@ -238,14 +273,15 @@ def health_live() -> dict[str, Any]:
 
 @app.get("/health/ready")
 def health_ready() -> dict[str, Any]:
-    return {"status": "ready", "bucket_count": BUCKET_COUNT}
+    return {"status": "ready", "bucket_capacity": BUCKET_MAX_INSTANCES_PER_BUCKET}
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     return {
         "status": "ok",
-        "bucket_count": BUCKET_COUNT,
+        "bucket_capacity": BUCKET_MAX_INSTANCES_PER_BUCKET,
+        "bucket_count": len(repo.list_buckets()),
         "im_frontends": get_im_manager().frontend_ids,
     }
 
@@ -270,13 +306,14 @@ async def inbound(frontend_id: str, payload: InboundRequest) -> dict[str, Any]:
             metadata=payload.metadata,
             raw=payload.raw,
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "status": "accepted",
         "frontend_id": frontend_id,
         "user_id": payload.user_id,
         "bucket_id": binding["bucket_id"],
+        "instance_id": binding["instance_id"],
     }
 
 
@@ -293,14 +330,15 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
             metadata=payload.metadata,
             raw={},
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "status": "accepted",
         "frontend_id": frontend_id,
         "user_id": payload.usr_id,
         "chat_id": payload.chat_id,
         "bucket_id": binding["bucket_id"],
+        "instance_id": binding["instance_id"],
     }
 
 
@@ -308,20 +346,20 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
 async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
     frontend_id = str(payload.frontend_id or "").strip()
     if not frontend_id:
-        bindings = repo.list_for_user(payload.usr_id)
-        if len(bindings) == 1:
-            frontend_id = str(bindings[0]["frontend_id"])
-        else:
-            try:
-                frontend_id = _resolve_frontend_id(None, {})
-            except RuntimeError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        instance = repo.get_user_instance(payload.usr_id)
+        if instance is not None:
+            frontend_id = str(instance.get("frontend_id") or "").strip()
+    if not frontend_id:
+        try:
+            frontend_id = _resolve_frontend_id(None, {})
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        await router.route_cancel(
-            frontend_id,
-            payload.usr_id,
-            {
+        runtime = await scheduler.route_cancel(
+            frontend_id=frontend_id,
+            user_id=payload.usr_id,
+            payload={
                 "frontend_id": frontend_id,
                 "user_id": payload.usr_id,
                 "chat_id": payload.chat_id,
@@ -329,13 +367,32 @@ async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
                 "raw": {},
             },
         )
-    except RuntimeError as exc:
+    except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "status": "accepted",
         "frontend_id": frontend_id,
         "user_id": payload.usr_id,
         "chat_id": payload.chat_id,
+        "bucket_id": runtime.bucket_id if runtime is not None else None,
+        "instance_id": runtime.instance_id if runtime is not None else None,
+    }
+
+
+@app.post("/internal/runtime/release")
+async def runtime_release(payload: ReleaseRequest) -> dict[str, Any]:
+    instance = scheduler.sync_runtime_release(
+        user_id=payload.user_id,
+        bucket_id=payload.bucket_id or None,
+        instance_id=payload.instance_id or None,
+    )
+    return {
+        "status": "accepted",
+        "user_id": payload.user_id,
+        "bucket_id": payload.bucket_id or None,
+        "instance_id": payload.instance_id or None,
+        "instance_status": None if instance is None else instance.get("status"),
+        "reason": payload.reason,
     }
 
 
@@ -426,7 +483,6 @@ async def debug_message(
     chat_id: str = "default",
     content: str = "Hello from debug",
 ) -> dict[str, Any]:
-    """Simple debug endpoint to simulate a QXT message and test instance startup."""
     event = build_im_receive_event(
         chat_id=chat_id,
         usr_id=usr_id,

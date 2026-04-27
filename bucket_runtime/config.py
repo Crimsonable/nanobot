@@ -3,6 +3,16 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
+
+
+def _derive_release_url(outbound_url: str) -> str:
+    parsed = urlparse(outbound_url)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, "/internal/runtime/release", "", "", "")
+    )
 
 
 APP_HOST = os.getenv("BUCKET_RUNTIME_HOST", "0.0.0.0")
@@ -21,6 +31,11 @@ OUTBOUND_GATEWAY_URL = os.getenv(
     "http://container-up.nanobot.svc.cluster.local:8080/outbound",
 ).strip()
 OUTBOUND_TIMEOUT = float(os.getenv("OUTBOUND_TIMEOUT_SECONDS", "120"))
+RELEASE_GATEWAY_URL = os.getenv(
+    "RELEASE_GATEWAY_URL",
+    "",
+).strip() or _derive_release_url(OUTBOUND_GATEWAY_URL)
+CONTROL_REQUEST_TIMEOUT = float(os.getenv("CONTROL_REQUEST_TIMEOUT_SECONDS", "15"))
 
 INSTANCE_IDLE_TTL_SECONDS = int(os.getenv("INSTANCE_IDLE_TTL_SECONDS", "1800"))
 INSTANCE_STOP_GRACE_SECONDS = int(os.getenv("INSTANCE_STOP_GRACE_SECONDS", "10"))
@@ -30,10 +45,10 @@ NANOBOT_PORT_START = int(os.getenv("NANOBOT_PORT_START", "20000"))
 NANOBOT_PORT_END = int(os.getenv("NANOBOT_PORT_END", "29999"))
 
 POD_NAME = os.getenv("POD_NAME", "").strip()
-BUCKET_ID = int(os.getenv("BUCKET_ID", "-1"))
-if BUCKET_ID < 0 and POD_NAME:
+BUCKET_ID = os.getenv("BUCKET_ID", "").strip()
+if not BUCKET_ID and POD_NAME:
     match = re.search(r"(\d+)$", POD_NAME)
     if match:
-        BUCKET_ID = int(match.group(1))
-if BUCKET_ID < 0:
-    BUCKET_ID = 0
+        BUCKET_ID = f"bucket-{match.group(1)}"
+if not BUCKET_ID:
+    BUCKET_ID = "bucket-0"

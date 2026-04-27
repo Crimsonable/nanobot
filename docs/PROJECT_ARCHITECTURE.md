@@ -8,16 +8,15 @@
    - 统一对外入口。
    - 默认单副本部署，横向扩容对象是 bucket，而不是网关。
    - 接收订阅事件、调试请求和标准入站请求。
-   - 根据 `frontend_id + user_id` 维护 bucket 绑定。
-   - bucket 数量以 `BUCKET_COUNT` 为准；StatefulSet `replicas` 必须与其保持一致。
-   - 将请求转发到固定的 bucket pod。
+   - 根据 `user_id` 维护用户实例运行态和 workspace 关系。
+   - 负责选择 bucket、必要时动态创建 bucket、创建用户实例、转发请求、回收空闲 bucket。
    - 负责统一出站发送。
 
 2. `bucket_runtime`
-   - 运行在 StatefulSet Pod 内。
-   - 一个 Pod 对应一个 bucket。
-   - 在 bucket 内按用户启动和复用独立的 Nanobot 实例。
-   - 管理 workspace 初始化、空闲回收、端口分配和实例 relay。
+   - 运行在按需创建的 bucket Deployment Pod 内。
+   - 一个 Pod 对应一个 bucket 运行单元。
+   - 在 bucket 内按 `instance_id` 启动、复用和销毁独立的 Nanobot 实例。
+   - 管理 workspace 初始化、实例空闲回收、端口分配和实例 relay。
 
 3. `nanobot`
    - 作为用户级 AI agent/gateway 本体存在。
@@ -27,9 +26,9 @@
 
 1. 外部渠道请求进入 `container_up`。
 2. 网关解析 `frontend_id` 和 `user_id`。
-3. 若没有绑定，则选择 bucket 并持久化绑定。
-4. 网关转发到目标 bucket pod。
-5. `bucket_runtime` 为该用户启动或复用实例。
+3. 网关查询 `user_instances`；若用户离线，则选择或创建 bucket，并在 bucket 内创建实例。
+4. 网关将请求转发到目标 bucket pod 的目标 `instance_id`。
+5. `bucket_runtime` 为该实例转发入站请求。
 6. 用户实例处理后，通过 bucket runtime 回调统一网关的 `/outbound`。
 7. 网关根据 frontend 配置发送到对应外部渠道。
 
@@ -90,8 +89,10 @@ common/
 
 - `container-up` Deployment + Service
   - 统一网关
-- `nanobot-bucket` StatefulSet + Headless Service
-  - 固定 bucket pod
+- `container-up` ServiceAccount + Role + RoleBinding
+  - 允许网关创建、更新和缩容 bucket Deployment / Service
+- `nanobot-bucket-*` Deployment + Service
+  - 动态 bucket 运行单元
 - `nanobot-source` PV/PVC
   - 公共源码
 - `nanobot-common` PV/PVC
@@ -99,7 +100,7 @@ common/
 - `nanobot-frontends` PV/PVC
   - 全局 frontends registry
 - `nanobot-route-db` PV/PVC
-  - `frontend_id + user_id -> bucket_id` 持久化路由库
+  - `user_instances` / `buckets` 持久化运行态数据库
 - `nanobot-workspaces` PV/PVC
   - 用户持久化 workspace
 
@@ -120,15 +121,17 @@ common/
 - `FRONTENDS_CONFIG_PATH`
   - frontend registry 路径
 - `CONTAINER_UP_DB_PATH`
-  - 路由绑定数据库文件路径
+  - 网关运行态数据库文件路径
 - `HOST_WORKSPACE_ROOT`
   - 用户 workspace 根目录
-- `BUCKET_COUNT`
-  - bucket 数量主配置
-- `BUCKET_SERVICE_NAME`
-  - bucket service 名称
-- `BUCKET_STATEFULSET_NAME`
-  - bucket StatefulSet 名称
+- `BUCKET_NAME_PREFIX`
+  - bucket Deployment / Service 名称前缀
+- `BUCKET_MAX_INSTANCES_PER_BUCKET`
+  - 单 bucket 最大实例数
+- `BUCKET_IDLE_TTL_SECONDS`
+  - 空闲 bucket 缩容阈值
+- `BUCKET_RUNTIME_IMAGE`
+  - bucket runtime 镜像
 - `OUTBOUND_GATEWAY_URL`
   - bucket runtime 回调统一网关的地址
 

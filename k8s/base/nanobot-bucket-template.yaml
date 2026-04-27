@@ -1,19 +1,39 @@
-apiVersion: apps/v1
-kind: StatefulSet
+apiVersion: v1
+kind: Service
 metadata:
-  name: nanobot-bucket
+  name: nanobot-bucket-0
   namespace: nanobot
+  labels:
+    app: nanobot-bucket
+    bucket-id: bucket-0
 spec:
-  serviceName: nanobot-bucket
-  # Keep this in sync with container-up BUCKET_COUNT.
-  replicas: 4
+  selector:
+    app: nanobot-bucket
+    bucket-id: bucket-0
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nanobot-bucket-0
+  namespace: nanobot
+  labels:
+    app: nanobot-bucket
+    bucket-id: bucket-0
+spec:
+  replicas: 1
   selector:
     matchLabels:
       app: nanobot-bucket
+      bucket-id: bucket-0
   template:
     metadata:
       labels:
         app: nanobot-bucket
+        bucket-id: bucket-0
     spec:
       containers:
         - name: bucket-runtime
@@ -23,14 +43,10 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            - name: CONTAINER_UP_PORT
+            - name: BUCKET_RUNTIME_PORT
               value: "8080"
-            - name: BUCKET_COUNT
-              value: "4"
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
+            - name: BUCKET_ID
+              value: bucket-0
             - name: FRONTENDS_CONFIG_PATH
               value: /mnt/nanobot/frontends/frontends.json
             - name: SOURCE_ROOT
@@ -45,8 +61,6 @@ spec:
               value: /mnt/nanobot/workspaces
             - name: HOST_WORKSPACE_ROOT
               value: /mnt/nanobot/workspaces
-            - name: NANOBOT_WORKSPACE_LAYOUT
-              value: frontend-user
             - name: OUTBOUND_GATEWAY_URL
               value: http://container-up.nanobot.svc.cluster.local:8080/outbound
             - name: INSTANCE_IDLE_TTL_SECONDS

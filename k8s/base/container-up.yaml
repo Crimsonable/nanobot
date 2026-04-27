@@ -26,6 +26,7 @@ spec:
       labels:
         app: container-up
     spec:
+      serviceAccountName: container-up
       containers:
         - name: container-up
           image: nanobot-container-up:v1.0.0
@@ -40,23 +41,58 @@ spec:
               value: /mnt/nanobot/route-db/container_up.db
             - name: FRONTENDS_CONFIG_PATH
               value: /mnt/nanobot/frontends/frontends.json
-            - name: BUCKET_SERVICE_NAME
-              value: nanobot-bucket
-            - name: BUCKET_STATEFULSET_NAME
-              value: nanobot-bucket
             - name: BUCKET_NAMESPACE
               value: nanobot
-            - name: BUCKET_COUNT
-              value: "4"
+            - name: BUCKET_NAME_PREFIX
+              value: nanobot-bucket
+            - name: BUCKET_RUNTIME_IMAGE
+              value: nanobot-bucket-runtime:v1.0.0
+            - name: BUCKET_IMAGE_PULL_POLICY
+              value: Never
+            - name: BUCKET_SERVICE_PORT
+              value: "8080"
+            - name: BUCKET_CONTAINER_PORT
+              value: "8080"
+            - name: BUCKET_MAX_INSTANCES_PER_BUCKET
+              value: "20"
+            - name: BUCKET_IDLE_TTL_SECONDS
+              value: "600"
+            - name: BUCKET_IDLE_SWEEP_INTERVAL_SECONDS
+              value: "60"
+            - name: BUCKET_SOURCE_ROOT
+              value: /mnt/nanobot/source
+            - name: BUCKET_SKILLS_ROOT
+              value: /mnt/nanobot/common/default/skills
+            - name: BUCKET_TEMPLATES_ROOT
+              value: /mnt/nanobot/common/default/templates
+            - name: BUCKET_FRONTENDS_CONFIG_PATH
+              value: /mnt/nanobot/frontends/frontends.json
+            - name: BUCKET_COMMON_MOUNT_PATH
+              value: /mnt/nanobot/common
+            - name: BUCKET_FRONTENDS_MOUNT_PATH
+              value: /mnt/nanobot/frontends
+            - name: BUCKET_WORKSPACES_MOUNT_PATH
+              value: /mnt/nanobot/workspaces
+            - name: BUCKET_WORKSPACE_ROOT
+              value: /mnt/nanobot/workspaces
+            - name: BUCKET_SOURCE_PVC
+              value: nanobot-source-pvc
+            - name: BUCKET_COMMON_PVC
+              value: nanobot-common-pvc
+            - name: BUCKET_FRONTENDS_PVC
+              value: nanobot-frontends-pvc
+            - name: BUCKET_WORKSPACES_PVC
+              value: nanobot-workspaces-pvc
             - name: HOST_WORKSPACE_ROOT
               value: /mnt/nanobot/workspaces
             - name: CHILD_WORKSPACE_TARGET
               value: /mnt/nanobot/workspaces
-            - name: NANOBOT_WORKSPACE_LAYOUT
-              value: frontend-user
           volumeMounts:
             - name: route-db
               mountPath: /mnt/nanobot/route-db
+            - name: source
+              mountPath: /mnt/nanobot/source
+              readOnly: true
             - name: common
               mountPath: /mnt/nanobot/common
               readOnly: true
@@ -82,6 +118,9 @@ spec:
         - name: route-db
           persistentVolumeClaim:
             claimName: nanobot-route-db-pvc
+        - name: source
+          persistentVolumeClaim:
+            claimName: nanobot-source-pvc
         - name: common
           persistentVolumeClaim:
             claimName: nanobot-common-pvc

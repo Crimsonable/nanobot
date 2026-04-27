@@ -18,21 +18,29 @@ from bucket_runtime.config import (
     NANOBOT_PORT_END,
     NANOBOT_PORT_START,
     TEMPLATES_ROOT,
-    WORKSPACE_ROOT,
 )
 from bucket_runtime.port_allocator import PortAllocator
 from bucket_runtime.process_manager import ProcessManager
 from bucket_runtime.workspace_manager import WorkspaceManager
 
 manager = ProcessManager(
-    workspace_manager=WorkspaceManager(WORKSPACE_ROOT, TEMPLATES_ROOT),
+    workspace_manager=WorkspaceManager(TEMPLATES_ROOT),
     port_allocator=PortAllocator(NANOBOT_PORT_START, NANOBOT_PORT_END),
     idle_ttl=INSTANCE_IDLE_TTL_SECONDS,
 )
 cleanup_task: asyncio.Task[None] | None = None
 
 
+class CreateInstanceRequest(BaseModel):
+    frontend_id: str
+    user_id: str
+    instance_id: str
+    workspace_path: str
+    app_id: str = ""
+
+
 class InboundRequest(BaseModel):
+    instance_id: str
     frontend_id: str
     user_id: str
     chat_id: str = "default"
@@ -43,6 +51,7 @@ class InboundRequest(BaseModel):
 
 
 class CancelRequest(BaseModel):
+    instance_id: str
     frontend_id: str
     user_id: str
     chat_id: str = "default"
@@ -67,7 +76,7 @@ async def lifespan(_: FastAPI):
     await manager.close()
 
 
-app = FastAPI(title="bucket-runtime", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="bucket-runtime", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/health/live")
@@ -86,17 +95,64 @@ def healthz() -> dict[str, Any]:
         "status": "ok",
         "bucket_id": BUCKET_ID,
         "running_processes": len(manager.status()),
+        "max_processes": MAX_PROCESSES_PER_BUCKET,
+    }
+
+
+@app.post("/instances")
+async def create_instance(payload: CreateInstanceRequest) -> dict[str, Any]:
+    try:
+        instance = await manager.create_instance(
+            frontend_id=payload.frontend_id,
+            user_id=payload.user_id,
+            instance_id=payload.instance_id,
+            workspace_path=payload.workspace_path,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "bucket_id": BUCKET_ID,
+        "instance_id": instance.instance_id,
+        "user_id": instance.user_id,
+        "status": "online",
+        "workspace_path": str(instance.workspace_path),
+    }
+
+
+@app.get("/instances/{instance_id}")
+async def get_instance(instance_id: str) -> dict[str, Any]:
+    instance = await manager.get_instance(instance_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail="instance not found")
+    return {
+        "bucket_id": BUCKET_ID,
+        "instance_id": instance.instance_id,
+        "frontend_id": instance.frontend_id,
+        "user_id": instance.user_id,
+        "status": "online",
+        "workspace_path": str(instance.workspace_path),
+        "last_active_at": instance.last_active_at,
+    }
+
+
+@app.delete("/instances/{instance_id}")
+async def delete_instance(instance_id: str) -> dict[str, Any]:
+    instance = await manager.get_instance(instance_id)
+    if instance is None:
+        return {"bucket_id": BUCKET_ID, "instance_id": instance_id, "status": "destroyed"}
+    await manager.stop_process(instance_id)
+    return {
+        "bucket_id": BUCKET_ID,
+        "instance_id": instance_id,
+        "user_id": instance.user_id,
+        "status": "destroyed",
     }
 
 
 @app.post("/inbound")
 async def inbound(payload: InboundRequest) -> dict[str, Any]:
     try:
-        await manager.forward_inbound(
-            payload.frontend_id,
-            payload.user_id,
-            payload.model_dump(),
-        )
+        await manager.forward_inbound(payload.instance_id, payload.model_dump())
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
@@ -104,17 +160,14 @@ async def inbound(payload: InboundRequest) -> dict[str, Any]:
         "bucket_id": BUCKET_ID,
         "frontend_id": payload.frontend_id,
         "user_id": payload.user_id,
+        "instance_id": payload.instance_id,
     }
 
 
 @app.post("/cancel")
 async def cancel(payload: CancelRequest) -> dict[str, Any]:
     try:
-        await manager.forward_cancel(
-            payload.frontend_id,
-            payload.user_id,
-            payload.model_dump(),
-        )
+        await manager.forward_cancel(payload.instance_id, payload.model_dump())
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
@@ -122,6 +175,7 @@ async def cancel(payload: CancelRequest) -> dict[str, Any]:
         "bucket_id": BUCKET_ID,
         "frontend_id": payload.frontend_id,
         "user_id": payload.user_id,
+        "instance_id": payload.instance_id,
     }
 
 
