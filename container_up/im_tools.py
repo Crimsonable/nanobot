@@ -29,23 +29,19 @@ class IMManager:
             parser.stop()
 
     def parser_for_frontend(self, frontend_id: str | None = None) -> Any:
-        requested = str(frontend_id or "").strip()
-        if requested:
-            parser = self.parsers.get(requested)
-            if parser is None:
-                raise RuntimeError(f"IM frontend is not initialized: {requested}")
-            return parser
-        if len(self.parsers) == 1:
-            return next(iter(self.parsers.values()))
-        parser = self.parsers.get("default")
-        if parser is not None:
-            return parser
-        raise RuntimeError("frontend_id is required when multiple IM frontends are configured")
+        if frontend_id is None:
+            raise ValueError("frontend_id cannot be None")
+        parser = self.parsers.get(frontend_id)
+        if parser is None:
+            raise RuntimeError(f"IM frontend is not initialized: {frontend_id}")
+        return parser
 
     def parser_for_outbound(self, metadata: dict[str, Any]) -> Any:
         reply_target = dict(metadata.get("reply_target") or {})
         return self.parser_for_frontend(
-            str(reply_target.get("frontend_id") or metadata.get("frontend_id") or "").strip()
+            str(
+                reply_target.get("frontend_id") or metadata.get("frontend_id") or ""
+            ).strip()
             or None
         )
 

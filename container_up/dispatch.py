@@ -15,6 +15,7 @@ from container_up.frontend_config import compose_frontend_org_id, split_frontend
 from container_up.im_tools import build_im_receive_event, get_im_manager, get_im_parser
 from container_up.router_service import ensure_org_container
 
+
 def _metadata_with_route_fallback(
     *,
     metadata: dict[str, Any],
@@ -29,6 +30,7 @@ def _metadata_with_route_fallback(
             reply_target.setdefault("frontend_id", frontend_id)
             updated["reply_target"] = reply_target
     return updated
+
 
 EventHandler = Callable[[dict[str, Any]], Any]
 
@@ -78,7 +80,11 @@ async def _deliver_outbound_message(
 async def forward_bridge_outbound(packet: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(packet.get("metadata") or {})
     attachments = list(packet.get("attachments") or [])
-    if metadata.get("_progress") or metadata.get("_stream_delta") or metadata.get("_stream_end"):
+    if (
+        metadata.get("_progress")
+        or metadata.get("_stream_delta")
+        or metadata.get("_stream_end")
+    ):
         return {"ok": True, "response": None, "skipped": "non_terminal_event"}
 
     content = str(packet.get("content") or "")
@@ -138,7 +144,7 @@ async def parse_im_message_receive(event: dict[str, Any]) -> dict[str, Any]:
         attachments=attachments,
         metadata=metadata,
     )
-    logger.error("bridge processing result: %r", result)
+    print(f"bridge processing result: {result}")
     return {
         "ok": True,
         "response": result,
@@ -194,6 +200,8 @@ async def parse_bridge_outbound_message(event: dict[str, Any]) -> dict[str, Any]
             "chat_id": str(payload.get("to") or ""),
             "content": str(payload.get("content") or ""),
             "metadata": metadata,
-            "attachments": normalize_outbound_attachments(org_id, list(payload.get("attachments") or [])),
+            "attachments": normalize_outbound_attachments(
+                org_id, list(payload.get("attachments") or [])
+            ),
         }
     )
