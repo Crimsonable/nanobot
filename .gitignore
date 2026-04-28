@@ -50,6 +50,7 @@ share/python-wheels/
 htmlcov/
 coverage.xml
 *.cover
+common/
 
 # Lock files (project policy)
 poetry.lock
