@@ -2,20 +2,23 @@
 
 import asyncio
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import AgentDefaults
 from nanobot.command import CommandContext
+from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import LLMResponse
 
 
-def _make_loop(tmp_path: Path, session_ttl_minutes: int = 15) -> AgentLoop:
+def _make_loop(
+    tmp_path: Path,
+    session_ttl_minutes: int = 15,
+) -> AgentLoop:
     """Create a minimal AgentLoop for testing."""
     bus = MessageBus()
     provider = MagicMock()
@@ -72,6 +75,11 @@ class TestSessionTTLConfig:
         assert data["idleCompactAfterMinutes"] == 30
         assert "sessionTtlMinutes" not in data
 
+    def test_session_file_cap_is_internal_constant(self):
+        """Session file cap should remain an internal constant, not a config field."""
+        from nanobot.session.manager import FILE_MAX_MESSAGES
+        assert FILE_MAX_MESSAGES == 2000
+
 
 class TestAgentLoopTTLParam:
     """Test that AutoCompact receives and stores session_ttl_minutes."""
@@ -85,6 +93,75 @@ class TestAgentLoopTTLParam:
         """AutoCompact default TTL should be 0 (disabled)."""
         loop = _make_loop(tmp_path, session_ttl_minutes=0)
         assert loop.auto_compact._ttl == 0
+
+    @pytest.mark.asyncio
+    async def test_process_message_reads_history_with_token_budget(self, tmp_path):
+        """_process_message should pass an auto-derived token budget to get_history."""
+        loop = _make_loop(tmp_path)
+        session = loop.sessions.get_or_create("cli:direct")
+        session.get_history = MagicMock(return_value=[])
+        loop.context.build_messages = MagicMock(return_value=[])
+        loop._run_agent_loop = AsyncMock(return_value=("ok", [], [], "stop", False))
+        loop._save_turn = MagicMock()
+
+        msg = InboundMessage(
+            channel="cli",
+            sender_id="u1",
+            chat_id="direct",
+            content="hello",
+        )
+        await loop._process_message(msg)
+        session.get_history.assert_called_once()
+        kwargs = session.get_history.call_args.kwargs
+        assert isinstance(kwargs.get("max_tokens"), int)
+        assert kwargs["max_tokens"] > 0
+        assert kwargs["include_timestamps"] is True
+
+    @pytest.mark.asyncio
+    async def test_session_file_cap_archives_and_trims_old_messages(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        loop.context.memory.raw_archive = MagicMock()
+
+        for i in range(4):
+            msg = InboundMessage(
+                channel="cli",
+                sender_id="u1",
+                chat_id="direct",
+                content=f"hello {i}",
+            )
+            await loop._process_message(msg)
+
+        session = loop.sessions.get_or_create("cli:direct")
+        from nanobot.session.manager import FILE_MAX_MESSAGES
+        assert len(session.messages) <= FILE_MAX_MESSAGES
+
+    def test_session_enforce_file_cap_skips_archive_when_dropped_prefix_already_consolidated(self, tmp_path):
+        from nanobot.session.manager import Session
+        archive_fn = MagicMock()
+        session = Session(key="cli:direct")
+        for i in range(8):
+            session.add_message("user", f"u{i}")
+        session.last_consolidated = 6
+
+        session.enforce_file_cap(on_archive=archive_fn, limit=4)
+
+        assert len(session.messages) <= 4
+        archive_fn.assert_not_called()
+
+    def test_session_enforce_file_cap_archives_only_unconsolidated_dropped_prefix(self, tmp_path):
+        from nanobot.session.manager import Session
+        archive_fn = MagicMock()
+        session = Session(key="cli:direct")
+        for i in range(8):
+            session.add_message("user", f"u{i}")
+        session.last_consolidated = 2
+
+        session.enforce_file_cap(on_archive=archive_fn, limit=4)
+
+        assert len(session.messages) <= 4
+        archive_fn.assert_called_once()
+        archived = archive_fn.call_args.args[0]
+        assert [m["content"] for m in archived] == ["u2", "u3"]
 
 
 class TestAutoCompact:
@@ -187,7 +264,6 @@ class TestAutoCompact:
     async def test_auto_compact_empty_session(self, tmp_path):
         """_archive on empty session should not archive."""
         loop = _make_loop(tmp_path, session_ttl_minutes=15)
-        session = loop.sessions.get_or_create("cli:test")
 
         archive_called = False
 
@@ -560,9 +636,12 @@ class TestProactiveAutoCompact:
     """Test proactive auto-new on idle ticks (TimeoutError path in run loop)."""
 
     @staticmethod
-    async def _run_check_expired(loop):
+    async def _run_check_expired(loop, active_session_keys=()):
         """Helper: run check_expired via callback and wait for background tasks."""
-        loop.auto_compact.check_expired(loop._schedule_background)
+        loop.auto_compact.check_expired(
+            loop._schedule_background,
+            active_session_keys=active_session_keys,
+        )
         await asyncio.sleep(0.1)
 
     @pytest.mark.asyncio
@@ -699,6 +778,99 @@ class TestProactiveAutoCompact:
         await self._run_check_expired(loop)
 
         assert not archive_called
+        await loop.close_mcp()
+
+    @pytest.mark.asyncio
+    async def test_skip_expired_session_with_active_agent_task(self, tmp_path):
+        """Expired session with an active agent task should NOT be archived."""
+        loop = _make_loop(tmp_path, session_ttl_minutes=15)
+        session = loop.sessions.get_or_create("cli:test")
+        _add_turns(session, 6, prefix="old")
+        session.updated_at = datetime.now() - timedelta(minutes=20)
+        loop.sessions.save(session)
+
+        archive_count = 0
+
+        async def _fake_archive(messages):
+            nonlocal archive_count
+            archive_count += 1
+            return "Summary."
+
+        loop.consolidator.archive = _fake_archive
+
+        # Simulate an active agent task for this session
+        await self._run_check_expired(loop, active_session_keys={"cli:test"})
+        assert archive_count == 0
+
+        session_after = loop.sessions.get_or_create("cli:test")
+        assert len(session_after.messages) == 12  # All messages preserved
+
+        await loop.close_mcp()
+
+    @pytest.mark.asyncio
+    async def test_archive_after_active_task_completes(self, tmp_path):
+        """Session should be archived on next tick after active task completes."""
+        loop = _make_loop(tmp_path, session_ttl_minutes=15)
+        session = loop.sessions.get_or_create("cli:test")
+        _add_turns(session, 6, prefix="old")
+        session.updated_at = datetime.now() - timedelta(minutes=20)
+        loop.sessions.save(session)
+
+        archive_count = 0
+
+        async def _fake_archive(messages):
+            nonlocal archive_count
+            archive_count += 1
+            return "Summary."
+
+        loop.consolidator.archive = _fake_archive
+
+        # First tick: active task, skip
+        await self._run_check_expired(loop, active_session_keys={"cli:test"})
+        assert archive_count == 0
+
+        # Second tick: task completed, should archive
+        await self._run_check_expired(loop)
+        assert archive_count == 1
+        await loop.close_mcp()
+
+    @pytest.mark.asyncio
+    async def test_partial_active_set_only_archives_inactive_expired(self, tmp_path):
+        """With multiple sessions, only the expired+inactive one should be archived."""
+        loop = _make_loop(tmp_path, session_ttl_minutes=15)
+        # Session A: expired, no active task -> should be archived
+        s1 = loop.sessions.get_or_create("cli:expired_idle")
+        _add_turns(s1, 6, prefix="old_a")
+        s1.updated_at = datetime.now() - timedelta(minutes=20)
+        loop.sessions.save(s1)
+        # Session B: expired, has active task -> should be skipped
+        s2 = loop.sessions.get_or_create("cli:expired_active")
+        _add_turns(s2, 6, prefix="old_b")
+        s2.updated_at = datetime.now() - timedelta(minutes=20)
+        loop.sessions.save(s2)
+        # Session C: recent, no active task -> should be skipped
+        s3 = loop.sessions.get_or_create("cli:recent")
+        s3.add_message("user", "recent")
+        loop.sessions.save(s3)
+
+        archive_count = 0
+
+        async def _fake_archive(messages):
+            nonlocal archive_count
+            archive_count += 1
+            return "Summary."
+
+        loop.consolidator.archive = _fake_archive
+
+        await self._run_check_expired(loop, active_session_keys={"cli:expired_active"})
+
+        assert archive_count == 1
+        s1_after = loop.sessions.get_or_create("cli:expired_idle")
+        assert len(s1_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES
+        s2_after = loop.sessions.get_or_create("cli:expired_active")
+        assert len(s2_after.messages) == 12  # Preserved
+        s3_after = loop.sessions.get_or_create("cli:recent")
+        assert len(s3_after.messages) == 1  # Preserved
         await loop.close_mcp()
 
     @pytest.mark.asyncio

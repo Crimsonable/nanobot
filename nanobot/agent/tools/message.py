@@ -1,10 +1,14 @@
 """Message tool for sending messages to users."""
 
+import os
+from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 from nanobot.bus.events import OutboundMessage
+from nanobot.config.paths import get_workspace_path
 
 
 @tool_parameters(
@@ -14,7 +18,11 @@ from nanobot.bus.events import OutboundMessage
         chat_id=StringSchema("Optional: target chat/user ID"),
         media=ArraySchema(
             StringSchema(""),
-            description="Optional: list of file paths to attach (images, audio, documents)",
+            description="Optional: list of file paths to attach (images, video, audio, documents)",
+        ),
+        buttons=ArraySchema(
+            ArraySchema(StringSchema("Button label")),
+            description="Optional: inline keyboard buttons as list of rows, each row is list of button labels.",
         ),
         required=["content"],
     )
@@ -28,14 +36,25 @@ class MessageTool(Tool):
         default_channel: str = "",
         default_chat_id: str = "",
         default_message_id: str | None = None,
-        default_metadata: dict[str, Any] | None = None,
+        workspace: str | Path | None = None,
     ):
         self._send_callback = send_callback
-        self._default_channel = default_channel
-        self._default_chat_id = default_chat_id
-        self._default_message_id = default_message_id
-        self._default_metadata = dict(default_metadata or {})
-        self._sent_in_turn: bool = False
+        self._workspace = Path(workspace).expanduser() if workspace is not None else get_workspace_path()
+        self._default_channel: ContextVar[str] = ContextVar("message_default_channel", default=default_channel)
+        self._default_chat_id: ContextVar[str] = ContextVar("message_default_chat_id", default=default_chat_id)
+        self._default_message_id: ContextVar[str | None] = ContextVar(
+            "message_default_message_id",
+            default=default_message_id,
+        )
+        self._default_metadata: ContextVar[dict[str, Any]] = ContextVar(
+            "message_default_metadata",
+            default={},
+        )
+        self._sent_in_turn_var: ContextVar[bool] = ContextVar("message_sent_in_turn", default=False)
+        self._record_channel_delivery_var: ContextVar[bool] = ContextVar(
+            "message_record_channel_delivery",
+            default=False,
+        )
 
     def set_context(
         self,
@@ -45,10 +64,10 @@ class MessageTool(Tool):
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Set the current message context."""
-        self._default_channel = channel
-        self._default_chat_id = chat_id
-        self._default_message_id = message_id
-        self._default_metadata = dict(metadata or {})
+        self._default_channel.set(channel)
+        self._default_chat_id.set(chat_id)
+        self._default_message_id.set(message_id)
+        self._default_metadata.set(metadata or {})
 
     def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
         """Set the callback for sending messages."""
@@ -58,16 +77,21 @@ class MessageTool(Tool):
         """Reset per-turn send tracking."""
         self._sent_in_turn = False
 
-    def _normalize_current_bridge_chat_id(self, channel: str, chat_id: str) -> str:
-        if channel != "bridge" or not self._default_chat_id:
-            return chat_id
-        if channel != self._default_channel or chat_id == self._default_chat_id:
-            return chat_id
+    def set_record_channel_delivery(self, active: bool):
+        """Mark tool-sent messages as proactive channel deliveries."""
+        return self._record_channel_delivery_var.set(active)
 
-        _sender_id, separator, conversation_id = self._default_chat_id.partition(":::")
-        if separator and chat_id == conversation_id:
-            return self._default_chat_id
-        return chat_id
+    def reset_record_channel_delivery(self, token) -> None:
+        """Restore previous proactive delivery recording state."""
+        self._record_channel_delivery_var.reset(token)
+
+    @property
+    def _sent_in_turn(self) -> bool:
+        return self._sent_in_turn_var.get()
+
+    @_sent_in_turn.setter
+    def _sent_in_turn(self, value: bool) -> None:
+        self._sent_in_turn_var.set(value)
 
     @property
     def name(self) -> str:
@@ -89,21 +113,30 @@ class MessageTool(Tool):
         chat_id: str | None = None,
         message_id: str | None = None,
         media: list[str] | None = None,
+        buttons: list[list[str]] | None = None,
         **kwargs: Any
     ) -> str:
         from nanobot.utils.helpers import strip_think
         content = strip_think(content)
-        
-        channel = channel or self._default_channel
-        chat_id = chat_id or self._default_chat_id
-        chat_id = self._normalize_current_bridge_chat_id(channel, chat_id)
+
+        if buttons is not None:
+            if not isinstance(buttons, list) or any(
+                not isinstance(row, list) or any(not isinstance(label, str) for label in row)
+                for row in buttons
+            ):
+                return "Error: buttons must be a list of list of strings"
+        default_channel = self._default_channel.get()
+        default_chat_id = self._default_chat_id.get()
+        channel = channel or default_channel
+        chat_id = chat_id or default_chat_id
         # Only inherit default message_id when targeting the same channel+chat.
         # Cross-chat sends must not carry the original message_id, because
         # some channels (e.g. Feishu) use it to determine the target
         # conversation via their Reply API, which would route the message
         # to the wrong chat entirely.
-        if channel == self._default_channel and chat_id == self._default_chat_id:
-            message_id = message_id or self._default_message_id
+        same_target = channel == default_channel and chat_id == default_chat_id
+        if same_target:
+            message_id = message_id or self._default_message_id.get()
         else:
             message_id = None
 
@@ -113,27 +146,36 @@ class MessageTool(Tool):
         if not self._send_callback:
             return "Error: Message sending not configured"
 
+        if media:
+            resolved = []
+            for p in media:
+                if p.startswith(("http://", "https://")) or os.path.isabs(p):
+                    resolved.append(p)
+                else:
+                    resolved.append(str(self._workspace / p))
+            media = resolved
+
+        metadata = dict(self._default_metadata.get()) if same_target else {}
         if message_id:
-            metadata = dict(self._default_metadata)
             metadata["message_id"] = message_id
-        elif channel == self._default_channel and chat_id == self._default_chat_id:
-            metadata = dict(self._default_metadata)
-        else:
-            metadata = {}
+        if self._record_channel_delivery_var.get():
+            metadata["_record_channel_delivery"] = True
 
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
             content=content,
             media=media or [],
+            buttons=buttons or [],
             metadata=metadata,
         )
 
         try:
             await self._send_callback(msg)
-            if channel == self._default_channel and chat_id == self._default_chat_id:
+            if channel == default_channel and chat_id == default_chat_id:
                 self._sent_in_turn = True
             media_info = f" with {len(media)} attachments" if media else ""
-            return f"Message sent to {channel}:{chat_id}{media_info}"
+            button_info = f" with {sum(len(row) for row in buttons)} button(s)" if buttons else ""
+            return f"Message sent to {channel}:{chat_id}{media_info}{button_info}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
