@@ -25,6 +25,7 @@ from container_up.settings import (
     BUCKET_IDLE_SWEEP_INTERVAL_SECONDS,
     BUCKET_WORKSPACE_ROOT,
 )
+from container_up.uvicorn_logging import build_uvicorn_log_config
 from container_up.workspace_manager import WorkspaceManager
 
 repo = BindingRepository()
@@ -401,33 +402,39 @@ async def outbound(payload: OutboundRequest) -> dict[str, Any]:
     metadata = dict(payload.metadata)
     metadata.setdefault("frontend_id", payload.frontend_id)
     metadata.setdefault("usr_id", payload.user_id)
-    return await _forward_outbound_message(
-        {
-            "type": "outbound_message",
-            "chat_id": payload.chat_id,
-            "content": payload.content,
-            "metadata": metadata,
-            "attachments": list(payload.attachments),
-        }
-    )
+    try:
+        return await _forward_outbound_message(
+            {
+                "type": "outbound_message",
+                "chat_id": payload.chat_id,
+                "content": payload.content,
+                "metadata": metadata,
+                "attachments": list(payload.attachments),
+            }
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/bridge/outbound")
 async def post_bridge_outbound(payload: BridgeOutboundRequest) -> dict[str, Any]:
     metadata = dict(payload.metadata)
     frontend_id = str(payload.frontend_id or metadata.get("frontend_id") or "").strip() or None
-    return await _forward_outbound_message(
-        {
-            "type": "outbound_message",
-            "chat_id": payload.to,
-            "content": payload.content,
-            "metadata": metadata,
-            "attachments": normalize_outbound_attachments(
-                list(payload.attachments),
-                frontend_id=frontend_id,
-            ),
-        }
-    )
+    try:
+        return await _forward_outbound_message(
+            {
+                "type": "outbound_message",
+                "chat_id": payload.to,
+                "content": payload.content,
+                "metadata": metadata,
+                "attachments": normalize_outbound_attachments(
+                    list(payload.attachments),
+                    frontend_id=frontend_id,
+                ),
+            }
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/subscribe/{frontend_id}")
@@ -498,7 +505,12 @@ async def debug_message(
 
 
 def main() -> None:
-    uvicorn.run("container_up.app:app", host=APP_HOST, port=APP_PORT)
+    uvicorn.run(
+        "container_up.app:app",
+        host=APP_HOST,
+        port=APP_PORT,
+        log_config=build_uvicorn_log_config(),
+    )
 
 
 if __name__ == "__main__":

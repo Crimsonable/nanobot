@@ -1,10 +1,9 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONUNBUFFERED=1
 
-WORKDIR /app
+WORKDIR /runtime
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential curl ca-certificates && \
@@ -16,12 +15,16 @@ RUN apt-get update && \
     esac && \
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.33.1/bin/linux/${KUBECTL_ARCH}/kubectl" && \
     chmod +x /usr/local/bin/kubectl && \
+    pip install --no-cache-dir \
+      fastapi \
+      uvicorn \
+      httpx \
+      pydantic \
+      aiohttp \
+      lark-oapi \
+      pycryptodome \
+      websockets \
+      loguru && \
     rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md LICENSE ./
-COPY nanobot/ nanobot/
-COPY container_up/ container_up/
-
-RUN pip install --no-cache-dir ".[api]" fastapi uvicorn pycryptodome
-
-CMD ["python", "-m", "container_up.app"]
+CMD ["sh", "-lc", "export PYTHONPATH=\"$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}\"; exec python -m container_up.app"]

@@ -13,9 +13,9 @@
   - Nanobot 主体运行时代码，不再承载 bucket runtime 的本地 relay/进程组管理逻辑。
 - `k8s/`
   - 基础部署 YAML 与 `kind` 本地开发配置。
-- `workspace/config.json`
-  - Nanobot 主配置。
-- `workspace/frontends.json`
+- `common/<frontend-id>/config.json`
+  - 每个 frontend 的 Nanobot 主配置。
+- `common/frontends.json`
   - 前端入口配置，供 `container_up` 和 `bucket_runtime` 共用。
 
 ## 已删除的旧实现
@@ -36,17 +36,17 @@
 
 ## 当前必须保留的配置文件
 
-- `workspace/config.json`
+- `common/<frontend-id>/config.json`
   - Nanobot 运行配置。
-- `workspace/frontends.json`
+- `common/frontends.json`
   - 前端定义。
-  - K8s 中通过 `FRONTENDS_CONFIG_PATH=/mnt/nanobot/frontends/frontends.json` 注入。
-  - 每个 frontend 通过 `common_root` 对应自己的公共目录。
+  - 当前实现固定读取 `BUCKET_MOUNT_ROOT/common/frontends.json`。
+  - 每个 frontend 的公共目录固定推导为 `common/<frontend-id>/`。
 
 ## K8s 挂载约定
 
-- `frontends/frontends.json`
-  - 对应 `workspace/frontends.json`
+- `common/frontends.json`
+  - frontend 注册总表
 - `route-db/container_up.db`
   - `container_up` 的 `user_instances` / `buckets` 持久化运行态数据库
 - `common/<frontend-id>/config.json`
@@ -60,8 +60,8 @@
 
 ## 本地开发建议
 
-1. 修改 `workspace/config.json` 与 `workspace/frontends.json`。
-2. 将 `workspace/frontends.json` 同步到 K8s 的 `frontends/frontends.json`，并准备每个 frontend 的 `common_root` 目录。
+1. 修改 `common/frontends.json` 与对应 frontend 的 `common/<frontend-id>/config.json`。
+2. 准备每个 frontend 的 `common/<frontend-id>/skills/` 和 `common/<frontend-id>/templates/` 目录。
 3. 使用 `k8s/dev-kind/` 做本地验证。
 
 ## 说明

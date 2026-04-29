@@ -55,7 +55,9 @@ class BucketScheduler:
                     self._repo.touch_user_activity(user_id)
                     return self._runtime_from_records(existing, bucket)
 
-            workspace = self._workspace_manager.get_or_create_workspace(user_id)
+            if not frontend_id:
+                raise RuntimeError("frontend_id is required to allocate a workspace")
+            workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
             user, bucket, created = self._repo.reserve_user_instance(
                 user_id=user_id,
                 workspace_path=str(workspace),

@@ -16,16 +16,13 @@ from loguru import logger
 from bucket_runtime.config import (
     BUCKET_ID,
     CONTROL_REQUEST_TIMEOUT,
-    DEFAULT_CONFIG_PATH,
     INSTANCE_HOST,
     INSTANCE_STOP_GRACE_SECONDS,
     MAX_PROCESSES_PER_BUCKET,
     OUTBOUND_GATEWAY_URL,
     OUTBOUND_TIMEOUT,
     RELEASE_GATEWAY_URL,
-    SKILLS_ROOT,
     SOURCE_ROOT,
-    TEMPLATES_ROOT,
 )
 from bucket_runtime.port_allocator import PortAllocator
 from bucket_runtime.process_utils import subprocess_group_kwargs, terminate_process_group
@@ -57,7 +54,7 @@ class ProcessManager:
         port_allocator: PortAllocator | None = None,
         idle_ttl: int,
     ) -> None:
-        self._workspace_manager = workspace_manager or WorkspaceManager(TEMPLATES_ROOT)
+        self._workspace_manager = workspace_manager or WorkspaceManager()
         self._port_allocator = port_allocator or PortAllocator(20000, 29999)
         self._idle_ttl = idle_ttl
         self._processes: dict[str, UserProcess] = {}
@@ -87,22 +84,9 @@ class ProcessManager:
                 raise RuntimeError("bucket has reached max process capacity")
 
             frontend_config = frontend_config_for(frontend_id)
-            template_root = (
-                frontend_config.template_dir
-                if frontend_config is not None and frontend_config.template_dir is not None
-                else TEMPLATES_ROOT
-            )
-            config_path = (
-                frontend_config.config_path
-                if frontend_config is not None and frontend_config.config_path is not None
-                else DEFAULT_CONFIG_PATH
-            )
-            if config_path is None:
-                raise RuntimeError(f"frontend {frontend_id} does not define a config_path")
-
             workspace = self._workspace_manager.ensure_workspace(
                 Path(workspace_path),
-                template_root=template_root,
+                template_root=frontend_config.template_dir,
             )
             port = self._port_allocator.allocate(instance_id)
             process = await asyncio.create_subprocess_exec(
@@ -110,7 +94,7 @@ class ProcessManager:
                 "-m",
                 "bucket_runtime.local_service",
                 "--config",
-                str(config_path),
+                str(frontend_config.config_path),
                 "--workspace",
                 str(workspace),
                 "--host",
@@ -247,16 +231,8 @@ class ProcessManager:
             if env.get("PYTHONPATH")
             else extra_pythonpath
         )
-        env["TEMPLATE_DIR"] = str(
-            frontend_config.template_dir
-            if frontend_config is not None and frontend_config.template_dir is not None
-            else TEMPLATES_ROOT
-        )
-        env["BUILTIN_SKILLS_DIR"] = str(
-            frontend_config.builtin_skills_dir
-            if frontend_config is not None and frontend_config.builtin_skills_dir is not None
-            else SKILLS_ROOT
-        )
+        env["TEMPLATE_DIR"] = str(frontend_config.template_dir)
+        env["BUILTIN_SKILLS_DIR"] = str(frontend_config.builtin_skills_dir)
         return env
 
     async def _wait_instance_ready(self, port: int) -> None:
@@ -268,8 +244,15 @@ class ProcessManager:
                     proxy=None,
                     ping_interval=None,
                     ping_timeout=None,
-                ):
-                    return
+                ) as websocket:
+                    await websocket.send(json.dumps({"type": "ready_check"}))
+                    raw = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                    packet = json.loads(raw)
+                    if (
+                        str(packet.get("type") or "") == "ready_status"
+                        and bool(packet.get("gateway_ready"))
+                    ):
+                        return
             except Exception:
                 await asyncio.sleep(0.2)
         raise RuntimeError(f"user instance on port {port} did not become ready")
@@ -292,7 +275,13 @@ class ProcessManager:
                 packet = json.loads(raw)
                 if str(packet.get("type") or "") != "outbound_message":
                     continue
-                await self._forward_outbound(instance, packet)
+                try:
+                    await self._forward_outbound(instance, packet)
+                except Exception:
+                    logger.exception(
+                        "failed to forward outbound packet instance_id={}",
+                        instance.instance_id,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:

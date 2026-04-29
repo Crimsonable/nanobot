@@ -31,16 +31,19 @@ spec:
         - name: container-up
           image: nanobot-container-up:v1.0.0
           imagePullPolicy: Never
-          command: ["python", "-m", "container_up.app"]
           ports:
             - containerPort: 8080
           env:
+            - name: BUCKET_MOUNT_ROOT
+              value: /mnt/env
+            - name: BUCKET_MOUNT_PVC
+              value: nanobot-data-pvc
+            - name: SOURCE_ROOT
+              value: /mnt/source
+            - name: SOURCE_PVC
+              value: nanobot-source-pvc
             - name: CONTAINER_UP_PORT
               value: "8080"
-            - name: CONTAINER_UP_DB_PATH
-              value: /mnt/nanobot/route-db/container_up.db
-            - name: FRONTENDS_CONFIG_PATH
-              value: /mnt/nanobot/frontends/frontends.json
             - name: BUCKET_NAMESPACE
               value: nanobot
             - name: BUCKET_NAME_PREFIX
@@ -59,50 +62,12 @@ spec:
               value: "600"
             - name: BUCKET_IDLE_SWEEP_INTERVAL_SECONDS
               value: "60"
-            - name: BUCKET_SOURCE_ROOT
-              value: /mnt/nanobot/source
-            - name: BUCKET_SKILLS_ROOT
-              value: /mnt/nanobot/common/default/skills
-            - name: BUCKET_TEMPLATES_ROOT
-              value: /mnt/nanobot/common/default/templates
-            - name: BUCKET_FRONTENDS_CONFIG_PATH
-              value: /mnt/nanobot/frontends/frontends.json
-            - name: BUCKET_COMMON_MOUNT_PATH
-              value: /mnt/nanobot/common
-            - name: BUCKET_FRONTENDS_MOUNT_PATH
-              value: /mnt/nanobot/frontends
-            - name: BUCKET_WORKSPACES_MOUNT_PATH
-              value: /mnt/nanobot/workspaces
-            - name: BUCKET_WORKSPACE_ROOT
-              value: /mnt/nanobot/workspaces
-            - name: BUCKET_SOURCE_PVC
-              value: nanobot-source-pvc
-            - name: BUCKET_COMMON_PVC
-              value: nanobot-common-pvc
-            - name: BUCKET_FRONTENDS_PVC
-              value: nanobot-frontends-pvc
-            - name: BUCKET_WORKSPACES_PVC
-              value: nanobot-workspaces-pvc
-            - name: HOST_WORKSPACE_ROOT
-              value: /mnt/nanobot/workspaces
-            - name: CHILD_WORKSPACE_TARGET
-              value: /mnt/nanobot/workspaces
           volumeMounts:
-            - name: route-db
-              mountPath: /mnt/nanobot/route-db
-            - name: source
-              mountPath: /mnt/nanobot/source
+            - name: bucket-mount-root
+              mountPath: /mnt/env
+            - name: source-root
+              mountPath: /mnt/source
               readOnly: true
-            - name: common
-              mountPath: /mnt/nanobot/common
-              readOnly: true
-            - name: frontends
-              mountPath: /mnt/nanobot/frontends
-              readOnly: true
-            - name: workspaces
-              mountPath: /mnt/nanobot/workspaces
-              # 网关需要先在这里创建用户 workspace，再把路径交给 bucket runtime。
-              readOnly: false
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -116,18 +81,9 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
       volumes:
-        - name: route-db
+        - name: bucket-mount-root
           persistentVolumeClaim:
-            claimName: nanobot-route-db-pvc
-        - name: source
+            claimName: nanobot-data-pvc
+        - name: source-root
           persistentVolumeClaim:
             claimName: nanobot-source-pvc
-        - name: common
-          persistentVolumeClaim:
-            claimName: nanobot-common-pvc
-        - name: frontends
-          persistentVolumeClaim:
-            claimName: nanobot-frontends-pvc
-        - name: workspaces
-          persistentVolumeClaim:
-            claimName: nanobot-workspaces-pvc

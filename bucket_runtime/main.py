@@ -17,14 +17,14 @@ from bucket_runtime.config import (
     MAX_PROCESSES_PER_BUCKET,
     NANOBOT_PORT_END,
     NANOBOT_PORT_START,
-    TEMPLATES_ROOT,
 )
 from bucket_runtime.port_allocator import PortAllocator
 from bucket_runtime.process_manager import ProcessManager
+from bucket_runtime.uvicorn_logging import build_uvicorn_log_config
 from bucket_runtime.workspace_manager import WorkspaceManager
 
 manager = ProcessManager(
-    workspace_manager=WorkspaceManager(TEMPLATES_ROOT),
+    workspace_manager=WorkspaceManager(),
     port_allocator=PortAllocator(NANOBOT_PORT_START, NANOBOT_PORT_END),
     idle_ttl=INSTANCE_IDLE_TTL_SECONDS,
 )
@@ -191,7 +191,12 @@ def bucket_status() -> dict[str, Any]:
 
 
 def main() -> None:
-    uvicorn.run("bucket_runtime.main:app", host=APP_HOST, port=APP_PORT)
+    uvicorn.run(
+        "bucket_runtime.main:app",
+        host=APP_HOST,
+        port=APP_PORT,
+        log_config=build_uvicorn_log_config(),
+    )
 
 
 if __name__ == "__main__":

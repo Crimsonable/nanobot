@@ -10,13 +10,11 @@ from typing import Any
 import httpx
 
 from container_up.settings import (
-    BUCKET_COMMON_MOUNT_PATH,
-    BUCKET_COMMON_PVC,
     BUCKET_CONTAINER_PORT,
+    BUCKET_MOUNT_PVC,
+    BUCKET_MOUNT_ROOT,
+    BUCKET_NAMESPACE,
     BUCKET_CREATE_COMMAND_TEMPLATE,
-    BUCKET_FRONTENDS_CONFIG_PATH,
-    BUCKET_FRONTENDS_MOUNT_PATH,
-    BUCKET_FRONTENDS_PVC,
     BUCKET_IMAGE_PULL_POLICY,
     BUCKET_INSTANCE_EVICT_INTERVAL_SECONDS,
     BUCKET_INSTANCE_IDLE_TTL_SECONDS,
@@ -27,15 +25,11 @@ from container_up.settings import (
     BUCKET_NANOBOT_PORT_START,
     BUCKET_RUNTIME_IMAGE,
     BUCKET_SERVICE_PORT,
-    BUCKET_SKILLS_ROOT,
-    BUCKET_SOURCE_PVC,
-    BUCKET_SOURCE_ROOT,
-    BUCKET_TEMPLATES_ROOT,
     BUCKET_READY_TIMEOUT,
     BUCKET_REQUEST_TIMEOUT,
     BUCKET_SKIP_HEALTHCHECK,
-    BUCKET_WORKSPACES_MOUNT_PATH,
-    BUCKET_WORKSPACES_PVC,
+    SOURCE_ROOT,
+    SOURCE_PVC,
 )
 
 
@@ -146,16 +140,13 @@ class BucketManager:
         env = [
             {"name": "BUCKET_RUNTIME_PORT", "value": str(BUCKET_CONTAINER_PORT)},
             {"name": "BUCKET_ID", "value": bucket_id},
-            {"name": "FRONTENDS_CONFIG_PATH", "value": BUCKET_FRONTENDS_CONFIG_PATH},
-            {"name": "SOURCE_ROOT", "value": BUCKET_SOURCE_ROOT},
-            {"name": "SKILLS_ROOT", "value": BUCKET_SKILLS_ROOT},
-            {"name": "TEMPLATES_ROOT", "value": BUCKET_TEMPLATES_ROOT},
-            {"name": "WORKSPACE_ROOT", "value": BUCKET_WORKSPACES_MOUNT_PATH},
-            {"name": "CHILD_WORKSPACE_TARGET", "value": BUCKET_WORKSPACES_MOUNT_PATH},
-            {"name": "HOST_WORKSPACE_ROOT", "value": BUCKET_WORKSPACES_MOUNT_PATH},
+            {"name": "BUCKET_MOUNT_ROOT", "value": str(BUCKET_MOUNT_ROOT)},
+            {"name": "BUCKET_MOUNT_PVC", "value": BUCKET_MOUNT_PVC},
+            {"name": "SOURCE_ROOT", "value": str(SOURCE_ROOT)},
+            {"name": "SOURCE_PVC", "value": SOURCE_PVC},
             {
                 "name": "OUTBOUND_GATEWAY_URL",
-                "value": "http://container-up.nanobot.svc.cluster.local:8080/outbound",
+                "value": f"http://container-up.{BUCKET_NAMESPACE}:{BUCKET_SERVICE_PORT}/outbound",
             },
             {"name": "INSTANCE_IDLE_TTL_SECONDS", "value": str(BUCKET_INSTANCE_IDLE_TTL_SECONDS)},
             {
@@ -202,28 +193,17 @@ class BucketManager:
                                 "name": "bucket-runtime",
                                 "image": BUCKET_RUNTIME_IMAGE,
                                 "imagePullPolicy": BUCKET_IMAGE_PULL_POLICY,
-                                "command": ["python", "-m", "bucket_runtime.main"],
                                 "ports": [{"containerPort": BUCKET_CONTAINER_PORT}],
                                 "env": env,
                                 "volumeMounts": [
                                     {
-                                        "name": "source",
-                                        "mountPath": BUCKET_SOURCE_ROOT,
-                                        "readOnly": True,
+                                        "name": "bucket-mount-root",
+                                        "mountPath": str(BUCKET_MOUNT_ROOT),
                                     },
                                     {
-                                        "name": "common",
-                                        "mountPath": BUCKET_COMMON_MOUNT_PATH,
+                                        "name": "source-root",
+                                        "mountPath": str(SOURCE_ROOT),
                                         "readOnly": True,
-                                    },
-                                    {
-                                        "name": "frontends",
-                                        "mountPath": BUCKET_FRONTENDS_MOUNT_PATH,
-                                        "readOnly": True,
-                                    },
-                                    {
-                                        "name": "workspaces",
-                                        "mountPath": BUCKET_WORKSPACES_MOUNT_PATH,
                                     },
                                 ],
                                 "readinessProbe": {
@@ -246,20 +226,12 @@ class BucketManager:
                         ],
                         "volumes": [
                             {
-                                "name": "source",
-                                "persistentVolumeClaim": {"claimName": BUCKET_SOURCE_PVC},
+                                "name": "bucket-mount-root",
+                                "persistentVolumeClaim": {"claimName": BUCKET_MOUNT_PVC},
                             },
                             {
-                                "name": "common",
-                                "persistentVolumeClaim": {"claimName": BUCKET_COMMON_PVC},
-                            },
-                            {
-                                "name": "frontends",
-                                "persistentVolumeClaim": {"claimName": BUCKET_FRONTENDS_PVC},
-                            },
-                            {
-                                "name": "workspaces",
-                                "persistentVolumeClaim": {"claimName": BUCKET_WORKSPACES_PVC},
+                                "name": "source-root",
+                                "persistentVolumeClaim": {"claimName": SOURCE_PVC},
                             },
                         ],
                     },

@@ -6,6 +6,13 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 
+def _required_env(name: str) -> str:
+    raw = os.getenv(name, "").strip()
+    if raw:
+        return raw
+    raise RuntimeError(f"missing required environment variable: {name}")
+
+
 def _derive_release_url(outbound_url: str) -> str:
     parsed = urlparse(outbound_url)
     if not parsed.scheme or not parsed.netloc:
@@ -18,12 +25,13 @@ def _derive_release_url(outbound_url: str) -> str:
 APP_HOST = os.getenv("BUCKET_RUNTIME_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BUCKET_RUNTIME_PORT", "8080"))
 
-SOURCE_ROOT = Path(os.getenv("SOURCE_ROOT", "/mnt/nanobot/source"))
-_default_config_path = os.getenv("DEFAULT_CONFIG_PATH", "").strip()
-DEFAULT_CONFIG_PATH = Path(_default_config_path) if _default_config_path else None
-SKILLS_ROOT = Path(os.getenv("SKILLS_ROOT", "/mnt/nanobot/skills"))
-TEMPLATES_ROOT = Path(os.getenv("TEMPLATES_ROOT", "/mnt/nanobot/templates"))
-WORKSPACE_ROOT = Path(os.getenv("WORKSPACE_ROOT", "/mnt/nanobot/workspaces"))
+BUCKET_MOUNT_ROOT = Path(_required_env("BUCKET_MOUNT_ROOT")).expanduser()
+SOURCE_ROOT = Path(_required_env("SOURCE_ROOT")).expanduser()
+CONTAINER_UP_SOURCE_ROOT = SOURCE_ROOT / "container_up"
+BUCKET_RUNTIME_SOURCE_ROOT = SOURCE_ROOT / "bucket_runtime"
+NANOBOT_SOURCE_ROOT = SOURCE_ROOT / "nanobot"
+COMMON_ROOT = BUCKET_MOUNT_ROOT / "common"
+WORKSPACE_ROOT = BUCKET_MOUNT_ROOT / "workspaces"
 
 INSTANCE_HOST = os.getenv("INSTANCE_HOST", "127.0.0.1")
 OUTBOUND_GATEWAY_URL = os.getenv(

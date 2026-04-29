@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import secrets
+import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ class LocalNanobotService:
         self._stopping = False
 
         self._bridge_token = secrets.token_hex(16)
+        self._gateway_health_port: int | None = None
 
     async def start(self) -> None:
         self._server = await websockets.serve(
@@ -86,6 +88,7 @@ class LocalNanobotService:
         env["BRIDGE_URL_OVERRIDE"] = f"ws://{self.host}:{self.port}"
         env["BRIDGE_TOKEN_OVERRIDE"] = self._bridge_token
         env["BRIDGE_ALLOW_FROM_OVERRIDE"] = "*"
+        self._gateway_health_port = self._allocate_gateway_port()
 
         self._gateway_process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -97,10 +100,15 @@ class LocalNanobotService:
             "--workspace",
             str(self.workspace_path),
             "--port",
-            str(self.port),
+            str(self._gateway_health_port),
             env=env,
         )
         self._gateway_watch_task = asyncio.create_task(self._watch_gateway_process())
+
+    def _allocate_gateway_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((self.host, 0))
+            return int(sock.getsockname()[1])
 
     async def _watch_gateway_process(self) -> None:
         assert self._gateway_process is not None
@@ -168,9 +176,29 @@ class LocalNanobotService:
         self._router_ws = websocket
         try:
             if first_packet is not None:
+                if str(first_packet.get("type") or "") == "ready_check":
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "ready_status",
+                                "gateway_ready": self._gateway_ready.is_set(),
+                            }
+                        )
+                    )
+                    return
                 await self._forward_to_gateway(first_packet)
             async for raw in websocket:
                 packet = json.loads(raw)
+                if str(packet.get("type") or "") == "ready_check":
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "ready_status",
+                                "gateway_ready": self._gateway_ready.is_set(),
+                            }
+                        )
+                    )
+                    continue
                 await self._forward_to_gateway(packet)
         finally:
             if self._router_ws is websocket:

@@ -39,7 +39,6 @@ spec:
         - name: bucket-runtime
           image: nanobot-bucket-runtime:v1.0.0
           imagePullPolicy: Never
-          command: ["python", "-m", "bucket_runtime.main"]
           ports:
             - containerPort: 8080
           env:
@@ -47,22 +46,16 @@ spec:
               value: "8080"
             - name: BUCKET_ID
               value: bucket-0
-            - name: FRONTENDS_CONFIG_PATH
-              value: /mnt/nanobot/frontends/frontends.json
+            - name: BUCKET_MOUNT_ROOT
+              value: /mnt/env
+            - name: BUCKET_MOUNT_PVC
+              value: nanobot-data-pvc
             - name: SOURCE_ROOT
-              value: /mnt/nanobot/source
-            - name: SKILLS_ROOT
-              value: /mnt/nanobot/common/default/skills
-            - name: TEMPLATES_ROOT
-              value: /mnt/nanobot/common/default/templates
-            - name: WORKSPACE_ROOT
-              value: /mnt/nanobot/workspaces
-            - name: CHILD_WORKSPACE_TARGET
-              value: /mnt/nanobot/workspaces
-            - name: HOST_WORKSPACE_ROOT
-              value: /mnt/nanobot/workspaces
+              value: /mnt/source
+            - name: SOURCE_PVC
+              value: nanobot-source-pvc
             - name: OUTBOUND_GATEWAY_URL
-              value: http://container-up.nanobot.svc.cluster.local:8080/outbound
+              value: http://container-up.nanobot:8080/outbound
             - name: INSTANCE_IDLE_TTL_SECONDS
               value: "1800"
             - name: INSTANCE_STOP_GRACE_SECONDS
@@ -76,17 +69,11 @@ spec:
             - name: NANOBOT_PORT_END
               value: "29999"
           volumeMounts:
-            - name: source
-              mountPath: /mnt/nanobot/source
+            - name: bucket-mount-root
+              mountPath: /mnt/env
+            - name: source-root
+              mountPath: /mnt/source
               readOnly: true
-            - name: common
-              mountPath: /mnt/nanobot/common
-              readOnly: true
-            - name: frontends
-              mountPath: /mnt/nanobot/frontends
-              readOnly: true
-            - name: workspaces
-              mountPath: /mnt/nanobot/workspaces
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -100,15 +87,9 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
       volumes:
-        - name: source
+        - name: bucket-mount-root
+          persistentVolumeClaim:
+            claimName: nanobot-data-pvc
+        - name: source-root
           persistentVolumeClaim:
             claimName: nanobot-source-pvc
-        - name: common
-          persistentVolumeClaim:
-            claimName: nanobot-common-pvc
-        - name: frontends
-          persistentVolumeClaim:
-            claimName: nanobot-frontends-pvc
-        - name: workspaces
-          persistentVolumeClaim:
-            claimName: nanobot-workspaces-pvc

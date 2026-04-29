@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from pathlib import Path
 from typing import Any
 
@@ -9,17 +8,12 @@ from container_up.frontend_config import safe_frontend_id
 from container_up.settings import CHILD_WORKSPACE_TARGET, HOST_WORKSPACE_ROOT
 
 ATTACHMENTS_CACHE_DIR = Path("cache") / "attachments"
-WORKSPACE_LAYOUT = (
-    os.getenv("NANOBOT_WORKSPACE_LAYOUT", "legacy-org-user").strip().lower()
-    or "legacy-org-user"
-)
 
-
-def safe_workspace_component(value: str) -> str:
+def _safe_user_id(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value).strip(
         "-."
     )
-    return cleaned[:96] or "item"
+    return cleaned[:96] or "user"
 
 
 def safe_instance_name(value: str) -> str:
@@ -30,17 +24,22 @@ def safe_instance_name(value: str) -> str:
     return f"{cleaned[:48] or 'user'}-{digest}"
 
 
+def _require_frontend_id(frontend_id: str | None) -> str:
+    frontend = str(frontend_id or "").strip()
+    if frontend:
+        return frontend
+    raise RuntimeError("frontend_id is required for workspace path resolution")
+
+
 def host_instance_workspace_path(
     user_id: str,
     frontend_id: str | None = None,
 ) -> Path:
-    if WORKSPACE_LAYOUT == "frontend-user" and frontend_id:
-        return (
-            HOST_WORKSPACE_ROOT
-            / safe_frontend_id(frontend_id)
-            / safe_workspace_component(user_id)
-        ).resolve(strict=False)
-    return (HOST_WORKSPACE_ROOT / safe_instance_name(user_id)).resolve(strict=False)
+    return (
+        HOST_WORKSPACE_ROOT
+        / safe_frontend_id(_require_frontend_id(frontend_id))
+        / _safe_user_id(user_id)
+    ).resolve(strict=False)
 
 
 def child_instance_workspace_path(
@@ -48,11 +47,11 @@ def child_instance_workspace_path(
     frontend_id: str | None = None,
 ) -> Path:
     child_root = Path(CHILD_WORKSPACE_TARGET)
-    if WORKSPACE_LAYOUT == "frontend-user" and frontend_id:
-        return (
-            child_root / safe_frontend_id(frontend_id) / safe_workspace_component(user_id)
-        ).resolve(strict=False)
-    return (child_root / safe_instance_name(user_id)).resolve(strict=False)
+    return (
+        child_root
+        / safe_frontend_id(_require_frontend_id(frontend_id))
+        / _safe_user_id(user_id)
+    ).resolve(strict=False)
 
 
 def host_attachment_cache_dir(
@@ -118,11 +117,7 @@ def child_attachment_to_host_path(
     except ValueError:
         return text
 
-    if WORKSPACE_LAYOUT == "frontend-user" and frontend_id:
-        host_path = (HOST_WORKSPACE_ROOT / relative).resolve(strict=False)
-    else:
-        host_path = (HOST_WORKSPACE_ROOT / relative).resolve(strict=False)
-    return str(host_path)
+    return str((HOST_WORKSPACE_ROOT / relative).resolve(strict=False))
 
 
 def normalize_outbound_attachments(

@@ -34,14 +34,13 @@
 
 ## Frontend Public Layout
 
-`frontends.json` 只有一份，是全局总表，单独放在 frontend 公共目录之外。
+`frontends.json` 只有一份，是全局总表，固定放在 `common/frontends.json`。
 
 每个 frontend 只保留自己的公共目录：
 
 ```text
-frontends/
-  frontends.json
 common/
+  frontends.json
   feishu-main/
     config.json
     skills/
@@ -56,19 +55,16 @@ common/
     templates/
 ```
 
-`workspace/frontends.json` 里的每个 frontend 至少应定义：
+`common/frontends.json` 里的每个 frontend 至少应定义：
 
 - `id`
 - `provider`
-- `common_root`
 
-系统会从 `common_root` 自动推导：
+系统会固定推导：
 
-- `config_path = common_root/config.json`
-- `builtin_skills_dir = common_root/skills`
-- `template_dir = common_root/templates`
-
-如果需要，也可以对这些路径单独覆盖。
+- `config_path = common/<frontend-id>/config.json`
+- `builtin_skills_dir = common/<frontend-id>/skills`
+- `template_dir = common/<frontend-id>/templates`
 
 ## Key Directories
 

@@ -434,11 +434,14 @@ async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_wor
     assert len(attachments) == 1
     local_path = Path(attachments[0])
     assert local_path.is_absolute()
-    assert str(local_path).startswith("/app/nanobot_workspaces/")
+    assert str(local_path).startswith("/app/nanobot_workspaces/default/user-1/")
     assert session.calls[0]["method"] == "GET"
     assert session.calls[0]["url"] == "https://files.example.com/report.pdf"
 
-    host_workspace = attachment_paths.host_instance_workspace_path("user-1")
+    host_workspace = attachment_paths.host_instance_workspace_path(
+        "user-1",
+        frontend_id="default",
+    )
     host_file = (
         tmp_path
         / host_workspace.relative_to(tmp_path)

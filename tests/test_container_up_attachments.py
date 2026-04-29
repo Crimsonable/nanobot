@@ -19,15 +19,19 @@ def test_persist_attachment_bytes_returns_absolute_local_path(
         filename="demo file.txt",
         provider="feishu",
         attachment_group="conv-1",
+        frontend_id="feishu-main",
     )
 
     path = Path(saved)
     assert path.is_absolute()
-    assert str(path).startswith("/app/nanobot_workspaces/")
+    assert str(path).startswith("/app/nanobot_workspaces/feishu-main/user-1/")
     assert "feishu" in saved
     assert "cache/attachments" in saved
 
-    host_workspace = attachment_paths.host_instance_workspace_path("user-1")
+    host_workspace = attachment_paths.host_instance_workspace_path(
+        "user-1",
+        frontend_id="feishu-main",
+    )
     host_file = (
         tmp_path
         / host_workspace.relative_to(tmp_path)

@@ -4,5 +4,7 @@ name: nanobot
 nodes:
   - role: control-plane
     extraMounts:
-      - hostPath: /mnt/a/codes/nanobot
-        containerPath: /data/nanobot-kind
+      - hostPath: /mnt/d/codes/nanobot_modify/nanobot/host_test_env
+        containerPath: /mnt/env
+      - hostPath: /mnt/d/codes/nanobot_modify/nanobot
+        containerPath: /mnt/source

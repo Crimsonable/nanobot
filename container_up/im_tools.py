@@ -6,6 +6,7 @@ from typing import Any
 from container_up.frontend_config import FrontendConfig, load_frontend_configs
 from container_up.qxt_im_tool import QxtIMParser, build_im_receive_event
 from container_up.settings import IM_PROVIDER
+from container_up.web_im_tool import WebIMParser
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,12 @@ def _parser_for_config(
         from container_up.feishu_im_tool import FeishuIMParser
 
         return FeishuIMParser(
+            frontend_id=config.id,
+            frontend_config=config.raw,
+            **kwargs,
+        )
+    if provider == "web":
+        return WebIMParser(
             frontend_id=config.id,
             frontend_config=config.raw,
             **kwargs,

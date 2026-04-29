@@ -201,8 +201,8 @@ def test_bridge_channel_builds_register_handshake(monkeypatch: pytest.MonkeyPatc
         "token": "secret",
     }
 
-    monkeypatch.delenv("BRIDGE_ORG_ID")
-    monkeypatch.delenv("BRIDGE_CONTAINER_NAME")
+    monkeypatch.delenv("BRIDGE_ORG_ID", raising=False)
+    monkeypatch.delenv("BRIDGE_CONTAINER_NAME", raising=False)
 
 
 def test_bridge_channel_applies_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -218,3 +218,14 @@ def test_bridge_channel_applies_env_overrides(monkeypatch: pytest.MonkeyPatch) -
     assert channel.config.bridge_url == "ws://127.0.0.1:37237"
     assert channel.config.bridge_token == "local-secret"
     assert channel.config.allow_from == ["*"]
+
+
+def test_bridge_proactive_send_falls_back_to_outbound_gateway_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PARENT_BRIDGE_URL", raising=False)
+    monkeypatch.setenv("OUTBOUND_GATEWAY_URL", "http://container-up:8080/outbound")
+
+    assert BridgeChannel._resolve_outbound_url(
+        BridgeConfig(bridge_url="ws://bridge", bridge_token="secret", allow_from=["*"])
+    ) == "http://container-up:8080/api/bridge/outbound"

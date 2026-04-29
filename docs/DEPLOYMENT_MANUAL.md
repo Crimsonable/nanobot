@@ -166,26 +166,42 @@ cd nanobot
 
 ## 4. K8s 目录和挂载约定
 
-当前仓库的 K8s 方案依赖以下共享目录：
+当前仓库的 K8s 方案只依赖一个共享挂载根：
 
-- `route-db/`
-  - `container_up` 的运行态数据库
+- `BUCKET_MOUNT_ROOT=/mnt/nanobot`
+- `SOURCE_ROOT=/workspace/nanobot`
+
+数据根和源码根的职责分开：
+
+- `BUCKET_MOUNT_ROOT`
+  - 挂共享数据目录
+- `SOURCE_ROOT`
+  - 挂共享源码目录
+
+在当前实现里，`SOURCE_ROOT` 下固定推导三段源码路径：
+
+- `SOURCE_ROOT/container_up`
+- `SOURCE_ROOT/bucket_runtime`
+- `SOURCE_ROOT/nanobot`
+
+`BUCKET_MOUNT_ROOT` 下固定按以下结构读取：
+
+- `routedb/`
+  - `container_up` 的运行态数据库目录
 - `source/`
-  - 代码目录，只读挂载
-- `common/`
-  - 每个 frontend 的公共配置、skills、templates，只读挂载
-- `frontends/`
-  - 全局 `frontends.json`，只读挂载
-- `workspaces/`
-  - 用户工作目录，读写挂载
+  - bucket Pod 的工作源码目录
+- `common/frontends.json`
+  - frontend 注册表
+- `common/<frontend_id>/config.json`
+  - 对应 frontend 的 Nanobot 配置
+- `common/<frontend_id>/skills/`
+  - 对应 frontend 的公共 skills
+- `common/<frontend_id>/templates/`
+  - 对应 frontend 的模板目录
+- `workspaces/<frontend_id>/<user_id>/`
+  - 用户工作目录
 
-对应 K8s YAML 中的约定路径：
-
-- `/mnt/nanobot/route-db`
-- `/mnt/nanobot/source`
-- `/mnt/nanobot/common`
-- `/mnt/nanobot/frontends`
-- `/mnt/nanobot/workspaces`
+当前实现里这些路径都是固定推导的，不再单独配置 `skills`、`templates`、`frontends`、`workspaces` 的挂载路径，也不再分别配置三段源码路径。
 
 ## 5. 配置准备
 
@@ -193,20 +209,21 @@ cd nanobot
 
 当前网关和 bucket runtime 都会读取：
 
-- [host_test_env/frontends/frontends.json](../host_test_env/frontends/frontends.json)
+- [host_test_env/common/frontends.json](../host_test_env/common/frontends.json)
 
-在 K8s 中要把它放到：
+在 K8s 共享目录中要把它放到：
 
 ```text
-frontends/frontends.json
+common/frontends.json
 ```
 
 ### 5.2 每个 frontend 的公共目录
 
-每个 frontend 需要一个 `common_root`，目录结构如下：
+每个 frontend 的公共目录是固定路径，不再在 `frontends.json` 里配置 `common_root`。目录结构如下：
 
 ```text
 common/
+  frontends.json
   feishu-main/
     config.json
     skills/
@@ -225,9 +242,9 @@ common/
 
 部署前至少确认：
 
-1. `frontends.json` 里的 `id`、`provider`、`common_root` 正确
+1. `common/frontends.json` 里的 `id`、`provider` 正确
 2. 每个 `common/<frontend-id>/config.json` 中模型配置和 API Key 正确
-3. `workspace/frontends.json` 中不要保留示例密钥
+3. `common/frontends.json` 中不要保留示例密钥
 4. `common/<frontend-id>/templates/` 已准备好模板
 
 ## 6. 方式一：Kind 本地 K8s 验证
@@ -236,42 +253,38 @@ common/
 
 ### 6.1 准备 Kind 挂载目录
 
-```bash
-mkdir -p /tmp/nanobot-kind/route-db
-mkdir -p /tmp/nanobot-kind/source
-mkdir -p /tmp/nanobot-kind/common
-mkdir -p /tmp/nanobot-kind/frontends
-mkdir -p /tmp/nanobot-kind/workspaces
+当前仓库的 dev-kind 配置直接使用：
+
+- 当前工作区作为 `SOURCE_ROOT`
+- `host_test_env/` 作为 `BUCKET_MOUNT_ROOT` 的底层数据目录
+
+也就是说，Kind 节点里会看到：
+
+- `/workspace/nanobot`
+  - 对应当前仓库根目录
+- `/data/nanobot-kind/host_test_env`
+  - 对应当前仓库下的 `host_test_env/`
+
+因此本地验证前只需要确保 `host_test_env/` 下至少有这些内容：
+
+```text
+host_test_env/
+  common/
+    frontends.json
+    <frontend_id>/
+      config.json
+      skills/
+      templates/
+  routedb/
+  workspaces/
 ```
 
-同步源码和 frontend 配置：
+如果你要替换某个 frontend 的真实配置，直接覆盖：
 
 ```bash
-rsync -av --delete ./ /tmp/nanobot-kind/source/
-cp ./host_test_env/frontends/frontends.json /tmp/nanobot-kind/frontends/frontends.json
-```
-
-准备 frontend 公共目录。下面以 `feishu-main` 为例：
-
-```bash
-mkdir -p /tmp/nanobot-kind/common/feishu-main/skills
-mkdir -p /tmp/nanobot-kind/common/feishu-main/templates
-cp /path/to/your/feishu-main-config.json /tmp/nanobot-kind/common/feishu-main/config.json
-rsync -av ./nanobot/templates/ /tmp/nanobot-kind/common/feishu-main/templates/
-```
-
-如果还有其他 frontend，逐个准备：
-
-```bash
-mkdir -p /tmp/nanobot-kind/common/feishu-sub/skills
-mkdir -p /tmp/nanobot-kind/common/feishu-sub/templates
-cp /path/to/your/feishu-sub-config.json /tmp/nanobot-kind/common/feishu-sub/config.json
-rsync -av ./nanobot/templates/ /tmp/nanobot-kind/common/feishu-sub/templates/
-
-mkdir -p /tmp/nanobot-kind/common/qxt-main/skills
-mkdir -p /tmp/nanobot-kind/common/qxt-main/templates
-cp /path/to/your/qxt-main-config.json /tmp/nanobot-kind/common/qxt-main/config.json
-rsync -av ./nanobot/templates/ /tmp/nanobot-kind/common/qxt-main/templates/
+cp /path/to/your/feishu-main-config.json ./host_test_env/common/feishu-main/config.json
+cp /path/to/your/feishu-sub-config.json ./host_test_env/common/feishu-sub/config.json
+cp /path/to/your/qxt-main-config.json ./host_test_env/common/qxt-main/config.json
 ```
 
 ### 6.2 构建镜像
@@ -338,7 +351,7 @@ curl http://127.0.0.1:8080/healthz
 
 注意：
 
-- `container_up` 在创建 bucket 之前，会先在 `workspaces/` 下创建用户 workspace
+- `container_up` 在创建 bucket 之前，会先在 `workspaces/<frontend_id>/<user_id>/` 下创建用户 workspace
 - 该目录在网关 Pod 内必须是可写的
 - 触发入口是 `POST /inbound/{frontend_id}`，不是 `POST /inbound`
 
@@ -370,10 +383,9 @@ kubectl logs -n nanobot deploy/nanobot-bucket-0 --tail=200
 ### 7.1 准备 NFS 服务端目录
 
 ```bash
-sudo mkdir -p /data/nanobot-nfs/route-db
+sudo mkdir -p /data/nanobot-nfs/routedb
 sudo mkdir -p /data/nanobot-nfs/source
 sudo mkdir -p /data/nanobot-nfs/common
-sudo mkdir -p /data/nanobot-nfs/frontends
 sudo mkdir -p /data/nanobot-nfs/workspaces
 sudo chown -R 1000:1000 /data/nanobot-nfs
 sudo chmod -R 775 /data/nanobot-nfs
@@ -383,11 +395,7 @@ sudo chmod -R 775 /data/nanobot-nfs
 
 ```bash
 cat <<'EOF' | sudo tee /etc/exports
-/data/nanobot-nfs/route-db   *(rw,sync,no_subtree_check,no_root_squash)
-/data/nanobot-nfs/source     *(ro,sync,no_subtree_check,no_root_squash)
-/data/nanobot-nfs/common     *(ro,sync,no_subtree_check,no_root_squash)
-/data/nanobot-nfs/frontends  *(ro,sync,no_subtree_check,no_root_squash)
-/data/nanobot-nfs/workspaces *(rw,sync,no_subtree_check,no_root_squash)
+/data/nanobot-nfs *(rw,sync,no_subtree_check,no_root_squash)
 EOF
 sudo exportfs -ra
 sudo systemctl restart nfs-kernel-server
@@ -398,7 +406,7 @@ sudo exportfs -v
 
 ```bash
 sudo rsync -av --delete ./ /data/nanobot-nfs/source/
-sudo cp ./host_test_env/frontends/frontends.json /data/nanobot-nfs/frontends/frontends.json
+sudo cp ./host_test_env/common/frontends.json /data/nanobot-nfs/common/frontends.json
 ```
 
 准备 frontend 公共目录：
@@ -444,17 +452,31 @@ docker push <your-registry>/nanobot-container-up:v1.0.0
 
 ### 7.4 修改 K8s YAML
 
-部署前需要编辑两个文件：
+部署前需要编辑三个文件：
 
 - [k8s/base/container-up.yaml](../k8s/base/container-up.yaml)
 - [k8s/base/nanobot-bucket-template.yaml](../k8s/base/nanobot-bucket-template.yaml)
+- [k8s/base/pv-pvc-nfs.yaml](../k8s/base/pv-pvc-nfs.yaml) 或你自己的存储清单
 
 至少改这几项：
 
 1. `image`
 2. `imagePullPolicy`
-3. NFS 版本下的 PV `server`
-4. NFS 版本下的 PV `path`
+3. 共享 PVC 名称必须与 `container-up.yaml` 中的 `BUCKET_MOUNT_PVC` 一致
+4. NFS 版本下的 PV `server`
+5. NFS 版本下的 PV `path`
+
+当前最新实现要求：
+
+- 只提供一个共享 PVC，例如 `nanobot-data-pvc`
+- 该 PVC 在 Pod 内统一挂载到 `/mnt/nanobot`
+- PVC 内部目录结构必须包含：
+  - `routedb/`
+  - `source/`
+  - `common/`
+  - `workspaces/`
+
+如果你直接使用仓库里的 `k8s/base/pv-pvc-nfs.yaml` 或 `k8s/dev-kind/storage-local.yaml`，需要先把它们从旧的多 PV/PVC 结构改成单 PV/PVC 结构后再应用。
 
 如果使用远程镜像仓库，推荐：
 
@@ -469,7 +491,7 @@ kubectl apply -f k8s/base/namespace.yaml
 kubectl apply -f k8s/base/rbac.yaml
 ```
 
-创建 NFS PV/PVC：
+创建共享 PV/PVC：
 
 ```bash
 kubectl apply -f k8s/base/pv-pvc-nfs.yaml
@@ -510,10 +532,9 @@ curl http://127.0.0.1:8080/healthz
 再发送一条入站请求触发 bucket 创建：
 
 ```bash
-curl -X POST http://127.0.0.1:8080/inbound \
+curl -X POST http://127.0.0.1:8080/inbound/feishu-main \
   -H 'Content-Type: application/json' \
   -d '{
-    "frontend_id": "feishu-main",
     "user_id": "demo-user",
     "chat_id": "default",
     "content": "hello",
@@ -581,9 +602,9 @@ kubectl delete -f k8s/base/namespace.yaml
 
 1. `container-up` Pod Ready
 2. `container-up` 容器内可执行 `kubectl`
-3. `frontends/frontends.json` 已成功挂载
+3. `common/frontends.json` 已成功挂载
 4. `common/<frontend-id>/config.json` 已成功挂载
-5. `workspaces` PVC 可写
+5. `workspaces/<frontend-id>/<user-id>` 可写
 6. 首次入站请求可以自动创建 `nanobot-bucket-*`
 7. `bucket_runtime` 能启动用户进程
 8. 出站消息能回调到 `container_up`
@@ -605,7 +626,7 @@ kubectl delete -f k8s/base/namespace.yaml
 ## 11. 注意事项
 
 1. 当前仓库中的示例配置含有占位或历史配置值，正式部署前必须替换成你自己的配置。
-2. 这套架构依赖共享存储，`source`、`common`、`frontends`、`workspaces` 缺一不可。
+2. 这套架构依赖共享存储，但当前实现只要求 Kubernetes 提供一个共享 PVC，并把它挂到 `BUCKET_MOUNT_ROOT`。
 3. `container_up` 不只是网关，它还负责动态创建 bucket，因此镜像里必须带 `kubectl`。
 4. 如果镜像从远程仓库拉取，必须同步调整 YAML 中的 `image` 和 `imagePullPolicy`。
 5. `workspaces` 是持久目录，删除 bucket Pod 不会删除用户工作数据。

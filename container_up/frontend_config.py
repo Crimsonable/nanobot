@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from container_up.settings import FRONTENDS_CONFIG_PATH
+from container_up.settings import BUCKET_COMMON_ROOT, FRONTENDS_CONFIG_PATH
 
 FRONTEND_ORG_SEPARATOR = "::"
 
@@ -16,10 +15,6 @@ FRONTEND_ORG_SEPARATOR = "::"
 class FrontendConfig:
     id: str
     raw: dict[str, Any]
-    common_root: Path | None = None
-    config_path: Path | None = None
-    builtin_skills_dir: Path | None = None
-    template_dir: Path | None = None
 
     @property
     def provider(self) -> str:
@@ -29,36 +24,21 @@ class FrontendConfig:
     def safe_id(self) -> str:
         return safe_frontend_id(self.id)
 
+    @property
+    def common_root(self) -> Path:
+        return BUCKET_COMMON_ROOT / self.safe_id
 
-def _optional_path(value: Any) -> Path | None:
-    text = str(value or "").strip()
-    return Path(text).expanduser() if text else None
+    @property
+    def config_path(self) -> Path:
+        return self.common_root / "config.json"
 
+    @property
+    def builtin_skills_dir(self) -> Path:
+        return self.common_root / "skills"
 
-def _frontends_config_path() -> Path:
-    override = str(os.getenv("FRONTENDS_CONFIG_PATH") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    legacy = str(os.getenv("CONTAINER_UP_CONFIG_PATH") or "").strip()
-    if legacy:
-        return Path(legacy).expanduser()
-    return FRONTENDS_CONFIG_PATH
-
-
-def _resolve_frontend_paths(item: dict[str, Any]) -> tuple[Path | None, Path | None, Path | None, Path | None]:
-    common_root = _optional_path(item.get("common_root", item.get("COMMON_ROOT")))
-    config_path = _optional_path(item.get("config_path", item.get("CONFIG_PATH")))
-    builtin_skills_dir = _optional_path(
-        item.get("builtin_skills_dir", item.get("BUILTIN_SKILLS_DIR"))
-    )
-    template_dir = _optional_path(item.get("template_dir", item.get("TEMPLATE_DIR")))
-
-    if common_root is not None:
-        config_path = config_path or (common_root / "config.json")
-        builtin_skills_dir = builtin_skills_dir or (common_root / "skills")
-        template_dir = template_dir or (common_root / "templates")
-
-    return common_root, config_path, builtin_skills_dir, template_dir
+    @property
+    def template_dir(self) -> Path:
+        return self.common_root / "templates"
 
 
 def safe_frontend_id(frontend_id: str) -> str:
@@ -86,7 +66,7 @@ def split_frontend_org_id(org_id: str) -> tuple[str | None, str]:
 
 
 def load_frontend_configs() -> dict[str, FrontendConfig]:
-    config_path = _frontends_config_path()
+    config_path = FRONTENDS_CONFIG_PATH
     if not config_path.exists():
         return {}
     with config_path.open("r", encoding="utf-8") as f:
@@ -106,16 +86,9 @@ def load_frontend_configs() -> dict[str, FrontendConfig]:
             raise RuntimeError(
                 f"duplicate frontend id in frontends config: {frontend_id}"
             )
-        common_root, config_path, builtin_skills_dir, template_dir = _resolve_frontend_paths(
-            item
-        )
         configs[frontend_id] = FrontendConfig(
             id=frontend_id,
             raw=dict(item),
-            common_root=common_root,
-            config_path=config_path,
-            builtin_skills_dir=builtin_skills_dir,
-            template_dir=template_dir,
         )
     return configs
 

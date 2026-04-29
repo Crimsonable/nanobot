@@ -6,6 +6,8 @@ import re
 import shutil
 from pathlib import Path
 
+import yaml
+
 # Default builtin skills directory. container_up can override this with a
 # readonly mounted path for frontend-specific public skills.
 BUILTIN_SKILLS_DIR = Path(

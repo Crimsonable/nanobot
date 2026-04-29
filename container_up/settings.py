@@ -4,6 +4,13 @@ import os
 from pathlib import Path
 
 
+def _required_env(name: str) -> str:
+    raw = os.getenv(name, "").strip()
+    if raw:
+        return raw
+    raise RuntimeError(f"missing required environment variable: {name}")
+
+
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
     if raw.isdigit():
@@ -30,7 +37,20 @@ def _bool_env(name: str, default: bool = False) -> bool:
 
 APP_HOST = os.getenv("CONTAINER_UP_HOST", "0.0.0.0")
 APP_PORT = _int_env("CONTAINER_UP_PORT", 8080)
-DB_PATH = Path(os.getenv("CONTAINER_UP_DB_PATH", "/var/lib/container_up/container_up.db"))
+BUCKET_MOUNT_ROOT = Path(_required_env("BUCKET_MOUNT_ROOT")).expanduser()
+BUCKET_MOUNT_PVC = _required_env("BUCKET_MOUNT_PVC")
+SOURCE_ROOT = Path(_required_env("SOURCE_ROOT")).expanduser()
+SOURCE_PVC = _required_env("SOURCE_PVC")
+CONTAINER_UP_SOURCE_ROOT = SOURCE_ROOT / "container_up"
+BUCKET_RUNTIME_SOURCE_ROOT = SOURCE_ROOT / "bucket_runtime"
+NANOBOT_SOURCE_ROOT = SOURCE_ROOT / "nanobot"
+BUCKET_COMMON_ROOT = BUCKET_MOUNT_ROOT / "common"
+BUCKET_ROUTE_DB_ROOT = BUCKET_MOUNT_ROOT / "routedb"
+BUCKET_WORKSPACE_ROOT = BUCKET_MOUNT_ROOT / "workspaces"
+DB_PATH = BUCKET_ROUTE_DB_ROOT / "container_up.db"
+FRONTENDS_CONFIG_PATH = BUCKET_COMMON_ROOT / "frontends.json"
+HOST_WORKSPACE_ROOT = BUCKET_WORKSPACE_ROOT
+CHILD_WORKSPACE_TARGET = str(BUCKET_WORKSPACE_ROOT)
 
 BUCKET_NAMESPACE = os.getenv("BUCKET_NAMESPACE", "nanobot").strip() or "nanobot"
 BUCKET_NAME_PREFIX = os.getenv("BUCKET_NAME_PREFIX", "nanobot-bucket").strip() or "nanobot-bucket"
@@ -41,9 +61,6 @@ BUCKET_READY_TIMEOUT = _float_env("BUCKET_READY_TIMEOUT", 60.0)
 BUCKET_MAX_INSTANCES_PER_BUCKET = _int_env("BUCKET_MAX_INSTANCES_PER_BUCKET", 20)
 BUCKET_IDLE_TTL_SECONDS = _int_env("BUCKET_IDLE_TTL_SECONDS", 600)
 BUCKET_IDLE_SWEEP_INTERVAL_SECONDS = _int_env("BUCKET_IDLE_SWEEP_INTERVAL_SECONDS", 60)
-BUCKET_WORKSPACE_ROOT = Path(
-    os.getenv("BUCKET_WORKSPACE_ROOT", "/app/nanobot_workspaces")
-).expanduser()
 BUCKET_BASE_URL_TEMPLATE = os.getenv("BUCKET_BASE_URL_TEMPLATE", "").strip()
 BUCKET_SKIP_HEALTHCHECK = _bool_env("BUCKET_SKIP_HEALTHCHECK", False)
 BUCKET_CREATE_COMMAND_TEMPLATE = os.getenv("BUCKET_CREATE_COMMAND_TEMPLATE", "").strip()
@@ -53,20 +70,6 @@ BUCKET_RUNTIME_IMAGE = os.getenv(
     os.getenv("BUCKET_IMAGE", "nanobot-bucket-runtime:v1.0.0"),
 ).strip()
 BUCKET_IMAGE_PULL_POLICY = os.getenv("BUCKET_IMAGE_PULL_POLICY", "IfNotPresent").strip()
-BUCKET_SOURCE_ROOT = os.getenv("BUCKET_SOURCE_ROOT", "/mnt/nanobot/source").strip()
-BUCKET_SKILLS_ROOT = os.getenv("BUCKET_SKILLS_ROOT", "/mnt/nanobot/common/default/skills").strip()
-BUCKET_TEMPLATES_ROOT = os.getenv("BUCKET_TEMPLATES_ROOT", "/mnt/nanobot/common/default/templates").strip()
-BUCKET_FRONTENDS_CONFIG_PATH = os.getenv(
-    "BUCKET_FRONTENDS_CONFIG_PATH",
-    "/mnt/nanobot/frontends/frontends.json",
-).strip()
-BUCKET_COMMON_MOUNT_PATH = os.getenv("BUCKET_COMMON_MOUNT_PATH", "/mnt/nanobot/common").strip()
-BUCKET_FRONTENDS_MOUNT_PATH = os.getenv("BUCKET_FRONTENDS_MOUNT_PATH", "/mnt/nanobot/frontends").strip()
-BUCKET_WORKSPACES_MOUNT_PATH = os.getenv("BUCKET_WORKSPACES_MOUNT_PATH", "/mnt/nanobot/workspaces").strip()
-BUCKET_SOURCE_PVC = os.getenv("BUCKET_SOURCE_PVC", "nanobot-source-pvc").strip()
-BUCKET_COMMON_PVC = os.getenv("BUCKET_COMMON_PVC", "nanobot-common-pvc").strip()
-BUCKET_FRONTENDS_PVC = os.getenv("BUCKET_FRONTENDS_PVC", "nanobot-frontends-pvc").strip()
-BUCKET_WORKSPACES_PVC = os.getenv("BUCKET_WORKSPACES_PVC", "nanobot-workspaces-pvc").strip()
 BUCKET_MAX_PROCESSES = _int_env("BUCKET_MAX_PROCESSES", 30)
 BUCKET_INSTANCE_IDLE_TTL_SECONDS = _int_env("BUCKET_INSTANCE_IDLE_TTL_SECONDS", 1800)
 BUCKET_INSTANCE_STOP_GRACE_SECONDS = _int_env("BUCKET_INSTANCE_STOP_GRACE_SECONDS", 10)
@@ -76,18 +79,6 @@ BUCKET_NANOBOT_PORT_END = _int_env("BUCKET_NANOBOT_PORT_END", 29999)
 
 # Shared IM / frontend settings reused by the unified gateway and bucket runtime.
 IM_PROVIDER = os.getenv("IM_PROVIDER", "qxt").strip().lower() or "qxt"
-
-# Frontend routing config. In this branch it is the canonical frontend registry.
-FRONTENDS_CONFIG_PATH = Path(
-    os.getenv(
-        "FRONTENDS_CONFIG_PATH",
-        os.getenv("CONTAINER_UP_CONFIG_PATH", "workspace/frontends.json"),
-    )
-)
-
-# Workspace paths used for attachment materialization and path normalization.
-HOST_WORKSPACE_ROOT = Path(os.getenv("HOST_WORKSPACE_ROOT", "/opt/nanobot/workspaces"))
-CHILD_WORKSPACE_TARGET = os.getenv("CHILD_WORKSPACE_TARGET", "/app/nanobot_workspaces")
 
 # Shared credentials and outbound settings for the currently selected frontend.
 APP_ID = os.getenv("APP_ID", os.getenv("APPID", "")).strip()
@@ -117,7 +108,7 @@ def build_bucket_base_url(bucket_id: str, bucket_name: str | None = None) -> str
             namespace=BUCKET_NAMESPACE,
             port=BUCKET_SERVICE_PORT,
         ).rstrip("/")
-    host = f"{bucket_name}.{BUCKET_NAMESPACE}.svc.cluster.local"
+    host = f"{bucket_name}.{BUCKET_NAMESPACE}"
     return f"http://{host}:{BUCKET_SERVICE_PORT}"
 
 
