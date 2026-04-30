@@ -519,6 +519,7 @@ kubectl logs -n nanobot deploy/container-up -f
 
 ```bash
 kubectl port-forward -n nanobot svc/container-up 8080:8080
+kubectl port-forward --address 0.0.0.0 -n nanobot svc/container-up 8080:8080
 ```
 
 新开一个终端做健康检查：
@@ -630,3 +631,7 @@ kubectl delete -f k8s/base/namespace.yaml
 3. `container_up` 不只是网关，它还负责动态创建 bucket，因此镜像里必须带 `kubectl`。
 4. 如果镜像从远程仓库拉取，必须同步调整 YAML 中的 `image` 和 `imagePullPolicy`。
 5. `workspaces` 是持久目录，删除 bucket Pod 不会删除用户工作数据。
+
+
+web server测试：
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-main","user_id":"web-demo-1","chat_id":"web-chat-1","content":"hello from web server chain","attachments":[],"metadata":{},"raw":{}}'

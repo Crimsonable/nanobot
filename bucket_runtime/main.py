@@ -36,7 +36,6 @@ class CreateInstanceRequest(BaseModel):
     user_id: str
     instance_id: str
     workspace_path: str
-    app_id: str = ""
 
 
 class InboundRequest(BaseModel):

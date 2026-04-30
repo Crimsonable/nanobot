@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from container_up.attachment_paths import normalize_outbound_attachments
 from container_up.http_state import get_dispatch_session
+from container_up.outbound_attachment_store import prepare_outbound_attachments
 
 
 class WebIMParser:
@@ -20,6 +20,7 @@ class WebIMParser:
     ) -> None:
         self.frontend_id = frontend_id
         config = dict(frontend_config or {})
+        self.frontend_config = config
         self.send_msg_url = str(
             send_msg_url
             or config.get("send_msg_url")
@@ -47,14 +48,17 @@ class WebIMParser:
 
         metadata = dict(payload.get("metadata") or {})
         frontend_id = str(metadata.get("frontend_id") or self.frontend_id).strip() or self.frontend_id
+        user_id = str(metadata.get("usr_id") or "").strip()
         outbound_payload = {
             "frontend_id": frontend_id,
-            "user_id": str(metadata.get("usr_id") or ""),
+            "user_id": user_id,
             "chat_id": str(payload.get("chat_id") or ""),
             "content": str(payload.get("content") or ""),
-            "attachments": normalize_outbound_attachments(
+            "attachments": await prepare_outbound_attachments(
                 list(payload.get("attachments") or []),
                 frontend_id=frontend_id,
+                user_id=user_id,
+                frontend_config=self.frontend_config,
             ),
             "metadata": metadata,
         }

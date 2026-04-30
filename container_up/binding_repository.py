@@ -38,7 +38,6 @@ class BindingRepository:
                     bucket_id TEXT,
                     instance_id TEXT,
                     frontend_id TEXT,
-                    app_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_active_at TEXT
@@ -147,7 +146,6 @@ class BindingRepository:
         user_id: str,
         workspace_path: str,
         frontend_id: str | None,
-        app_id: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
         with self.transaction_immediate() as conn:
             existing = self._get_user_instance(conn, user_id)
@@ -176,8 +174,8 @@ class BindingRepository:
                     """
                     INSERT INTO user_instances (
                         user_id, workspace_path, status, bucket_id, instance_id,
-                        frontend_id, app_id, created_at, updated_at, last_active_at
-                    ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, ?, ?)
+                        frontend_id, created_at, updated_at, last_active_at
+                    ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user_id,
@@ -185,7 +183,6 @@ class BindingRepository:
                         bucket["bucket_id"],
                         instance_id,
                         frontend_id,
-                        app_id,
                         now,
                         now,
                         now,
@@ -196,7 +193,7 @@ class BindingRepository:
                     """
                     UPDATE user_instances
                     SET workspace_path = ?, status = 'creating', bucket_id = ?, instance_id = ?,
-                        frontend_id = ?, app_id = ?, updated_at = ?, last_active_at = ?
+                        frontend_id = ?, updated_at = ?, last_active_at = ?
                     WHERE user_id = ?
                     """,
                     (
@@ -204,7 +201,6 @@ class BindingRepository:
                         bucket["bucket_id"],
                         instance_id,
                         frontend_id,
-                        app_id,
                         now,
                         now,
                         user_id,
@@ -321,7 +317,7 @@ class BindingRepository:
         row = conn.execute(
             """
             SELECT user_id, workspace_path, status, bucket_id, instance_id,
-                   frontend_id, app_id, created_at, updated_at, last_active_at
+                   frontend_id, created_at, updated_at, last_active_at
             FROM user_instances
             WHERE user_id = ?
             """,

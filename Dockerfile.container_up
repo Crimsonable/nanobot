@@ -5,6 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /runtime
 
+COPY container_up/pyproject.toml ./pyproject.toml
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential curl ca-certificates && \
     ARCH="$(dpkg --print-architecture)" && \
@@ -15,16 +17,18 @@ RUN apt-get update && \
     esac && \
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.33.1/bin/linux/${KUBECTL_ARCH}/kubectl" && \
     chmod +x /usr/local/bin/kubectl && \
-    pip install --no-cache-dir \
-      fastapi \
-      uvicorn \
-      httpx \
-      pydantic \
-      aiohttp \
-      lark-oapi \
-      pycryptodome \
-      websockets \
-      loguru && \
+    python - <<'PY' > /tmp/requirements.txt
+import tomllib
+from pathlib import Path
+
+data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+deps = list(data["project"]["dependencies"])
+deps.extend(data["project"].get("optional-dependencies", {}).get("api", []))
+print("\n".join(deps))
+PY
+
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm -f /tmp/requirements.txt && \
     rm -rf /var/lib/apt/lists/*
 
 CMD ["sh", "-lc", "export PYTHONPATH=\"$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}\"; exec python -m container_up.app"]

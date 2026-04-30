@@ -307,7 +307,17 @@ class ProcessManager:
                     "raw": {"source": "bucket-runtime", "instance_id": instance.instance_id},
                 },
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text.strip()
+                if detail:
+                    raise RuntimeError(
+                        "container_up outbound rejected "
+                        f"instance_id={instance.instance_id} frontend_id={instance.frontend_id} "
+                        f"user_id={instance.user_id}: {detail}"
+                    ) from exc
+                raise
 
     async def _send_instance(self, instance: UserProcess, packet: dict[str, Any]) -> None:
         await self._ensure_instance_socket(instance)

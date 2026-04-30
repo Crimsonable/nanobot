@@ -12,9 +12,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 import websockets
 from loguru import logger
 
+from bucket_runtime.config import OUTBOUND_GATEWAY_URL, OUTBOUND_TIMEOUT
 from bucket_runtime.process_utils import (
     install_shutdown_signal_handlers,
     terminate_process,
@@ -218,9 +220,35 @@ class LocalNanobotService:
     async def _send_router(self, packet: dict[str, Any]) -> None:
         async with self._router_send_lock:
             if self._router_ws is None:
-                logger.warning("Dropping outbound packet because org router is disconnected")
+                logger.warning("Router websocket disconnected; forwarding outbound directly")
+                await self._forward_outbound_directly(packet)
                 return
             await self._router_ws.send(json.dumps(packet, ensure_ascii=False))
+
+    async def _forward_outbound_directly(self, packet: dict[str, Any]) -> None:
+        metadata = dict(packet.get("metadata") or {})
+        frontend_id = str(metadata.get("frontend_id") or "").strip()
+        user_id = str(metadata.get("usr_id") or "").strip()
+        if not frontend_id or not user_id:
+            logger.warning(
+                "Dropping outbound fallback packet because frontend_id/user_id is missing in metadata"
+            )
+            return
+
+        async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT) as client:
+            response = await client.post(
+                OUTBOUND_GATEWAY_URL,
+                json={
+                    "frontend_id": frontend_id,
+                    "user_id": user_id,
+                    "chat_id": str(packet.get("chat_id") or ""),
+                    "content": str(packet.get("content") or ""),
+                    "attachments": list(packet.get("attachments") or []),
+                    "metadata": metadata,
+                    "raw": {"source": "bucket-runtime-local-service"},
+                },
+            )
+            response.raise_for_status()
 
 
 def parse_args() -> argparse.Namespace:

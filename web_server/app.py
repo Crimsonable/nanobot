@@ -7,7 +7,13 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from web_server.settings import APP_HOST, APP_PORT, CONTAINER_UP_BASE_URL, DEFAULT_FRONTEND_ID, OUTBOUND_ECHO
+from web_server.settings import (
+    APP_HOST,
+    APP_PORT,
+    CONTAINER_UP_BASE_URL,
+    DEFAULT_FRONTEND_ID,
+    OUTBOUND_ECHO,
+)
 from web_server.uvicorn_logging import build_uvicorn_log_config
 
 
@@ -69,7 +75,9 @@ async def inbound(payload: InboundRequest) -> dict[str, Any]:
             return response.json()
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text.strip() or str(exc)
-        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        raise HTTPException(
+            status_code=exc.response.status_code, detail=detail
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -79,6 +87,7 @@ async def outbound(payload: OutboundRequest) -> dict[str, Any]:
     response = {"status": "accepted"}
     if OUTBOUND_ECHO:
         response["payload"] = payload.model_dump()
+    print(f"Outbound message received: {payload.json()}")
     return response
 
 

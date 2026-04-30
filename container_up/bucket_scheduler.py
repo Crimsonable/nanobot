@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any
+
+import httpx
 
 from container_up.binding_repository import BindingRepository
 from container_up.bucket_client import BucketClient
 from container_up.bucket_manager import BucketManager
 from container_up.workspace_manager import WorkspaceManager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -18,7 +23,6 @@ class UserInstanceRuntime:
     bucket_url: str
     instance_id: str
     frontend_id: str | None = None
-    app_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -44,25 +48,29 @@ class BucketScheduler:
         *,
         user_id: str,
         frontend_id: str | None,
-        app_id: str | None = None,
     ) -> UserInstanceRuntime:
         lock = self._user_locks.setdefault(user_id, asyncio.Lock())
         async with lock:
             existing = self._repo.get_user_instance(user_id)
             if existing is not None and existing.get("status") == "online" and existing.get("bucket_id"):
-                bucket = self._repo.get_bucket(str(existing["bucket_id"]))
-                if bucket is not None:
+                runtime = await self._get_live_runtime(existing)
+                if runtime is not None:
                     self._repo.touch_user_activity(user_id)
-                    return self._runtime_from_records(existing, bucket)
+                    return runtime
 
-            if not frontend_id:
+            existing_frontend_id = (
+                str(existing.get("frontend_id") or "").strip()
+                if existing is not None
+                else ""
+            )
+            resolved_frontend_id = frontend_id or existing_frontend_id or None
+            if not resolved_frontend_id:
                 raise RuntimeError("frontend_id is required to allocate a workspace")
-            workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
+            workspace = self._workspace_manager.get_or_create_workspace(resolved_frontend_id, user_id)
             user, bucket, created = self._repo.reserve_user_instance(
                 user_id=user_id,
                 workspace_path=str(workspace),
-                frontend_id=frontend_id,
-                app_id=app_id,
+                frontend_id=resolved_frontend_id,
             )
             if not created:
                 self._repo.touch_user_activity(user_id)
@@ -75,11 +83,10 @@ class BucketScheduler:
                 await self._bucket_client.create_user_instance(
                     runtime.bucket_url,
                     {
-                        "frontend_id": frontend_id or "",
+                        "frontend_id": resolved_frontend_id or "",
                         "user_id": user_id,
                         "instance_id": runtime.instance_id,
                         "workspace_path": runtime.workspace_path,
-                        "app_id": app_id or "",
                     },
                 )
             except Exception:
@@ -102,7 +109,6 @@ class BucketScheduler:
         runtime = await self.get_or_create_user_instance(
             user_id=user_id,
             frontend_id=frontend_id,
-            app_id=str(payload.get("app_id") or ""),
         )
         packet = dict(payload)
         packet["frontend_id"] = frontend_id
@@ -175,5 +181,44 @@ class BucketScheduler:
             bucket_url=str(bucket["service_host"]).rstrip("/"),
             instance_id=str(user["instance_id"] or user["user_id"]),
             frontend_id=str(user.get("frontend_id") or "") or None,
-            app_id=str(user.get("app_id") or "") or None,
         )
+
+    async def _get_live_runtime(self, user: dict[str, Any]) -> UserInstanceRuntime | None:
+        bucket_id = str(user.get("bucket_id") or "")
+        if not bucket_id:
+            return None
+        bucket = self._repo.get_bucket(bucket_id)
+        if bucket is None:
+            self._repo.release_user_instance(
+                str(user["user_id"]),
+                bucket_id=bucket_id,
+                instance_id=str(user.get("instance_id") or "") or None,
+            )
+            return None
+
+        runtime = self._runtime_from_records(user, bucket)
+        try:
+            await self._bucket_client.get_user_instance(runtime.bucket_url, runtime.instance_id)
+            return runtime
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "stale runtime binding for user_id=%s bucket_id=%s instance_id=%s status=%s; recreating",
+                runtime.user_id,
+                runtime.bucket_id,
+                runtime.instance_id,
+                exc.response.status_code,
+            )
+        except httpx.RequestError:
+            logger.warning(
+                "bucket probe failed for user_id=%s bucket_id=%s instance_id=%s; recreating",
+                runtime.user_id,
+                runtime.bucket_id,
+                runtime.instance_id,
+            )
+
+        self._repo.release_user_instance(
+            runtime.user_id,
+            bucket_id=runtime.bucket_id,
+            instance_id=runtime.instance_id,
+        )
+        return None

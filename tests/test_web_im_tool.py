@@ -42,9 +42,19 @@ class _FakeSession:
 async def test_web_im_parser_posts_normalized_outbound_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_session = _FakeSession()
     monkeypatch.setattr(http_state, "_dispatch_session", fake_session)
+
+    async def fake_prepare(
+        attachments,
+        *,
+        frontend_id,
+        user_id,
+        frontend_config=None,
+    ):
+        return [{"url": "https://files.example.com/demo.png"}]
+
     monkeypatch.setattr(
-        "container_up.web_im_tool.normalize_outbound_attachments",
-        lambda attachments, frontend_id=None: ["/abs/demo.png"],
+        "container_up.web_im_tool.prepare_outbound_attachments",
+        fake_prepare,
     )
     parser = WebIMParser(
         frontend_id="web-main",
@@ -69,7 +79,7 @@ async def test_web_im_parser_posts_normalized_outbound_payload(monkeypatch: pyte
                 "user_id": "user-1",
                 "chat_id": "chat-1",
                 "content": "hello",
-                "attachments": ["/abs/demo.png"],
+                "attachments": [{"url": "https://files.example.com/demo.png"}],
                 "metadata": {"usr_id": "user-1", "frontend_id": "web-main"},
             },
         )

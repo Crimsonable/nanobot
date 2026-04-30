@@ -78,3 +78,66 @@ async def test_spawn_gateway_uses_dedicated_health_port(monkeypatch: pytest.Monk
     assert service._gateway_watch_task is not None
     service._gateway_watch_task.cancel()
     await asyncio.gather(service._gateway_watch_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_send_router_falls_back_to_direct_outbound_when_router_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = LocalNanobotService(
+        config_path=tmp_path / "config.json",
+        workspace_path=tmp_path / "workspace",
+        host="127.0.0.1",
+        port=29995,
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def post(self, url: str, json: dict[str, object]) -> _FakeResponse:
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse()
+
+    monkeypatch.setattr("bucket_runtime.local_service.httpx.AsyncClient", _FakeAsyncClient)
+
+    await service._send_router(
+        {
+            "type": "outbound_message",
+            "chat_id": "conv-1",
+            "content": "done",
+            "attachments": ["/tmp/a.png"],
+            "metadata": {
+                "frontend_id": "feishu-main",
+                "usr_id": "user-1",
+                "trace_id": "trace-1",
+            },
+        }
+    )
+
+    assert captured["json"] == {
+        "frontend_id": "feishu-main",
+        "user_id": "user-1",
+        "chat_id": "conv-1",
+        "content": "done",
+        "attachments": ["/tmp/a.png"],
+        "metadata": {
+            "frontend_id": "feishu-main",
+            "usr_id": "user-1",
+            "trace_id": "trace-1",
+        },
+        "raw": {"source": "bucket-runtime-local-service"},
+    }

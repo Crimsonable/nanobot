@@ -11,7 +11,6 @@ def test_repository_reserve_online_and_release(tmp_path) -> None:
         user_id="user-1",
         workspace_path="/tmp/workspaces/user-1",
         frontend_id="feishu-main",
-        app_id="default",
     )
 
     assert created is True
@@ -49,14 +48,12 @@ def test_repository_creates_new_bucket_when_capacity_is_exhausted(tmp_path) -> N
             user_id=f"user-{index}",
             workspace_path=f"/tmp/workspaces/user-{index}",
             frontend_id="feishu-main",
-            app_id="default",
         )
 
     _, bucket, created = repo.reserve_user_instance(
         user_id="user-overflow",
         workspace_path="/tmp/workspaces/user-overflow",
         frontend_id="feishu-main",
-        app_id="default",
     )
 
     assert created is True
@@ -71,13 +68,11 @@ def test_repository_reuses_creating_reservation_without_double_counting(tmp_path
         user_id="user-1",
         workspace_path="/tmp/workspaces/user-1",
         frontend_id="feishu-main",
-        app_id="default",
     )
     second_user, second_bucket, second_created = repo.reserve_user_instance(
         user_id="user-1",
         workspace_path="/tmp/workspaces/user-1",
         frontend_id="feishu-main",
-        app_id="default",
     )
 
     bucket = repo.get_bucket("bucket-0")
@@ -98,7 +93,6 @@ def test_repository_lists_idle_buckets_ready_for_scale_down(tmp_path) -> None:
         user_id="user-1",
         workspace_path="/tmp/workspaces/user-1",
         frontend_id="feishu-main",
-        app_id="default",
     )
     repo.mark_user_instance_online("user-1")
     repo.release_user_instance("user-1", bucket_id="bucket-0", instance_id="user-1")

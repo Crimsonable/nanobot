@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TIKTOKEN_CACHE_DIR=/var/cache/tiktoken
 
 WORKDIR /runtime
 
@@ -20,6 +21,8 @@ print("\n".join(deps))
 PY
 
 RUN pip install --no-cache-dir -r /tmp/requirements.txt fastapi uvicorn && \
+    mkdir -p "$TIKTOKEN_CACHE_DIR" && \
+    python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" && \
     rm -f /tmp/requirements.txt && \
     rm -rf /var/lib/apt/lists/*
 

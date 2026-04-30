@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip && \
+    pip install fastapi && \
+    pip install uvicorn && \
+    pip install python-multipart && \
+    pip install httpx && \
+    pip install aiosqlite && \
+    pip install markdown
+
+WORKDIR /app
