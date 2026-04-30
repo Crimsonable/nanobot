@@ -9,8 +9,8 @@ spec:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
   nfs:
-    server: 192.168.30.100
-    path: /data/nanobot-nfs
+    server: 192.168.48.104
+    path: /data/nanobot_backend_k8s/data
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -36,8 +36,8 @@ spec:
     - ReadOnlyMany
   persistentVolumeReclaimPolicy: Retain
   nfs:
-    server: 192.168.30.100
-    path: /data/nanobot-source
+    server: 192.168.48.104
+    path: /data/nanobot_backend_k8s/source
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -29,8 +29,8 @@ spec:
       serviceAccountName: container-up
       containers:
         - name: container-up
-          image: nanobot-container-up:v1.0.0
-          imagePullPolicy: Never
+          image: 192.168.48.104:5000/nanobot-container-up:v1.0.1
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:
@@ -49,9 +49,9 @@ spec:
             - name: BUCKET_NAME_PREFIX
               value: nanobot-bucket
             - name: BUCKET_RUNTIME_IMAGE
-              value: nanobot-bucket-runtime:v1.0.0
+              value: 192.168.48.104:5000/nanobot-bucket-runtime:v1.0.1
             - name: BUCKET_IMAGE_PULL_POLICY
-              value: Never
+              value: IfNotPresent
             - name: BUCKET_SERVICE_PORT
               value: "8080"
             - name: BUCKET_CONTAINER_PORT
