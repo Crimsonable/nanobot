@@ -437,8 +437,8 @@ sudo rsync -av ./nanobot/templates/ /data/nanobot-nfs/common/qxt-main/templates/
 构建镜像：
 
 ```bash
-docker build -f Dockerfile.bucket_runtime -t nanobot-bucket-runtime:v1.0.0 .
-docker build -f Dockerfile.container_up -t nanobot-container-up:v1.0.0 .
+docker build -f Dockerfile.bucket_runtime -t nanobot-bucket-runtime:v1.0.2 .
+docker build -f Dockerfile.container_up -t nanobot-container-up:v1.0.1 .
 ```
 
 推送到私有仓库：

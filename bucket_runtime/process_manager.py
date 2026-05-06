@@ -40,6 +40,7 @@ class UserProcess:
     process: asyncio.subprocess.Process
     started_at: float
     last_active_at: float
+    idle_ttl_seconds: int = 0
     websocket: Any | None = None
     relay_task: asyncio.Task[None] | None = None
     log_task: asyncio.Task[None] | None = None
@@ -84,6 +85,7 @@ class ProcessManager:
                 raise RuntimeError("bucket has reached max process capacity")
 
             frontend_config = frontend_config_for(frontend_id)
+            instance_idle_ttl = self._resolve_idle_ttl(frontend_config)
             workspace = self._workspace_manager.ensure_workspace(
                 Path(workspace_path),
                 template_root=frontend_config.template_dir,
@@ -123,6 +125,7 @@ class ProcessManager:
                 process=process,
                 started_at=time.time(),
                 last_active_at=time.time(),
+                idle_ttl_seconds=instance_idle_ttl,
             )
             instance.log_task = asyncio.create_task(self._drain_logs(instance))
             self._processes[instance_id] = instance
@@ -171,8 +174,10 @@ class ProcessManager:
         return {"status": "accepted", "instance_id": instance_id, "user_id": instance.user_id}
 
     async def reap_idle_processes(self) -> None:
-        cutoff = time.time() - self._idle_ttl
+        now = time.time()
         for instance_id, instance in list(self._processes.items()):
+            ttl = instance.idle_ttl_seconds if instance.idle_ttl_seconds > 0 else self._idle_ttl
+            cutoff = now - ttl
             if instance.last_active_at < cutoff:
                 await self.stop_process(instance_id, notify_release=True, reason="idle_timeout")
 
@@ -234,6 +239,18 @@ class ProcessManager:
         env["TEMPLATE_DIR"] = str(frontend_config.template_dir)
         env["BUILTIN_SKILLS_DIR"] = str(frontend_config.builtin_skills_dir)
         return env
+
+    def _resolve_idle_ttl(self, frontend_config: Any | None) -> int:
+        if frontend_config is None:
+            return self._idle_ttl
+        raw = getattr(frontend_config, "raw", {}) or {}
+        value = str(raw.get("instance_idle_ttl_seconds") or "").strip()
+        if not value:
+            return self._idle_ttl
+        try:
+            return max(1, int(value))
+        except ValueError:
+            return self._idle_ttl
 
     async def _wait_instance_ready(self, port: int) -> None:
         deadline = time.time() + 30

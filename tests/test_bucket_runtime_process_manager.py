@@ -158,3 +158,54 @@ async def test_relay_instance_keeps_running_when_outbound_forward_fails(
 
     assert forwarded == [{"type": "outbound_message", "chat_id": "conv-1"}]
     assert instance.websocket is None
+
+
+def test_resolve_idle_ttl_uses_frontend_override() -> None:
+    manager = ProcessManager(idle_ttl=60)
+    frontend_config = SimpleNamespace(raw={"instance_idle_ttl_seconds": 120})
+    assert manager._resolve_idle_ttl(frontend_config) == 120
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_processes_uses_instance_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = ProcessManager(idle_ttl=100)
+    now = 1_000.0
+    monkeypatch.setattr("bucket_runtime.process_manager.time.time", lambda: now)
+    stopped: list[str] = []
+
+    async def fake_stop_process(
+        instance_id: str,
+        *,
+        notify_release: bool = False,
+        reason: str = "",
+    ) -> None:
+        stopped.append(instance_id)
+        manager._processes.pop(instance_id, None)
+
+    monkeypatch.setattr(manager, "stop_process", fake_stop_process)
+
+    manager._processes["a"] = UserProcess(
+        instance_id="a",
+        frontend_id="feishu-main",
+        user_id="u1",
+        workspace_path=SimpleNamespace(),
+        port=20001,
+        process=SimpleNamespace(returncode=None, stdout=None),
+        started_at=900.0,
+        last_active_at=950.0,
+        idle_ttl_seconds=30,
+    )
+    manager._processes["b"] = UserProcess(
+        instance_id="b",
+        frontend_id="web-main",
+        user_id="u2",
+        workspace_path=SimpleNamespace(),
+        port=20002,
+        process=SimpleNamespace(returncode=None, stdout=None),
+        started_at=900.0,
+        last_active_at=950.0,
+        idle_ttl_seconds=120,
+    )
+
+    await manager.reap_idle_processes()
+    assert stopped == ["a"]

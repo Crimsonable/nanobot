@@ -9,7 +9,11 @@ WORKDIR /runtime
 COPY pyproject.toml README.md LICENSE ./
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        wget && \
+    rm -rf /var/lib/apt/lists/* && \
     python - <<'PY' > /tmp/requirements.txt
 import tomllib
 from pathlib import Path
