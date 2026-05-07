@@ -503,6 +503,7 @@ kubectl get pvc -n nanobot
 
 ```bash
 kubectl apply -f k8s/base/container-up.yaml
+kubectl apply -f k8s/base/container-up-nodeport.yaml
 kubectl rollout status deployment/container-up -n nanobot
 kubectl get pods -n nanobot -o wide
 ```
@@ -616,6 +617,7 @@ kubectl delete -f k8s/base/namespace.yaml
 
 - [docs/PROJECT_ARCHITECTURE.md](./PROJECT_ARCHITECTURE.md)
 - [docs/K8S_BRANCH_LAYOUT.md](./K8S_BRANCH_LAYOUT.md)
+- [docs/WEB_FRONTEND_API.md](./WEB_FRONTEND_API.md)
 - [Dockerfile.container_up](../Dockerfile.container_up)
 - [Dockerfile.bucket_runtime](../Dockerfile.bucket_runtime)
 - [k8s/base/container-up.yaml](../k8s/base/container-up.yaml)
