@@ -218,6 +218,39 @@ class MinioAttachmentStore:
         return path, original
 
 
+def upload_local_attachment(
+    *,
+    frontend_id: str,
+    user_id: str,
+    local_path: str,
+    frontend_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    path = Path(local_path).expanduser()
+    if not path.is_file():
+        raise RuntimeError(f"attachment path is not a file: {local_path}")
+
+    config = minio_config_from_frontend(frontend_config)
+    if config is None:
+        raise RuntimeError(f"minio attachment storage is not configured for frontend: {frontend_id}")
+
+    store = MinioAttachmentStore(config)
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    object_key = store._object_key(
+        path=path,
+        frontend_id=frontend_id,
+        user_id=user_id,
+    )
+    store._upload_file_sync(path, object_key, content_type)
+    return {
+        "url": store._resolve_object_url_sync(object_key),
+        "filename": path.name,
+        "content_type": content_type,
+        "storage": "minio",
+        "bucket": config.bucket,
+        "object_key": object_key,
+    }
+
+
 async def prepare_outbound_attachments(
     attachments: list[Any] | None,
     *,

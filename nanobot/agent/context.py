@@ -1,7 +1,5 @@
 """Context builder for assembling agent prompts."""
 
-import base64
-import mimetypes
 import platform
 from importlib.resources import files as pkg_files
 from pathlib import Path
@@ -9,7 +7,7 @@ from typing import Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
-from nanobot.utils.helpers import build_assistant_message, current_time_str, detect_image_mime, truncate_text
+from nanobot.utils.helpers import build_assistant_message, current_time_str, truncate_text
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -23,6 +21,10 @@ class ContextBuilder:
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
     _EMPTY_MESSAGE_MARKERS = frozenset({"", "[empty message]"})
     _IMAGE_ONLY_PROMPT = "Please analyze the attached image."
+    _VISUAL_REF_PREFIXES = {
+        "image_url": "image_url:",
+        "video_url": "video_url:",
+    }
 
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
         self.workspace = workspace
@@ -164,32 +166,46 @@ class ContextBuilder:
         messages.append({"role": current_role, "content": merged})
         return messages
 
-    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+    def _build_user_content(
+        self,
+        text: str,
+        media: list[str] | None,
+    ) -> str | list[dict[str, Any]]:
+        """Build user message content from normalized ``image_url:`` / ``video_url:`` refs."""
         if not media:
             return text
 
-        images = []
-        for path in media:
-            p = Path(path)
-            if not p.is_file():
+        blocks: list[dict[str, Any]] = []
+        for ref in media:
+            media_ref = str(ref or "").strip()
+            if not media_ref:
                 continue
-            raw = p.read_bytes()
-            mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
-            if not mime or not mime.startswith("image/"):
+            block_type, url = self._parse_visual_media_ref(media_ref)
+            if not block_type or not url:
                 continue
-            b64 = base64.b64encode(raw).decode()
-            images.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
-                "_meta": {"path": str(p)},
+            payload_key = "image_url" if block_type == "image_url" else "video_url"
+            blocks.append({
+                "type": block_type,
+                payload_key: {"url": url},
+                "_meta": {"path": url},
             })
 
-        if not images:
+        if not blocks:
             return text
         if (text or "").strip() in self._EMPTY_MESSAGE_MARKERS:
             text = self._IMAGE_ONLY_PROMPT
-        return images + [{"type": "text", "text": text}]
+        return blocks + [{"type": "text", "text": text}]
+
+    @classmethod
+    def _parse_visual_media_ref(cls, ref: str) -> tuple[str | None, str | None]:
+        value = str(ref or "").strip()
+        for block_type, prefix in cls._VISUAL_REF_PREFIXES.items():
+            if value.startswith(prefix):
+                url = value[len(prefix):].strip()
+                if url:
+                    return block_type, url
+                return None, None
+        return None, None
 
     def add_tool_result(
         self, messages: list[dict[str, Any]],

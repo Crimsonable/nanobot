@@ -1,12 +1,20 @@
 """Document text extraction utilities for nanobot."""
 
 import mimetypes
+import os
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 from loguru import logger
 
 from nanobot.utils.helpers import detect_image_mime
 
+try:
+    import magic
+except ImportError:  # pragma: no cover - exercised only when optional dep is absent
+    magic = None
 
 # Supported file extensions for text extraction
 SUPPORTED_EXTENSIONS: set[str] = {
@@ -126,7 +134,9 @@ def _extract_xlsx(path: Path) -> str:
                 ws = wb[sheet_name]
                 rows: list[str] = []
                 for row in ws.iter_rows(values_only=True):
-                    row_text = "\t".join(str(cell) if cell is not None else "" for cell in row)
+                    row_text = "\t".join(
+                        str(cell) if cell is not None else "" for cell in row
+                    )
                     if row_text.strip():
                         rows.append(row_text)
                 if rows:
@@ -226,10 +236,146 @@ def _is_text_extension(ext: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# High-level helper: split media into images + extracted document text
+# High-level helper: normalize attachments into multimodal URLs + text refs
 # ---------------------------------------------------------------------------
 
 _MAX_EXTRACT_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+_VISUAL_MIME_PREFIXES = ("image/", "video/")
+_VISUAL_REF_PREFIXES = {
+    "image_url": "image_url:",
+    "video_url": "video_url:",
+}
+
+
+def _is_remote_attachment_ref(ref: str) -> bool:
+    parsed = urlparse(ref)
+    return parsed.scheme in {"http", "https"}
+
+
+def _read_header(path: Path, size: int = 64) -> bytes:
+    with path.open("rb") as f:
+        return f.read(size)
+
+
+def _detect_remote_mime_by_content(
+    url: str,
+    *,
+    timeout: float = 10,
+    header_size: int = 4096,
+) -> str | None:
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "*/*",
+        "Range": f"bytes=0-{header_size - 1}",
+    }
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=timeout) as client:
+            resp = client.get(url, headers=headers)
+            resp.raise_for_status()
+
+            header = resp.content[:header_size]
+            if not header:
+                return None
+
+            if magic is None:
+                return None
+            return magic.from_buffer(header, mime=True)
+
+    except httpx.HTTPError:
+        return None
+
+
+def _detect_attachment_mime(ref: str, path: Path | None = None) -> str | None:
+    if path is not None and path.is_file():
+        try:
+            header = _read_header(path)
+        except OSError:
+            header = b""
+        detected = detect_image_mime(header)
+        if detected:
+            return detected
+        return mimetypes.guess_type(path.name, strict=False)[0]
+
+    return _detect_remote_mime_by_content(ref)
+
+
+def _is_visual_mime(mime: str | None) -> bool:
+    return bool(mime and mime.startswith(_VISUAL_MIME_PREFIXES))
+
+
+def _visual_block_type_for_mime(mime: str) -> str | None:
+    if mime.startswith("image/"):
+        return "image_url"
+    if mime.startswith("video/"):
+        return "video_url"
+    return None
+
+
+def encode_visual_media_ref(block_type: str, url: str) -> str:
+    prefix = _VISUAL_REF_PREFIXES.get(block_type)
+    if not prefix:
+        raise ValueError(f"unsupported visual block type: {block_type}")
+    return f"{prefix}{url}"
+
+
+def _attachment_reference_line(mime: str | None, ref: str) -> str:
+    file_type = mime or "application/octet-stream"
+    return f"“{file_type}”：{ref}"
+
+
+def _container_up_attachment_upload_url() -> str:
+    return str(os.environ.get("CONTAINER_UP_ATTACHMENT_UPLOAD_URL") or "").strip()
+
+
+def _upload_local_attachment_ref(
+    path: Path,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    meta = dict(metadata or {})
+    frontend_id = str(meta.get("frontend_id") or "").strip()
+    user_id = str(meta.get("usr_id") or meta.get("user_id") or "user").strip() or "user"
+    if not frontend_id:
+        logger.warning(
+            "Skipping local attachment upload for {}: missing frontend_id", path
+        )
+        return None
+
+    url = _container_up_attachment_upload_url()
+    if not url:
+        logger.warning(
+            "Skipping local attachment upload for {}: missing CONTAINER_UP_ATTACHMENT_UPLOAD_URL",
+            path,
+        )
+        return None
+    try:
+        with httpx.Client(
+            timeout=float(
+                os.environ.get("CONTAINER_UP_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS", "30")
+            ),
+        ) as client:
+            response = client.post(
+                url,
+                json={
+                    "frontend_id": frontend_id,
+                    "user_id": user_id,
+                    "local_path": str(path),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        logger.warning(
+            "Failed to upload local attachment {} via container-up: {}", path, exc
+        )
+        return None
+    uploaded = str(payload.get("url") or "").strip()
+    if not uploaded:
+        logger.warning("container-up upload returned no URL for {}", path)
+        return None
+    return uploaded
 
 
 def extract_documents(
@@ -237,47 +383,70 @@ def extract_documents(
     media_paths: list[str],
     *,
     max_file_size: int = _MAX_EXTRACT_FILE_SIZE,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
-    """Separate images from documents in *media_paths*.
+    """Normalize inbound attachments into vision URLs and text references.
 
-    Documents (PDF, DOCX, XLSX, PPTX, plain-text, …) have their text
-    extracted and appended to *text*.  Only image paths are kept in the
-    returned list so that downstream layers only need to handle vision
-    blocks.
+    Visual attachments (images/videos) are returned in the media list as
+    ``image_url:<url>`` / ``video_url:<url>`` records so downstream prompt
+    builders do not need to re-detect MIME types.
+    Ordinary files are appended to the text content in the form
+    ``“<mime>”：<url>``.
 
-    Files larger than *max_file_size* bytes are skipped with a warning
-    to avoid unbounded memory / CPU usage.
+    Local attachments are uploaded to the configured MinIO ``attachments``
+    bucket first; remote HTTP(S) URLs are consumed directly.
     """
-    image_paths: list[str] = []
-    doc_texts: list[str] = []
+    visual_refs: list[str] = []
+    attachment_refs: list[str] = []
 
-    for path_str in media_paths:
-        p = Path(path_str)
-        if not p.is_file():
+    for ref in media_paths:
+        ref_str = str(ref or "").strip()
+        if not ref_str:
             continue
 
-        try:
-            size = p.stat().st_size
-        except OSError:
-            continue
-        if size > max_file_size:
-            logger.warning(
-                "Skipping oversized file for extraction: {} ({:.1f} MB > {} MB limit)",
-                p.name, size / (1024 * 1024), max_file_size // (1024 * 1024),
-            )
-            continue
+        local_path = Path(ref_str).expanduser()
+        resolved_ref = ref_str
+        mime: str | None = None
 
-        with open(p, "rb") as f:
-            header = f.read(16)
-        mime = detect_image_mime(header) or mimetypes.guess_type(path_str)[0]
-        if mime and mime.startswith("image/"):
-            image_paths.append(path_str)
+        if local_path.is_file():
+            try:
+                size = local_path.stat().st_size
+            except OSError:
+                continue
+            if size > max_file_size:
+                logger.warning(
+                    "Skipping oversized file for extraction: {} ({:.1f} MB > {} MB limit)",
+                    local_path.name,
+                    size / (1024 * 1024),
+                    max_file_size // (1024 * 1024),
+                )
+                continue
+            mime = _detect_attachment_mime(ref_str, local_path)
+            uploaded_ref = _upload_local_attachment_ref(local_path, metadata=metadata)
+            if not uploaded_ref:
+                continue
+            resolved_ref = uploaded_ref
         else:
-            extracted = extract_text(p)
-            if extracted and not extracted.startswith("[error:"):
-                doc_texts.append(f"[File: {p.name}]\n{extracted}")
+            mime = _detect_attachment_mime(ref_str)
+            if not _is_remote_attachment_ref(ref_str):
+                logger.warning(
+                    "Skipping unsupported non-local attachment reference: {}", ref_str
+                )
+                continue
 
-    if doc_texts:
-        text = text + "\n\n" + "\n\n".join(doc_texts)
+        if _is_visual_mime(mime):
+            block_type = _visual_block_type_for_mime(mime)
+            if not block_type:
+                continue
+            visual_refs.append(encode_visual_media_ref(block_type, resolved_ref))
+        else:
+            attachment_refs.append(_attachment_reference_line(mime, resolved_ref))
 
-    return text, image_paths
+    if attachment_refs:
+        text = (
+            text + "\n\n" + "\n\n".join(attachment_refs)
+            if text
+            else "\n\n".join(attachment_refs)
+        )
+
+    return text, visual_refs

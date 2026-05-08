@@ -2164,16 +2164,11 @@ async def test_checkpoint2_preserves_final_response_in_history_before_followup()
 
 
 @pytest.mark.asyncio
-async def test_loop_injected_followup_preserves_image_media(tmp_path):
+async def test_loop_injected_followup_preserves_image_media(tmp_path, monkeypatch):
     """Mid-turn follow-ups with images should keep multimodal content."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.events import InboundMessage
     from nanobot.bus.queue import MessageBus
-
-    image_path = tmp_path / "followup.png"
-    image_path.write_bytes(base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9kAAAAASUVORK5CYII="
-    ))
 
     bus = MessageBus()
     provider = MagicMock()
@@ -2191,6 +2186,10 @@ async def test_loop_injected_followup_preserves_image_media(tmp_path):
     provider.chat_with_retry = chat_with_retry
     loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
     loop.tools.get_definitions = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        "nanobot.utils.document._detect_attachment_mime",
+        lambda ref, path=None: "image/png",
+    )
 
     pending_queue = asyncio.Queue()
     await pending_queue.put(InboundMessage(
@@ -2198,7 +2197,7 @@ async def test_loop_injected_followup_preserves_image_media(tmp_path):
         sender_id="u",
         chat_id="c",
         content="",
-        media=[str(image_path)],
+        media=["https://files.example/followup.png"],
     ))
 
     final_content, _, _, _, had_injections = await loop._run_agent_loop(

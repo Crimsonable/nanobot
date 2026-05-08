@@ -567,9 +567,16 @@ class AgentLoop:
                 content = pending_msg.content
                 media = pending_msg.media if pending_msg.media else None
                 if media:
-                    content, media = extract_documents(content, media)
+                    content, media = extract_documents(
+                        content,
+                        media,
+                        metadata=pending_msg.metadata,
+                    )
                     media = media or None
-                user_content = self.context._build_user_content(content, media)
+                user_content = self.context._build_user_content(
+                    content,
+                    media,
+                )
                 runtime_ctx = self.context._build_runtime_context(
                     pending_msg.channel,
                     self._runtime_chat_id(pending_msg),
@@ -948,10 +955,14 @@ class AgentLoop:
                 metadata=outbound_metadata,
             )
 
-        # Extract document text from media at the processing boundary so all
-        # channels benefit without format-specific logic in ContextBuilder.
+        # Normalize attachments at the processing boundary so all channels
+        # share the same media/document behavior before prompt assembly.
         if msg.media:
-            new_content, image_only = extract_documents(msg.content, msg.media)
+            new_content, image_only = extract_documents(
+                msg.content,
+                msg.media,
+                metadata=msg.metadata,
+            )
             msg = dataclasses.replace(msg, content=new_content, media=image_only)
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content

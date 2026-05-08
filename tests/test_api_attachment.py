@@ -375,9 +375,10 @@ async def test_json_base64_image_upload(aiohttp_client, mock_agent, tmp_path) ->
 # extract_documents tests (now in nanobot.utils.document)
 # ---------------------------------------------------------------------------
 
-def test_extract_documents_separates_images_from_docs(tmp_path) -> None:
-    """Images stay in media; document text is appended to content."""
+def test_extract_documents_separates_visuals_from_file_refs(tmp_path, monkeypatch) -> None:
+    """Visual media stays in media; ordinary files become MIME-tagged URL refs."""
     from docx import Document
+    import nanobot.utils.document as _doc
 
     png = tmp_path / "chart.png"
     png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
@@ -387,36 +388,59 @@ def test_extract_documents_separates_images_from_docs(tmp_path) -> None:
     docx_path = tmp_path / "report.docx"
     doc.save(docx_path)
 
+    monkeypatch.setattr(
+        _doc,
+        "_upload_local_attachment_ref",
+        lambda path, metadata=None: f"https://files.example/{path.name}",
+    )
+
     text, image_paths = extract_documents("summarize", [str(png), str(docx_path)])
     assert len(image_paths) == 1
-    assert image_paths[0] == str(png)
-    assert "Quarterly revenue" in text
+    assert image_paths[0] == "image_url:https://files.example/chart.png"
+    assert "Quarterly revenue" not in text
+    assert "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in text
+    assert "https://files.example/report.docx" in text
     assert "summarize" in text
 
 
-def test_extract_documents_skips_extraction_errors(tmp_path, monkeypatch) -> None:
-    """Document extraction errors should not leak into user text."""
-    bad_file = tmp_path / "broken.docx"
-    bad_file.write_text("not a docx", encoding="utf-8")
-
+def test_extract_documents_appends_remote_file_reference(monkeypatch) -> None:
     import nanobot.utils.document as _doc
-    monkeypatch.setattr(
-        _doc, "extract_text",
-        lambda _path: "[error: failed to extract DOCX: boom]",
-    )
 
-    text, image_paths = extract_documents("hello", [str(bad_file)])
-    assert text == "hello"
+    monkeypatch.setattr(_doc, "_detect_attachment_mime", lambda ref, path=None: "application/pdf")
+    text, image_paths = extract_documents(
+        "hello",
+        ["https://files.example/report.pdf"],
+    )
+    assert text == "hello\n\n“application/pdf”：https://files.example/report.pdf"
     assert image_paths == []
 
 
-def test_extract_documents_images_only(tmp_path) -> None:
-    """When all files are images, text is unchanged and all paths kept."""
+def test_extract_documents_images_only(tmp_path, monkeypatch) -> None:
+    """When all files are visual, text is unchanged and all URLs are kept."""
+    import nanobot.utils.document as _doc
+
     png = tmp_path / "a.png"
     png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+
+    monkeypatch.setattr(
+        _doc,
+        "_upload_local_attachment_ref",
+        lambda path, metadata=None: f"https://files.example/{path.name}",
+    )
+
     text, image_paths = extract_documents("describe", [str(png)])
     assert text == "describe"
     assert len(image_paths) == 1
+    assert image_paths[0] == "image_url:https://files.example/a.png"
+
+
+def test_extract_documents_remote_video_passthrough(monkeypatch) -> None:
+    import nanobot.utils.document as _doc
+
+    monkeypatch.setattr(_doc, "_detect_attachment_mime", lambda ref, path=None: "video/mp4")
+    text, media = extract_documents("describe", ["https://files.example/demo.mp4"])
+    assert text == "describe"
+    assert media == ["video_url:https://files.example/demo.mp4"]
 
 
 def test_extract_documents_skips_oversized_files(tmp_path) -> None:
@@ -429,12 +453,19 @@ def test_extract_documents_skips_oversized_files(tmp_path) -> None:
     assert image_paths == []
 
 
-def test_extract_documents_does_not_read_full_file_for_mime(tmp_path) -> None:
+def test_extract_documents_does_not_read_full_file_for_mime(tmp_path, monkeypatch) -> None:
     """MIME detection should only read header bytes, not the entire file."""
     from pathlib import Path as _Path
+    import nanobot.utils.document as _doc
 
     big_txt = tmp_path / "big.txt"
     big_txt.write_bytes(b"hello world " * 100_000)  # ~1.2 MB
+
+    monkeypatch.setattr(
+        _doc,
+        "_upload_local_attachment_ref",
+        lambda path, metadata=None: f"https://files.example/{path.name}",
+    )
 
     original_read_bytes = _Path.read_bytes
     read_sizes: list[int] = []
@@ -456,7 +487,7 @@ def test_extract_documents_does_not_read_full_file_for_mime(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DOCX upload test — API saves file, loop layer extracts text
+# DOCX upload test — API saves file, loop layer normalizes it later
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")

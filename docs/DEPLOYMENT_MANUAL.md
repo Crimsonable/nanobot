@@ -637,3 +637,36 @@ kubectl delete -f k8s/base/namespace.yaml
 
 web server测试：
 env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-main","user_id":"web-demo-1","chat_id":"web-chat-1","content":"hello from web server chain","attachments":[],"metadata":{},"raw":{}}'
+
+curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "frontend_id": "web-main",
+  "user_id": "web-demo-1",
+  "chat_id": "web-chat-1",
+  "content": "what's in this image",
+  "attachments": [
+    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy82MTlhYTc5ODZiN2U5ZDc5Yjg4Nzg3YjRhNGM3NDA2ZjQzMWEzYzk2LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTBIVVUzTldWN1pPWFJNWEg0VkI2JTJGMjAyNjA1MDglMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTA4VDA2MTQyMFomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSXdTRlZWTTA1WFZqZGFUMWhTVFZoSU5GWkNOaUlzSW1WNGNDSTZNVGMzT0RJME5qZzVOaXdpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLkhmTEd5X2hDX20xRzJxTm5YdUxBNm9ZQnZxc05oOGVGZHhmYVpSUjlTNUJxZjJQM3BXc05saDV0Q0tCMHlJanhHdnlUUnY1amtRUFBzbk1KV0NaMGNBJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9YWU4NzA0M2U4NTI1ZmIzMzlmNGNiYjEwYzk1YTEyZWJhYzU4NjY5NDFhMWIyNmViMDg5NTRiZjg5NDI1MjllYQ"
+  ],
+  "metadata": {},
+  "raw": {}
+}
+JSON
+
+
+curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "frontend_id": "web-main",
+  "user_id": "web-demo-1",
+  "chat_id": "web-chat-1",
+  "content": "what's in this video",
+  "attachments": [
+    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy9WaWRlbyUyMFByb2plY3QlMjAxLm1wND9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTBIVVUzTldWN1pPWFJNWEg0VkI2JTJGMjAyNjA1MDglMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTA4VDA4MjAyMFomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSXdTRlZWTTA1WFZqZGFUMWhTVFZoSU5GWkNOaUlzSW1WNGNDSTZNVGMzT0RJME5qZzVOaXdpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLkhmTEd5X2hDX20xRzJxTm5YdUxBNm9ZQnZxc05oOGVGZHhmYVpSUjlTNUJxZjJQM3BXc05saDV0Q0tCMHlJanhHdnlUUnY1amtRUFBzbk1KV0NaMGNBJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9NDRlMDVkYTdiOTgxODBmNWFlZDc3YzA3Y2JmYjkwYmZjODk0MTRmZDkzYTUyODBlNGJhNGVjMzA4NDcxNGY1YQ"
+  ],
+  "metadata": {},
+  "raw": {}
+}
+JSON

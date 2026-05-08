@@ -16,7 +16,7 @@ import httpx
 import websockets
 from loguru import logger
 
-from bucket_runtime.config import OUTBOUND_GATEWAY_URL, OUTBOUND_TIMEOUT
+from bucket_runtime.config import CONTAINER_UP_OUTBOUND_URL, OUTBOUND_TIMEOUT
 from bucket_runtime.process_utils import (
     install_shutdown_signal_handlers,
     terminate_process,
@@ -237,7 +237,7 @@ class LocalNanobotService:
 
         async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT) as client:
             response = await client.post(
-                OUTBOUND_GATEWAY_URL,
+                CONTAINER_UP_OUTBOUND_URL,
                 json={
                     "frontend_id": frontend_id,
                     "user_id": user_id,

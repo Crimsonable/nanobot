@@ -145,8 +145,8 @@ class BucketManager:
             {"name": "SOURCE_ROOT", "value": str(SOURCE_ROOT)},
             {"name": "SOURCE_PVC", "value": SOURCE_PVC},
             {
-                "name": "OUTBOUND_GATEWAY_URL",
-                "value": f"http://container-up.{BUCKET_NAMESPACE}:{BUCKET_SERVICE_PORT}/outbound",
+                "name": "CONTAINER_UP_BASE_URL",
+                "value": f"http://container-up.{BUCKET_NAMESPACE}:{BUCKET_SERVICE_PORT}",
             },
             {"name": "INSTANCE_IDLE_TTL_SECONDS", "value": str(BUCKET_INSTANCE_IDLE_TTL_SECONDS)},
             {

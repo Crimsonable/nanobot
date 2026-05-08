@@ -13,13 +13,11 @@ def _required_env(name: str) -> str:
     raise RuntimeError(f"missing required environment variable: {name}")
 
 
-def _derive_release_url(outbound_url: str) -> str:
-    parsed = urlparse(outbound_url)
+def _derive_url(base_url: str, path: str) -> str:
+    parsed = urlparse(base_url)
     if not parsed.scheme or not parsed.netloc:
         return ""
-    return urlunparse(
-        (parsed.scheme, parsed.netloc, "/internal/runtime/release", "", "", "")
-    )
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
 
 
 APP_HOST = os.getenv("BUCKET_RUNTIME_HOST", "0.0.0.0")
@@ -34,15 +32,24 @@ COMMON_ROOT = BUCKET_MOUNT_ROOT / "common"
 WORKSPACE_ROOT = BUCKET_MOUNT_ROOT / "workspaces"
 
 INSTANCE_HOST = os.getenv("INSTANCE_HOST", "127.0.0.1")
-OUTBOUND_GATEWAY_URL = os.getenv(
-    "OUTBOUND_GATEWAY_URL",
-    "http://container-up.nanobot.svc.cluster.local:8080/outbound",
-).strip()
+CONTAINER_UP_BASE_URL = os.getenv(
+    "CONTAINER_UP_BASE_URL",
+    "http://container-up.nanobot.svc.cluster.local:8080",
+).strip().rstrip("/")
+CONTAINER_UP_OUTBOUND_URL = _derive_url(CONTAINER_UP_BASE_URL, "/outbound")
+CONTAINER_UP_RUNTIME_RELEASE_URL = _derive_url(
+    CONTAINER_UP_BASE_URL,
+    "/internal/runtime/release",
+)
+CONTAINER_UP_ATTACHMENT_UPLOAD_URL = _derive_url(
+    CONTAINER_UP_BASE_URL,
+    "/internal/attachments/upload",
+)
+CONTAINER_UP_BRIDGE_OUTBOUND_URL = _derive_url(
+    CONTAINER_UP_BASE_URL,
+    "/api/bridge/outbound",
+)
 OUTBOUND_TIMEOUT = float(os.getenv("OUTBOUND_TIMEOUT_SECONDS", "120"))
-RELEASE_GATEWAY_URL = os.getenv(
-    "RELEASE_GATEWAY_URL",
-    "",
-).strip() or _derive_release_url(OUTBOUND_GATEWAY_URL)
 CONTROL_REQUEST_TIMEOUT = float(os.getenv("CONTROL_REQUEST_TIMEOUT_SECONDS", "15"))
 
 INSTANCE_IDLE_TTL_SECONDS = int(os.getenv("INSTANCE_IDLE_TTL_SECONDS", "1800"))

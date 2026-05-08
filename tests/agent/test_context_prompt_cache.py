@@ -90,14 +90,12 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
 def test_image_only_message_gets_non_empty_query_text(tmp_path) -> None:
     """Image-only messages need text for providers that reject queryless requests."""
     workspace = _make_workspace(tmp_path)
-    image_path = tmp_path / "hazard.png"
-    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
     builder = ContextBuilder(workspace)
 
     messages = builder.build_messages(
         history=[],
         current_message="[empty message]",
-        media=[str(image_path)],
+        media=["image_url:https://files.example/hazard.png"],
         channel="bridge",
         chat_id="room",
     )

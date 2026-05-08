@@ -63,6 +63,7 @@ dependencies = [
     "python-pptx>=1.0.0,<2.0.0",
     "filelock>=3.25.2",
     "boto3>=1.38.0,<2.0.0",
+    "python-magic>=0.4.27",
 ]
 
 [project.optional-dependencies]

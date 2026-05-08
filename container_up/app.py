@@ -17,6 +17,8 @@ from container_up.bucket_manager import BucketManager
 from container_up.bucket_scheduler import BucketScheduler
 from container_up.http_state import close_dispatch_session, init_dispatch_session
 from container_up.im_tools import get_im_manager, get_im_parser, init_im_parser
+from container_up.frontend_config import frontend_config_for
+from container_up.outbound_attachment_store import upload_local_attachment
 from container_up.qxt_im_tool import build_im_receive_event
 from container_up.settings import (
     APP_HOST,
@@ -86,6 +88,12 @@ class OutboundRequest(BaseModel):
     attachments: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class UploadAttachmentRequest(BaseModel):
+    frontend_id: str
+    user_id: str
+    local_path: str
 
 
 class DebugP2PRequest(BaseModel):
@@ -414,6 +422,21 @@ async def outbound(payload: OutboundRequest) -> dict[str, Any]:
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/internal/attachments/upload")
+async def post_upload_attachment(payload: UploadAttachmentRequest) -> dict[str, Any]:
+    try:
+        frontend = frontend_config_for(payload.frontend_id)
+        return await asyncio.to_thread(
+            upload_local_attachment,
+            frontend_id=frontend.id if frontend else payload.frontend_id,
+            user_id=payload.user_id,
+            local_path=payload.local_path,
+            frontend_config=frontend.raw if frontend else None,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/bridge/outbound")

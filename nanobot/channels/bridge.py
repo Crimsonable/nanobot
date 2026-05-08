@@ -252,12 +252,12 @@ class BridgeChannel(BaseChannel):
         if parent_bridge_url:
             return cls._bridge_ws_to_outbound_http(parent_bridge_url)
 
-        outbound_gateway_url = os.getenv("OUTBOUND_GATEWAY_URL", "").strip()
-        if outbound_gateway_url:
-            return cls._bridge_base_to_outbound_http(outbound_gateway_url)
+        container_up_bridge_outbound_url = os.getenv("CONTAINER_UP_BRIDGE_OUTBOUND_URL", "").strip()
+        if container_up_bridge_outbound_url:
+            return container_up_bridge_outbound_url
 
         raise RuntimeError(
-            "PARENT_BRIDGE_URL or OUTBOUND_GATEWAY_URL is required for proactive bridge sends"
+            "PARENT_BRIDGE_URL or CONTAINER_UP_BRIDGE_OUTBOUND_URL is required for proactive bridge sends"
         )
 
     @staticmethod
@@ -266,14 +266,4 @@ class BridgeChannel(BaseChannel):
         if not parsed.scheme or not parsed.netloc:
             return ""
         http_scheme = "https" if parsed.scheme == "wss" else "http"
-        return urlunparse((http_scheme, parsed.netloc, "/api/bridge/outbound", "", "", ""))
-
-    @staticmethod
-    def _bridge_base_to_outbound_http(base_url: str) -> str:
-        parsed = urlparse(base_url)
-        if not parsed.scheme or not parsed.netloc:
-            return ""
-        if parsed.scheme not in {"http", "https", "ws", "wss"}:
-            return ""
-        http_scheme = "https" if parsed.scheme == "wss" else "http" if parsed.scheme == "ws" else parsed.scheme
         return urlunparse((http_scheme, parsed.netloc, "/api/bridge/outbound", "", "", ""))

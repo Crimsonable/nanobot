@@ -220,11 +220,14 @@ def test_bridge_channel_applies_env_overrides(monkeypatch: pytest.MonkeyPatch) -
     assert channel.config.allow_from == ["*"]
 
 
-def test_bridge_proactive_send_falls_back_to_outbound_gateway_url(
+def test_bridge_proactive_send_falls_back_to_container_up_bridge_outbound_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("PARENT_BRIDGE_URL", raising=False)
-    monkeypatch.setenv("OUTBOUND_GATEWAY_URL", "http://container-up:8080/outbound")
+    monkeypatch.setenv(
+        "CONTAINER_UP_BRIDGE_OUTBOUND_URL",
+        "http://container-up:8080/api/bridge/outbound",
+    )
 
     assert BridgeChannel._resolve_outbound_url(
         BridgeConfig(bridge_url="ws://bridge", bridge_token="secret", allow_from=["*"])

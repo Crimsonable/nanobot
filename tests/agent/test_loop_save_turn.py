@@ -248,7 +248,10 @@ _PNG_1X1 = (
 
 
 @pytest.mark.asyncio
-async def test_process_message_persists_media_paths_on_user_turn(tmp_path: Path) -> None:
+async def test_process_message_persists_media_paths_on_user_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """User turns that attach images must record the media paths alongside
     the text so the webui can rehydrate previews on session replay.
 
@@ -260,6 +263,10 @@ async def test_process_message_persists_media_paths_on_user_turn(tmp_path: Path)
     img_a.write_bytes(_PNG_1X1)
     img_b = tmp_path / "uuid-2.png"
     img_b.write_bytes(_PNG_1X1)
+    monkeypatch.setattr(
+        "nanobot.utils.document._upload_local_attachment_ref",
+        lambda path, metadata=None: f"https://files.example/{path.name}",
+    )
 
     loop = _make_full_loop(tmp_path)
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
@@ -279,11 +286,17 @@ async def test_process_message_persists_media_paths_on_user_turn(tmp_path: Path)
     persisted = loop.sessions.get_or_create("websocket:c-media")
     assert [m["role"] for m in persisted.messages] == ["user"]
     assert persisted.messages[0]["content"] == "look"
-    assert persisted.messages[0]["media"] == [str(img_a), str(img_b)]
+    assert persisted.messages[0]["media"] == [
+        "image_url:https://files.example/uuid-1.png",
+        "image_url:https://files.example/uuid-2.png",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_process_message_persists_media_only_turn_without_text(tmp_path: Path) -> None:
+async def test_process_message_persists_media_only_turn_without_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A turn with images but no text still persists (previously silent-dropped).
 
     The old early-persist gate skipped messages without text, leaving pure
@@ -292,6 +305,10 @@ async def test_process_message_persists_media_only_turn_without_text(tmp_path: P
     """
     img = tmp_path / "only.png"
     img.write_bytes(_PNG_1X1)
+    monkeypatch.setattr(
+        "nanobot.utils.document._upload_local_attachment_ref",
+        lambda path, metadata=None: f"https://files.example/{path.name}",
+    )
 
     loop = _make_full_loop(tmp_path)
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
@@ -312,7 +329,7 @@ async def test_process_message_persists_media_only_turn_without_text(tmp_path: P
     assert len(persisted.messages) == 1
     assert persisted.messages[0]["role"] == "user"
     assert persisted.messages[0]["content"] == ""
-    assert persisted.messages[0]["media"] == [str(img)]
+    assert persisted.messages[0]["media"] == ["image_url:https://files.example/only.png"]
 
 
 @pytest.mark.asyncio

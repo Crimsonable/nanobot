@@ -166,6 +166,33 @@ def test_resolve_idle_ttl_uses_frontend_override() -> None:
     assert manager._resolve_idle_ttl(frontend_config) == 120
 
 
+def test_build_process_env_exports_container_up_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = ProcessManager(idle_ttl=60)
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.CONTAINER_UP_ATTACHMENT_UPLOAD_URL",
+        "http://container-up:8080/internal/attachments/upload",
+    )
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.CONTAINER_UP_BRIDGE_OUTBOUND_URL",
+        "http://container-up:8080/api/bridge/outbound",
+    )
+
+    frontend_config = SimpleNamespace(
+        template_dir="/tmp/template",
+        builtin_skills_dir="/tmp/skills",
+    )
+    env = manager._build_process_env(frontend_config)
+
+    assert (
+        env["CONTAINER_UP_ATTACHMENT_UPLOAD_URL"]
+        == "http://container-up:8080/internal/attachments/upload"
+    )
+    assert (
+        env["CONTAINER_UP_BRIDGE_OUTBOUND_URL"]
+        == "http://container-up:8080/api/bridge/outbound"
+    )
+
+
 @pytest.mark.asyncio
 async def test_reap_idle_processes_uses_instance_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = ProcessManager(idle_ttl=100)

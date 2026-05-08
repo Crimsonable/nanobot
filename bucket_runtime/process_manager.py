@@ -15,19 +15,21 @@ from loguru import logger
 
 from bucket_runtime.config import (
     BUCKET_ID,
+    CONTAINER_UP_ATTACHMENT_UPLOAD_URL,
+    CONTAINER_UP_BRIDGE_OUTBOUND_URL,
+    CONTAINER_UP_OUTBOUND_URL,
+    CONTAINER_UP_RUNTIME_RELEASE_URL,
     CONTROL_REQUEST_TIMEOUT,
     INSTANCE_HOST,
     INSTANCE_STOP_GRACE_SECONDS,
     MAX_PROCESSES_PER_BUCKET,
-    OUTBOUND_GATEWAY_URL,
     OUTBOUND_TIMEOUT,
-    RELEASE_GATEWAY_URL,
     SOURCE_ROOT,
 )
+from bucket_runtime.frontend_config import frontend_config_for
 from bucket_runtime.port_allocator import PortAllocator
 from bucket_runtime.process_utils import subprocess_group_kwargs, terminate_process_group
 from bucket_runtime.workspace_manager import WorkspaceManager
-from container_up.frontend_config import frontend_config_for
 
 
 @dataclass
@@ -104,7 +106,7 @@ class ProcessManager:
                 "--port",
                 str(port),
                 cwd=str(SOURCE_ROOT),
-                env=self._build_process_env(frontend_id, frontend_config),
+                env=self._build_process_env(frontend_config),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 **subprocess_group_kwargs(),
@@ -228,7 +230,7 @@ class ProcessManager:
     def _live_processes(self) -> list[UserProcess]:
         return [item for item in self._processes.values() if item.process.returncode is None]
 
-    def _build_process_env(self, frontend_id: str, frontend_config: Any | None) -> dict[str, str]:
+    def _build_process_env(self, frontend_config: Any | None) -> dict[str, str]:
         env = os.environ.copy()
         extra_pythonpath = str(SOURCE_ROOT)
         env["PYTHONPATH"] = (
@@ -238,6 +240,8 @@ class ProcessManager:
         )
         env["TEMPLATE_DIR"] = str(frontend_config.template_dir)
         env["BUILTIN_SKILLS_DIR"] = str(frontend_config.builtin_skills_dir)
+        env["CONTAINER_UP_ATTACHMENT_UPLOAD_URL"] = CONTAINER_UP_ATTACHMENT_UPLOAD_URL
+        env["CONTAINER_UP_BRIDGE_OUTBOUND_URL"] = CONTAINER_UP_BRIDGE_OUTBOUND_URL
         return env
 
     def _resolve_idle_ttl(self, frontend_config: Any | None) -> int:
@@ -313,7 +317,7 @@ class ProcessManager:
         metadata.setdefault("usr_id", instance.user_id)
         async with httpx.AsyncClient(timeout=OUTBOUND_TIMEOUT) as client:
             response = await client.post(
-                OUTBOUND_GATEWAY_URL,
+                CONTAINER_UP_OUTBOUND_URL,
                 json={
                     "frontend_id": instance.frontend_id,
                     "user_id": instance.user_id,
@@ -360,7 +364,7 @@ class ProcessManager:
             raise
 
     async def _notify_release(self, instance: UserProcess, *, reason: str) -> None:
-        if not RELEASE_GATEWAY_URL:
+        if not CONTAINER_UP_RUNTIME_RELEASE_URL:
             return
         payload = {
             "user_id": instance.user_id,
@@ -370,7 +374,7 @@ class ProcessManager:
         }
         try:
             async with httpx.AsyncClient(timeout=CONTROL_REQUEST_TIMEOUT) as client:
-                response = await client.post(RELEASE_GATEWAY_URL, json=payload)
+                response = await client.post(CONTAINER_UP_RUNTIME_RELEASE_URL, json=payload)
                 response.raise_for_status()
         except Exception:
             logger.exception("failed to notify runtime release instance_id={}", instance.instance_id)

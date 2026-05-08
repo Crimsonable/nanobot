@@ -43,7 +43,7 @@ def test_bucket_manager_builds_deployment_manifest() -> None:
     assert "BUCKET_MOUNT_PVC" in env_names
     assert "SOURCE_ROOT" in env_names
     assert "SOURCE_PVC" in env_names
-    assert "OUTBOUND_GATEWAY_URL" in env_names
+    assert "CONTAINER_UP_BASE_URL" in env_names
     assert "SKILLS_ROOT" not in env_names
     assert "TEMPLATES_ROOT" not in env_names
 
