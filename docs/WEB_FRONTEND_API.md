@@ -1,18 +1,21 @@
 # Web Frontend HTTP API
 
-本文只描述前端直接对接 `container_up` 时需要使用的两个 HTTP 接口：
+本文描述 Web 前端对接 `container_up` 时的 HTTP 交互约定，分为两部分：
 
-- `POST /inbound/{frontend_id}`
-- `POST /outbound`
+- 前端调用 `container_up` 的入站接口：`POST /inbound/{frontend_id}`
+- 前端自行实现的消息回调接口：用于接收 `container_up` 推送的回复消息
 
 不涉及内部实现。
 
 ## 1. 接口说明
 
-### 1.1 `POST /inbound/{frontend_id}`
+### 1.1 `POST http://192.168.48.104/inbound/{frontend_id}`
 
 用途：
 前端直接向 `container_up` 提交用户消息。
+
+接口提供方：
+`container_up` 后端。
 
 请求头：
 
@@ -30,9 +33,9 @@ Content-Type: application/json
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `user_id` | `string` | 是 | 用户唯一标识 |
-| `chat_id` | `string` | 是 | 会话唯一标识 |
-| `content` | `string` | 是 | 用户输入文本；无文本时可传空字符串 |
+| `user_id` | `string` | 是 | 用户唯一标识，优先使用工号/电话号码等具有实际含义的id |
+| `chat_id` | `string` | 是 | 会话唯一标识，用于前端控制后端上下文切换 |
+| `content` | `string` | 是 | 用户输入文本 |
 | `attachments` | `array` | 否 | 附件列表，默认 `[]` |
 | `metadata` | `object` | 否 | 业务扩展字段，默认 `{}` |
 | `raw` | `object` | 否 | 原始上下文字段，默认 `{}` |
@@ -83,13 +86,22 @@ Content-Type: application/json
 说明：
 
 - `POST /inbound` 成功只表示消息已被后端接收。
-- 真实请求路径示例：`POST /inbound/web-main`
-- AI 回复会通过 `POST /outbound` 回调下发，不会直接出现在 `POST /inbound` 的响应里。
+- 回复不会直接出现在 `POST /inbound` 的响应里。
+- 回复会由 `container_up` 主动回调到前端提供的消息接收接口。
 
-### 1.2 `POST /outbound`
+### 1.2 前端消息回调接口
 
 用途：
-`container_up` 将 AI 回复回调给前端后端。
+前端提供一个可被 `container_up` 访问的 HTTP 接口，用于接收 AI 回复消息。
+
+接口提供方：
+前端。
+
+说明：
+
+- `container_up` 会按配置中的回调地址向该接口发起 `POST` 请求。
+- 回调地址要内网可访问。
+- 本文只定义 `container_up` 发起回调时的请求字段和前端应返回的响应约定。
 
 请求头：
 
@@ -101,9 +113,9 @@ Content-Type: application/json
 
 | 字段 | 类型 | 必有 | 说明 |
 | --- | --- | --- | --- |
-| `frontend_id` | `string` | 是 | frontend 标识 |
-| `user_id` | `string` | 是 | 用户唯一标识 |
-| `chat_id` | `string` | 是 | 会话唯一标识 |
+| `frontend_id` | `string` | 是 | frontend 标识，以前后端实际约定为准 |
+| `user_id` | `string` | 是 | 用户唯一标识，与inbound请求中的id一致 |
+| `chat_id` | `string` | 是 | 会话唯一标识，与inbound请求中的id一致 |
 | `content` | `string` | 是 | AI 回复文本；纯附件回复时可能为空字符串 |
 | `attachments` | `array` | 是 | 回复附件列表，默认 `[]` |
 | `metadata` | `object` | 是 | 透传业务字段和扩展字段，默认 `{}` |
@@ -146,7 +158,7 @@ Content-Type: application/json
 }
 ```
 
-前端后端收到回调后的成功响应建议：
+前端收到回调后的成功响应建议：
 
 ```json
 {
@@ -161,7 +173,7 @@ Content-Type: application/json
 
 ## 2. attachments 字段约定
 
-`attachments` 建议按以下两种格式处理。
+`attachments` 建议上传可访问的对象url链接。
 
 字符串格式：
 
@@ -170,24 +182,6 @@ Content-Type: application/json
   "https://example.com/files/demo.png"
 ]
 ```
-
-对象格式：
-
-```json
-[
-  {
-    "url": "https://example.com/files/demo.png",
-    "filename": "demo.png",
-    "content_type": "image/png"
-  }
-]
-```
-
-前端联调建议：
-
-- 入站先用 `attachments: []` 做文本联调
-- 如需做附件联调，优先使用对象格式
-- 出站处理时同时兼容字符串格式和对象格式
 
 ## 3. metadata 字段约定
 
@@ -208,7 +202,7 @@ Content-Type: application/json
 入站请求：
 
 ```bash
-curl -sS -X POST http://127.0.0.1:30080/inbound/web-main \
+curl -sS -X POST http://192.168.48.104:30080/inbound/web-main \
   -H 'Content-Type: application/json' \
   -d '{
     "user_id":"web-demo-1",
@@ -228,9 +222,21 @@ curl -sS -X POST http://127.0.0.1:30080/inbound/web-main \
 }
 ```
 
-## 5. 联调要求
+## 5. minio配置
+```bash
+{
+    "endpoint": "http://192.168.48.104:9000",
+    "access_key": "minio_admin",
+    "secret_key": "minio_password",
+    "bucket": "attachments"
+}
+```
 
+## 6. 其他
+
+- 'frontend_id'以前后端实际约定为准
 - `user_id` 由前端保证稳定，不要同一用户频繁变更
 - `chat_id` 由前端保证唯一，用于区分不同会话
-- `POST /outbound` 必须可被 `container_up` 访问
-- `POST /outbound` 收到回调后应尽快返回 `200`
+- 前端提供的消息回调 URL 必须可被 `container_up` 访问
+- 前端回调接口收到消息后应尽快返回 `200
+- 前端回调接口确认后告知后端进行配置
