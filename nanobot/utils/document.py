@@ -313,6 +313,25 @@ def _visual_block_type_for_mime(mime: str) -> str | None:
     return None
 
 
+def _is_vllm_provider_backend(
+    provider: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    meta = metadata or {}
+    provider_name = str(
+        meta.get("provider_backend")
+        or meta.get("provider_name")
+        or meta.get("provider")
+        or ""
+    ).strip().lower()
+    if provider_name == "vllm":
+        return True
+
+    spec = getattr(provider, "_spec", None)
+    spec_name = str(getattr(spec, "name", "") or "").strip().lower()
+    return spec_name == "vllm"
+
+
 def encode_visual_media_ref(block_type: str, url: str) -> str:
     prefix = _VISUAL_REF_PREFIXES.get(block_type)
     if not prefix:
@@ -384,6 +403,7 @@ def extract_documents(
     *,
     max_file_size: int = _MAX_EXTRACT_FILE_SIZE,
     metadata: dict[str, Any] | None = None,
+    provider: Any | None = None,
 ) -> tuple[str, list[str]]:
     """Normalize inbound attachments into vision URLs and text references.
 
@@ -396,6 +416,7 @@ def extract_documents(
     Local attachments are uploaded to the configured MinIO ``attachments``
     bucket first; remote HTTP(S) URLs are consumed directly.
     """
+    supports_visual_url = _is_vllm_provider_backend(provider=provider, metadata=metadata)
     visual_refs: list[str] = []
     attachment_refs: list[str] = []
 
@@ -434,7 +455,7 @@ def extract_documents(
                 )
                 continue
 
-        if _is_visual_mime(mime):
+        if supports_visual_url and _is_visual_mime(mime):
             block_type = _visual_block_type_for_mime(mime)
             if not block_type:
                 continue

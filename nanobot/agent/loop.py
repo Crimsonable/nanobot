@@ -571,6 +571,7 @@ class AgentLoop:
                         content,
                         media,
                         metadata=pending_msg.metadata,
+                        provider=self.provider,
                     )
                     media = media or None
                 user_content = self.context._build_user_content(
@@ -962,6 +963,7 @@ class AgentLoop:
                 msg.content,
                 msg.media,
                 metadata=msg.metadata,
+                provider=self.provider,
             )
             msg = dataclasses.replace(msg, content=new_content, media=image_only)
 
