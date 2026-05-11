@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import mimetypes
@@ -9,7 +10,10 @@ import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
+
+import httpx
 
 from container_up.attachments import persist_attachment_bytes
 from container_up.settings import FEISHU_APP_ID, FEISHU_APP_SECRET
@@ -1119,14 +1123,26 @@ class FeishuIMParser:
             CreateImageRequestBody,
         )
 
-        path = self._attachment_path(attachment)
-        suffix = path.suffix.lower()
-        is_image = suffix in self._IMAGE_SUFFIXES or str(
-            mimetypes.guess_type(path.name)[0] or ""
-        ).startswith("image/")
         client = self._get_api_client()
+        ref, file_name = self._attachment_ref_and_name(attachment)
+        suffix = Path(file_name).suffix.lower()
+        content_type = ""
 
-        with path.open("rb") as f:
+        if ref.startswith(("http://", "https://")):
+            try:
+                response = httpx.get(ref, timeout=30.0, follow_redirects=True)
+                response.raise_for_status()
+            except Exception as exc:
+                raise RuntimeError(f"failed to download attachment from url: {ref}: {exc}") from exc
+            content_type = str(response.headers.get("content-type") or "").split(";")[0].strip()
+            upload_stream: Any = io.BytesIO(response.content)
+        else:
+            path = self._attachment_path(ref)
+            content_type = str(mimetypes.guess_type(path.name)[0] or "").strip()
+            upload_stream = path.open("rb")
+
+        is_image = suffix in self._IMAGE_SUFFIXES or content_type.startswith("image/")
+        with upload_stream as f:
             if is_image:
                 upload_response = client.im.v1.image.create(
                     CreateImageRequest.builder()
@@ -1151,8 +1167,8 @@ class FeishuIMParser:
                     CreateFileRequest.builder()
                     .request_body(
                         CreateFileRequestBody.builder()
-                        .file_type(self._feishu_file_type(path))
-                        .file_name(path.name)
+                        .file_type(self._feishu_file_type(Path(file_name)))
+                        .file_name(file_name)
                         .file(f)
                         .build()
                     )
@@ -1176,15 +1192,30 @@ class FeishuIMParser:
             response = self._reply_message_sync(reply_target, send_type, content)
         else:
             response = self._send_message_sync(reply_target, send_type, content)
-        return {"attachment": str(path), "response": response}
+        return {"attachment": ref, "response": response}
 
     @staticmethod
-    def _attachment_path(attachment: Any) -> Path:
+    def _attachment_ref_and_name(attachment: Any) -> tuple[str, str]:
         ref = ""
+        file_name = ""
         if isinstance(attachment, dict):
             ref = str(attachment.get("url") or "").strip()
+            file_name = str(attachment.get("filename") or "").strip()
         else:
             ref = str(attachment or "").strip()
+        if not ref:
+            raise RuntimeError("empty attachment")
+
+        if not file_name:
+            if ref.startswith(("http://", "https://")):
+                parsed = urlparse(ref)
+                file_name = Path(parsed.path).name or "attachment.bin"
+            else:
+                file_name = Path(ref).name or "attachment.bin"
+        return ref, file_name
+
+    @staticmethod
+    def _attachment_path(ref: str) -> Path:
         if not ref:
             raise RuntimeError("empty attachment")
 
