@@ -177,6 +177,7 @@ class MinioAttachmentStore:
 
     def _build_client(self) -> Any:
         import boto3
+        from botocore.config import Config
 
         return boto3.client(
             "s3",
@@ -184,6 +185,7 @@ class MinioAttachmentStore:
             aws_access_key_id=self.config.access_key,
             aws_secret_access_key=self.config.secret_key,
             region_name=self.config.region or None,
+            config=Config(signature_version="s3v4"),
         )
 
     def _object_key(self, *, path: Path, frontend_id: str, user_id: str) -> str:
