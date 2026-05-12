@@ -1116,7 +1116,13 @@ class AgentLoop:
             ask_user_options_from_messages(all_msgs) if stop_reason == "ask_user" else [],
             msg.channel,
         )
-        if on_stream is not None and stop_reason not in {"ask_user", "error"}:
+        meta["stop_reason"] = stop_reason
+        if stop_reason in {"error", "tool_error"}:
+            meta["error"] = {
+                "type": stop_reason,
+                "message": final_content,
+            }
+        if on_stream is not None and stop_reason not in {"ask_user", "error", "tool_error"}:
             meta["_streamed"] = True
         return OutboundMessage(
             channel=msg.channel,

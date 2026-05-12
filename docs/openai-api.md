@@ -16,6 +16,7 @@ By default, the API binds to `127.0.0.1:8900`. You can change this in `config.js
 - Fixed model: omit `model`, or pass the same model shown by `/v1/models`
 - Streaming: set `stream=true` to receive Server-Sent Events (`text/event-stream`) with OpenAI-compatible delta chunks, terminated by `data: [DONE]`; omit or set `stream=false` for a single JSON response
 - **File uploads**: supports images, PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) via JSON base64 or `multipart/form-data` (max 10MB per file)
+- Non-streaming responses include a top-level `metadata` object. `metadata.stop_reason` is always set; `metadata.error` is present for agent/model/tool failures.
 - API requests run in the synthetic `api` channel, so the `message` tool does **not** automatically deliver to Telegram/Discord/etc. To proactively send to another chat, call `message` with an explicit `channel` and `chat_id` for an enabled channel.
 
 Example tool call for cross-channel delivery from an API session:

@@ -2,20 +2,16 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import mimetypes
 import os
 from pathlib import Path
-from urllib.parse import quote
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
-DEFAULT_ENDPOINT = "http://192.168.48.104:9000"
-DEFAULT_ACCESS_KEY = "minio_admin"
-DEFAULT_SECRET_KEY = "minio_password"
-DEFAULT_BUCKET = "attachments"
-DEFAULT_PUBLIC_BASE_URL = "http://192.168.48.104:9000/attachments"
-DEFAULT_REGION = "us-east-1"
-DEFAULT_KEY_PREFIX = "markdown-images"
+DEFAULT_CONTAINERUP_BASE_URL = "http://127.0.0.1:8080"
+DEFAULT_FRONTEND_ID = "web-main"
+DEFAULT_USER_ID = "skill-user"
 
 
 def getenv(name: str, default: str) -> str:
@@ -25,90 +21,126 @@ def getenv(name: str, default: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Upload a local image to MinIO and return Markdown image link JSON."
+        description=(
+            "Resolve a file reference to URL. Remote URL is passed through; "
+            "local path is uploaded via container_up /internal/attachments/upload."
+        )
     )
-    parser.add_argument("image_path", help="Absolute or relative local image path")
-    parser.add_argument("--alt", default="image", help="Alt text for markdown output")
+    parser.add_argument("file_ref", help="Local file path or remote http(s) URL")
     parser.add_argument(
-        "--key-prefix",
-        default=getenv("MINIO_KEY_PREFIX", DEFAULT_KEY_PREFIX),
-        help="Object key prefix (default: markdown-images or MINIO_KEY_PREFIX)",
+        "--containerup-url",
+        default=getenv("CONTAINERUP_BASE_URL", DEFAULT_CONTAINERUP_BASE_URL),
+        help="container_up base URL (default: CONTAINERUP_BASE_URL or http://127.0.0.1:8080)",
+    )
+    parser.add_argument(
+        "--frontend-id",
+        default=getenv("CONTAINERUP_FRONTEND_ID", DEFAULT_FRONTEND_ID),
+        help="frontend id for upload API (default: CONTAINERUP_FRONTEND_ID or web-main)",
+    )
+    parser.add_argument(
+        "--user-id",
+        default=getenv("CONTAINERUP_USER_ID", DEFAULT_USER_ID),
+        help="user id for upload API (default: CONTAINERUP_USER_ID or skill-user)",
+    )
+    parser.add_argument(
+        "--alt",
+        default="",
+        help="Optional alt text. When provided, output also includes markdown field.",
     )
     return parser.parse_args()
 
 
-def build_client(endpoint: str, access_key: str, secret_key: str, region: str):
+def is_remote_ref(ref: str) -> bool:
+    parsed = urlparse(ref)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def upload_local_via_containerup(
+    *,
+    base_url: str,
+    frontend_id: str,
+    user_id: str,
+    local_path: str,
+) -> dict[str, object]:
+    endpoint = f"{base_url.rstrip('/')}/internal/attachments/upload"
+    payload = {
+        "frontend_id": frontend_id,
+        "user_id": user_id,
+        "local_path": local_path,
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        import boto3
-    except ModuleNotFoundError as exc:
-        raise SystemExit(
-            "boto3 is required. Install with: python3 -m pip install boto3"
+        with urlopen(request, timeout=30) as response:
+            data = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"container_up upload failed: HTTP {exc.code} {exc.reason}: {detail}"
         ) from exc
+    except URLError as exc:
+        raise RuntimeError(f"container_up upload request failed: {exc}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("container_up upload request timed out") from exc
 
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=region,
-    )
-
-
-def object_key_for(path: Path, key_prefix: str) -> str:
-    stat = path.stat()
-    digest_input = f"{path.resolve(strict=False)}:{stat.st_size}:{stat.st_mtime_ns}".encode(
-        "utf-8"
-    )
-    digest = hashlib.sha1(digest_input).hexdigest()
-    suffix = path.suffix.lower()
-    filename = f"{digest}{suffix}" if suffix else digest
-    prefix = key_prefix.strip("/")
-    return f"{prefix}/{filename}" if prefix else filename
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"container_up returned non-JSON response: {data}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"container_up returned unexpected response: {parsed!r}")
+    return parsed
 
 
 def main() -> int:
     args = parse_args()
+    raw_ref = args.file_ref.strip()
+    if not raw_ref:
+        raise SystemExit("file_ref is empty")
 
-    image_path = Path(args.image_path).expanduser().resolve()
-    if not image_path.exists() or not image_path.is_file():
-        raise SystemExit(f"image file not found: {image_path}")
-
-    endpoint = getenv("MINIO_ENDPOINT", DEFAULT_ENDPOINT)
-    access_key = getenv("MINIO_ACCESS_KEY", DEFAULT_ACCESS_KEY)
-    secret_key = getenv("MINIO_SECRET_KEY", DEFAULT_SECRET_KEY)
-    bucket = getenv("MINIO_BUCKET", DEFAULT_BUCKET)
-    public_base_url = getenv("MINIO_PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL).rstrip("/")
-    region = getenv("MINIO_REGION", DEFAULT_REGION)
-
-    content_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
-    object_key = object_key_for(image_path, args.key_prefix)
-
-    client = build_client(endpoint, access_key, secret_key, region)
-    client.upload_file(
-        str(image_path),
-        bucket,
-        object_key,
-        ExtraArgs={"ContentType": content_type},
-    )
-
-    if public_base_url:
-        url = f"{public_base_url}/{quote(object_key)}"
+    result: dict[str, object]
+    if is_remote_ref(raw_ref):
+        result = {
+            "url": raw_ref,
+            "filename": "",
+            "content_type": "",
+            "storage": "",
+            "bucket": "",
+            "object_key": "",
+            "input_ref": raw_ref,
+            "is_remote": True,
+        }
     else:
-        url = str(
-            client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": bucket, "Key": object_key},
-                ExpiresIn=3600,
-            )
-        )
+        local_path = Path(raw_ref).expanduser()
+        if not local_path.is_absolute():
+            local_path = local_path.resolve()
+        if not local_path.is_file():
+            raise SystemExit(f"local file not found: {local_path}")
 
-    result = {
-        "url": url,
-        "markdown": f"![{args.alt}]({url})",
-        "bucket": bucket,
-        "object_key": object_key,
-        "content_type": content_type,
-    }
+        try:
+            uploaded = upload_local_via_containerup(
+                base_url=args.containerup_url,
+                frontend_id=args.frontend_id,
+                user_id=args.user_id,
+                local_path=str(local_path),
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        url = str(uploaded.get("url") or "").strip()
+        if not url:
+            raise SystemExit(f"container_up response has empty url: {uploaded}")
+        result = dict(uploaded)
+        result["url"] = url
+        result["input_ref"] = str(local_path)
+        result["is_remote"] = False
+
+    if args.alt:
+        result["markdown"] = f"![{args.alt}]({result['url']})"
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

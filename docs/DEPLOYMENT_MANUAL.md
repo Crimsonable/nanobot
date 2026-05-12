@@ -495,6 +495,7 @@ kubectl apply -f k8s/base/rbac.yaml
 
 ```bash
 kubectl apply -f k8s/base/pv-pvc-nfs.yaml
+kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
 kubectl get pv
 kubectl get pvc -n nanobot
 ```

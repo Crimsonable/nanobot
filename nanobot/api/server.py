@@ -49,7 +49,12 @@ def _error_json(status: int, message: str, err_type: str = "invalid_request_erro
     )
 
 
-def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
+def _chat_completion_response(
+    content: str,
+    model: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
@@ -62,6 +67,7 @@ def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
                 "finish_reason": "stop",
             }
         ],
+        "metadata": dict(metadata or {}),
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
@@ -73,6 +79,14 @@ def _response_text(value: Any) -> str:
     if hasattr(value, "content"):
         return str(getattr(value, "content") or "")
     return str(value)
+
+
+def _response_metadata(value: Any) -> dict[str, Any]:
+    """Extract outbound metadata from process_direct output."""
+    if value is None:
+        return {}
+    metadata = getattr(value, "metadata", None)
+    return dict(metadata or {}) if isinstance(metadata, dict) else {}
 
 # ---------------------------------------------------------------------------
 # SSE helpers
@@ -300,6 +314,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                     timeout=timeout_s,
                 )
                 response_text = _response_text(response)
+                response_metadata = _response_metadata(response)
 
                 if not response_text or not response_text.strip():
                     logger.warning("Empty response for session {}, retrying", session_key)
@@ -314,9 +329,11 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                         timeout=timeout_s,
                     )
                     response_text = _response_text(retry_response)
+                    response_metadata = _response_metadata(retry_response)
                     if not response_text or not response_text.strip():
                         logger.warning("Empty response after retry, using fallback")
                         response_text = _FALLBACK
+                        response_metadata = {}
 
             except asyncio.TimeoutError:
                 return _error_json(504, f"Request timed out after {timeout_s}s")
@@ -327,7 +344,13 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         logger.exception("Unexpected API lock error for session {}", session_key)
         return _error_json(500, "Internal server error", err_type="server_error")
 
-    return web.json_response(_chat_completion_response(response_text, model_name))
+    return web.json_response(
+        _chat_completion_response(
+            response_text,
+            model_name,
+            metadata=response_metadata,
+        )
+    )
 
 
 async def handle_models(request: web.Request) -> web.Response:
