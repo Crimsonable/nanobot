@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from container_up.binding_repository import BindingRepository
+from container_up.binding_repository import build_instance_id
 from container_up.bucket_client import BucketClient
 from container_up.bucket_manager import BucketManager
 from container_up.workspace_manager import WorkspaceManager
@@ -49,31 +50,32 @@ class BucketScheduler:
         user_id: str,
         frontend_id: str | None,
     ) -> UserInstanceRuntime:
-        lock = self._user_locks.setdefault(user_id, asyncio.Lock())
+        if not frontend_id:
+            raise RuntimeError("frontend_id is required to allocate a workspace")
+        user_key = f"{frontend_id}:{user_id}"
+        lock = self._user_locks.setdefault(user_key, asyncio.Lock())
         async with lock:
-            existing = self._repo.get_user_instance(user_id)
+            existing = self._repo.get_user_instance(frontend_id, user_id)
             if existing is not None and existing.get("status") == "online" and existing.get("bucket_id"):
                 runtime = await self._get_live_runtime(existing)
                 if runtime is not None:
-                    self._repo.touch_user_activity(user_id)
+                    self._repo.touch_user_activity(frontend_id, user_id)
                     return runtime
 
-            existing_frontend_id = (
-                str(existing.get("frontend_id") or "").strip()
-                if existing is not None
-                else ""
-            )
-            resolved_frontend_id = frontend_id or existing_frontend_id or None
-            if not resolved_frontend_id:
-                raise RuntimeError("frontend_id is required to allocate a workspace")
-            workspace = self._workspace_manager.get_or_create_workspace(resolved_frontend_id, user_id)
+            workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
             user, bucket, created = self._repo.reserve_user_instance(
+                frontend_id=frontend_id,
                 user_id=user_id,
                 workspace_path=str(workspace),
-                frontend_id=resolved_frontend_id,
+            )
+            self._assert_binding_consistency(
+                user,
+                frontend_id=frontend_id,
+                user_id=user_id,
+                workspace_path=str(workspace),
             )
             if not created:
-                self._repo.touch_user_activity(user_id)
+                self._repo.touch_user_activity(frontend_id, user_id)
                 return self._runtime_from_records(user, bucket)
 
             runtime = self._runtime_from_records(user, bucket)
@@ -83,17 +85,27 @@ class BucketScheduler:
                 await self._bucket_client.create_user_instance(
                     runtime.bucket_url,
                     {
-                        "frontend_id": resolved_frontend_id or "",
+                        "frontend_id": frontend_id,
                         "user_id": user_id,
                         "instance_id": runtime.instance_id,
                         "workspace_path": runtime.workspace_path,
                     },
                 )
             except Exception:
-                self._repo.rollback_user_instance_reservation(user_id, runtime.bucket_id)
+                self._repo.rollback_user_instance_reservation(
+                    frontend_id,
+                    user_id,
+                    runtime.bucket_id,
+                )
                 raise
 
-            user = self._repo.mark_user_instance_online(user_id)
+            user = self._repo.mark_user_instance_online(frontend_id, user_id)
+            self._assert_binding_consistency(
+                user,
+                frontend_id=frontend_id,
+                user_id=user_id,
+                workspace_path=str(workspace),
+            )
             bucket = self._repo.get_bucket(runtime.bucket_id)
             if bucket is None:
                 raise RuntimeError(f"bucket disappeared after online transition: {runtime.bucket_id}")
@@ -115,7 +127,7 @@ class BucketScheduler:
         packet["user_id"] = user_id
         packet["instance_id"] = runtime.instance_id
         await self._bucket_client.forward_inbound(runtime.bucket_url, packet)
-        self._repo.touch_user_activity(user_id)
+        self._repo.touch_user_activity(frontend_id, user_id)
         return runtime
 
     async def route_cancel(
@@ -125,7 +137,7 @@ class BucketScheduler:
         user_id: str,
         payload: dict[str, Any],
     ) -> UserInstanceRuntime | None:
-        user = self._repo.get_user_instance(user_id)
+        user = self._repo.get_user_instance(frontend_id, user_id)
         if user is None or user.get("status") != "online" or not user.get("bucket_id"):
             return None
         bucket = self._repo.get_bucket(str(user["bucket_id"]))
@@ -137,11 +149,11 @@ class BucketScheduler:
         packet["user_id"] = user_id
         packet["instance_id"] = runtime.instance_id
         await self._bucket_client.forward_cancel(runtime.bucket_url, packet)
-        self._repo.touch_user_activity(user_id)
+        self._repo.touch_user_activity(frontend_id, user_id)
         return runtime
 
-    async def release_user_instance(self, user_id: str) -> dict[str, Any] | None:
-        user = self._repo.get_user_instance(user_id)
+    async def release_user_instance(self, frontend_id: str, user_id: str) -> dict[str, Any] | None:
+        user = self._repo.get_user_instance(frontend_id, user_id)
         if user is None or user.get("status") != "online" or not user.get("bucket_id"):
             return user
         bucket = self._repo.get_bucket(str(user["bucket_id"]))
@@ -153,20 +165,42 @@ class BucketScheduler:
                 )
             finally:
                 return self._repo.release_user_instance(
+                    frontend_id,
                     user_id,
                     bucket_id=str(user["bucket_id"]),
                     instance_id=str(user["instance_id"]),
                 )
-        return self._repo.release_user_instance(user_id)
+        return self._repo.release_user_instance(frontend_id, user_id)
 
     def sync_runtime_release(
         self,
         *,
         user_id: str,
+        frontend_id: str | None,
         bucket_id: str | None,
         instance_id: str | None,
     ) -> dict[str, Any] | None:
+        if frontend_id:
+            return self._repo.release_user_instance(
+                frontend_id,
+                user_id,
+                bucket_id=bucket_id,
+                instance_id=instance_id,
+            )
+        if instance_id:
+            user = self._repo.get_user_instance_by_instance_id(instance_id)
+            if user is not None:
+                return self._repo.release_user_instance(
+                    str(user["frontend_id"]),
+                    str(user["user_id"]),
+                    bucket_id=bucket_id,
+                    instance_id=instance_id,
+                )
+        matches = self._repo.list_for_user(user_id)
+        if len(matches) != 1:
+            return None
         return self._repo.release_user_instance(
+            str(matches[0]["frontend_id"]),
             user_id,
             bucket_id=bucket_id,
             instance_id=instance_id,
@@ -179,9 +213,42 @@ class BucketScheduler:
             workspace_path=str(user["workspace_path"]),
             bucket_id=str(bucket["bucket_id"]),
             bucket_url=str(bucket["service_host"]).rstrip("/"),
-            instance_id=str(user["instance_id"] or user["user_id"]),
+            instance_id=str(user.get("instance_id") or "")
+            or build_instance_id(str(user.get("frontend_id") or ""), str(user["user_id"])),
             frontend_id=str(user.get("frontend_id") or "") or None,
         )
+
+    @staticmethod
+    def _assert_binding_consistency(
+        user: dict[str, Any],
+        *,
+        frontend_id: str,
+        user_id: str,
+        workspace_path: str,
+    ) -> None:
+        actual_frontend = str(user.get("frontend_id") or "")
+        actual_user = str(user.get("user_id") or "")
+        actual_workspace = str(user.get("workspace_path") or "")
+        actual_instance_id = str(user.get("instance_id") or "")
+        expected_instance_id = build_instance_id(frontend_id, user_id)
+        if actual_frontend != frontend_id:
+            raise RuntimeError(
+                f"binding frontend_id mismatch: expected {frontend_id}, got {actual_frontend}"
+            )
+        if actual_user != user_id:
+            raise RuntimeError(
+                f"binding user_id mismatch: expected {user_id}, got {actual_user}"
+            )
+        if actual_workspace != workspace_path:
+            raise RuntimeError(
+                "binding workspace_path mismatch: "
+                f"expected {workspace_path}, got {actual_workspace}"
+            )
+        if actual_instance_id and actual_instance_id != expected_instance_id:
+            raise RuntimeError(
+                "binding instance_id mismatch: "
+                f"expected {expected_instance_id}, got {actual_instance_id}"
+            )
 
     async def _get_live_runtime(self, user: dict[str, Any]) -> UserInstanceRuntime | None:
         bucket_id = str(user.get("bucket_id") or "")
@@ -190,6 +257,7 @@ class BucketScheduler:
         bucket = self._repo.get_bucket(bucket_id)
         if bucket is None:
             self._repo.release_user_instance(
+                str(user["frontend_id"]),
                 str(user["user_id"]),
                 bucket_id=bucket_id,
                 instance_id=str(user.get("instance_id") or "") or None,
@@ -217,6 +285,7 @@ class BucketScheduler:
             )
 
         self._repo.release_user_instance(
+            runtime.frontend_id or "",
             runtime.user_id,
             bucket_id=runtime.bucket_id,
             instance_id=runtime.instance_id,

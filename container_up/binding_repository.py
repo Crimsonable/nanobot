@@ -19,6 +19,19 @@ from container_up.settings import (
 )
 
 
+def build_instance_id(frontend_id: str, user_id: str) -> str:
+    safe_frontend = _safe_key_component(frontend_id, fallback="frontend")
+    safe_user = _safe_key_component(user_id, fallback="user")
+    return f"{safe_frontend}__{safe_user}"
+
+
+def _safe_key_component(value: str, *, fallback: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value).strip(
+        "-."
+    )
+    return cleaned[:96] or fallback
+
+
 class BindingRepository:
     """SQLite-backed runtime state for user instances and bucket capacity."""
 
@@ -29,21 +42,7 @@ class BindingRepository:
     def init_db(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_instances (
-                    user_id TEXT PRIMARY KEY,
-                    workspace_path TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    bucket_id TEXT,
-                    instance_id TEXT,
-                    frontend_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_active_at TEXT
-                )
-                """
-            )
+            self._create_user_instances_table(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS buckets (
@@ -68,6 +67,24 @@ class BindingRepository:
             )
             conn.commit()
 
+    def _create_user_instances_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_instances (
+                frontend_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                bucket_id TEXT,
+                instance_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_active_at TEXT,
+                PRIMARY KEY (frontend_id, user_id)
+            )
+            """
+        )
+
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self._db_path)
@@ -88,9 +105,22 @@ class BindingRepository:
                 conn.rollback()
                 raise
 
-    def get_user_instance(self, user_id: str) -> dict[str, Any] | None:
+    def get_user_instance(self, frontend_id: str, user_id: str) -> dict[str, Any] | None:
         with self._lock, self._conn() as conn:
-            return self._get_user_instance(conn, user_id)
+            return self._get_user_instance(conn, frontend_id, user_id)
+
+    def get_user_instance_by_instance_id(self, instance_id: str) -> dict[str, Any] | None:
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT frontend_id, user_id, workspace_path, status, bucket_id, instance_id,
+                       created_at, updated_at, last_active_at
+                FROM user_instances
+                WHERE instance_id = ?
+                """,
+                (instance_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_bucket(self, bucket_id: str) -> dict[str, Any] | None:
         with self._lock, self._conn() as conn:
@@ -143,12 +173,12 @@ class BindingRepository:
     def reserve_user_instance(
         self,
         *,
+        frontend_id: str,
         user_id: str,
         workspace_path: str,
-        frontend_id: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
         with self.transaction_immediate() as conn:
-            existing = self._get_user_instance(conn, user_id)
+            existing = self._get_user_instance(conn, frontend_id, user_id)
             if existing is not None and existing.get("status") == "online" and existing.get("bucket_id"):
                 bucket = self._get_bucket(conn, str(existing["bucket_id"]))
                 if bucket is not None:
@@ -168,94 +198,118 @@ class BindingRepository:
                 raise RuntimeError("reserved bucket record disappeared")
 
             now = _utc_now()
-            instance_id = user_id
+            instance_id = build_instance_id(frontend_id, user_id)
             if existing is None:
                 conn.execute(
                     """
                     INSERT INTO user_instances (
-                        user_id, workspace_path, status, bucket_id, instance_id,
-                        frontend_id, created_at, updated_at, last_active_at
-                    ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, ?)
+                        frontend_id, user_id, workspace_path, status, bucket_id, instance_id,
+                        created_at, updated_at, last_active_at
+                    ) VALUES (
+                        :frontend_id,
+                        :user_id,
+                        :workspace_path,
+                        'creating',
+                        :bucket_id,
+                        :instance_id,
+                        :created_at,
+                        :updated_at,
+                        :last_active_at
+                    )
                     """,
-                    (
-                        user_id,
-                        workspace_path,
-                        bucket["bucket_id"],
-                        instance_id,
-                        frontend_id,
-                        now,
-                        now,
-                        now,
-                    ),
+                    {
+                        "frontend_id": frontend_id,
+                        "user_id": user_id,
+                        "workspace_path": workspace_path,
+                        "bucket_id": bucket["bucket_id"],
+                        "instance_id": instance_id,
+                        "created_at": now,
+                        "updated_at": now,
+                        "last_active_at": now,
+                    },
                 )
             else:
                 conn.execute(
                     """
                     UPDATE user_instances
-                    SET workspace_path = ?, status = 'creating', bucket_id = ?, instance_id = ?,
-                        frontend_id = ?, updated_at = ?, last_active_at = ?
-                    WHERE user_id = ?
+                    SET workspace_path = :workspace_path,
+                        status = 'creating',
+                        bucket_id = :bucket_id,
+                        instance_id = :instance_id,
+                        updated_at = :updated_at,
+                        last_active_at = :last_active_at
+                    WHERE frontend_id = :frontend_id AND user_id = :user_id
                     """,
-                    (
-                        workspace_path,
-                        bucket["bucket_id"],
-                        instance_id,
-                        frontend_id,
-                        now,
-                        now,
-                        user_id,
-                    ),
+                    {
+                        "workspace_path": workspace_path,
+                        "bucket_id": bucket["bucket_id"],
+                        "instance_id": instance_id,
+                        "updated_at": now,
+                        "last_active_at": now,
+                        "frontend_id": frontend_id,
+                        "user_id": user_id,
+                    },
                 )
-            user = self._get_user_instance(conn, user_id)
+            user = self._get_user_instance(conn, frontend_id, user_id)
             if user is None:
                 raise RuntimeError("reserved user instance record disappeared")
             return user, bucket, True
 
-    def mark_user_instance_online(self, user_id: str) -> dict[str, Any]:
+    def mark_user_instance_online(self, frontend_id: str, user_id: str) -> dict[str, Any]:
         with self.transaction_immediate() as conn:
             now = _utc_now()
             conn.execute(
                 """
                 UPDATE user_instances
                 SET status = 'online', updated_at = ?, last_active_at = ?
-                WHERE user_id = ?
+                WHERE frontend_id = ? AND user_id = ?
                 """,
-                (now, now, user_id),
+                (now, now, frontend_id, user_id),
             )
-            user = self._get_user_instance(conn, user_id)
+            user = self._get_user_instance(conn, frontend_id, user_id)
             if user is None or not user.get("bucket_id"):
-                raise RuntimeError(f"user instance not found when marking online: {user_id}")
+                raise RuntimeError(
+                    f"user instance not found when marking online: {frontend_id}/{user_id}"
+                )
             self._refresh_bucket_status(conn, str(user["bucket_id"]))
-            user = self._get_user_instance(conn, user_id)
+            user = self._get_user_instance(conn, frontend_id, user_id)
             if user is None:
-                raise RuntimeError(f"user instance disappeared when marking online: {user_id}")
+                raise RuntimeError(
+                    f"user instance disappeared when marking online: {frontend_id}/{user_id}"
+                )
             return user
 
-    def rollback_user_instance_reservation(self, user_id: str, bucket_id: str) -> None:
+    def rollback_user_instance_reservation(
+        self,
+        frontend_id: str,
+        user_id: str,
+        bucket_id: str,
+    ) -> None:
         with self.transaction_immediate() as conn:
-            user = self._get_user_instance(conn, user_id)
+            user = self._get_user_instance(conn, frontend_id, user_id)
             if user is not None:
                 now = _utc_now()
                 conn.execute(
                     """
                     UPDATE user_instances
                     SET status = 'error', bucket_id = NULL, instance_id = NULL, updated_at = ?
-                    WHERE user_id = ?
+                    WHERE frontend_id = ? AND user_id = ?
                     """,
-                    (now, user_id),
+                    (now, frontend_id, user_id),
                 )
             self._decrement_bucket_instances(conn, bucket_id)
             self._refresh_bucket_status(conn, bucket_id)
 
     def release_user_instance(
         self,
+        frontend_id: str,
         user_id: str,
         *,
         bucket_id: str | None = None,
         instance_id: str | None = None,
     ) -> dict[str, Any] | None:
         with self.transaction_immediate() as conn:
-            user = self._get_user_instance(conn, user_id)
+            user = self._get_user_instance(conn, frontend_id, user_id)
             if user is None or user.get("status") != "online":
                 return user
             current_bucket_id = str(user.get("bucket_id") or "")
@@ -270,18 +324,18 @@ class BindingRepository:
                 """
                 UPDATE user_instances
                 SET status = 'destroyed', bucket_id = NULL, instance_id = NULL, updated_at = ?
-                WHERE user_id = ?
+                WHERE frontend_id = ? AND user_id = ?
                 """,
-                (now, user_id),
+                (now, frontend_id, user_id),
             )
             if current_bucket_id:
                 self._decrement_bucket_instances(conn, current_bucket_id)
                 self._refresh_bucket_status(conn, current_bucket_id)
-            return self._get_user_instance(conn, user_id)
+            return self._get_user_instance(conn, frontend_id, user_id)
 
-    def touch_user_activity(self, user_id: str) -> None:
+    def touch_user_activity(self, frontend_id: str, user_id: str) -> None:
         with self.transaction_immediate() as conn:
-            user = self._get_user_instance(conn, user_id)
+            user = self._get_user_instance(conn, frontend_id, user_id)
             if user is None:
                 return
             now = _utc_now()
@@ -289,9 +343,9 @@ class BindingRepository:
                 """
                 UPDATE user_instances
                 SET updated_at = ?, last_active_at = ?
-                WHERE user_id = ?
+                WHERE frontend_id = ? AND user_id = ?
                 """,
-                (now, now, user_id),
+                (now, now, frontend_id, user_id),
             )
             bucket_id = str(user.get("bucket_id") or "")
             if bucket_id:
@@ -301,27 +355,36 @@ class BindingRepository:
                 )
 
     def get(self, frontend_id: str, user_id: str) -> dict[str, Any] | None:
-        user = self.get_user_instance(user_id)
-        if user is None:
-            return None
-        current_frontend = str(user.get("frontend_id") or "").strip()
-        if current_frontend and current_frontend != frontend_id:
-            return None
-        return user
+        return self.get_user_instance(frontend_id, user_id)
 
     def list_for_user(self, user_id: str) -> list[dict[str, Any]]:
-        user = self.get_user_instance(user_id)
-        return [user] if user is not None else []
+        with self._lock, self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT frontend_id, user_id, workspace_path, status, bucket_id, instance_id,
+                       created_at, updated_at, last_active_at
+                FROM user_instances
+                WHERE user_id = ?
+                ORDER BY frontend_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
-    def _get_user_instance(self, conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+    def _get_user_instance(
+        self,
+        conn: sqlite3.Connection,
+        frontend_id: str,
+        user_id: str,
+    ) -> dict[str, Any] | None:
         row = conn.execute(
             """
-            SELECT user_id, workspace_path, status, bucket_id, instance_id,
-                   frontend_id, created_at, updated_at, last_active_at
+            SELECT frontend_id, user_id, workspace_path, status, bucket_id, instance_id,
+                   created_at, updated_at, last_active_at
             FROM user_instances
-            WHERE user_id = ?
+            WHERE frontend_id = ? AND user_id = ?
             """,
-            (user_id,),
+            (frontend_id, user_id),
         ).fetchone()
         return dict(row) if row else None
 

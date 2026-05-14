@@ -489,25 +489,13 @@ docker push <your-registry>/nanobot-container-up:v1.0.0
 ```bash
 kubectl apply -f k8s/base/namespace.yaml
 kubectl apply -f k8s/base/rbac.yaml
-```
-
-创建共享 PV/PVC：
-
-```bash
 kubectl apply -f k8s/base/pv-pvc-nfs.yaml
-kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
-kubectl get pv
-kubectl get pvc -n nanobot
-```
-
-部署统一网关：
-
-```bash
 kubectl apply -f k8s/base/container-up.yaml
 kubectl apply -f k8s/base/container-up-nodeport.yaml
 kubectl rollout status deployment/container-up -n nanobot
 kubectl get pods -n nanobot -o wide
 ```
+kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
 
 查看日志：
 
@@ -637,18 +625,18 @@ kubectl delete -f k8s/base/namespace.yaml
 
 
 web server测试：
-env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-main","user_id":"web-demo-1","chat_id":"web-chat-1","content":"hello from web server chain","attachments":[],"metadata":{},"raw":{}}'
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-stream","user_id":"web-demo-2","chat_id":"web-chat-2","content":"你的工作目录在哪里","attachments":[],"metadata":{},"raw":{}}'
 
 curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-main",
+  "frontend_id": "web-wd",
   "user_id": "web-demo-1",
-  "chat_id": "web-chat-1",
-  "content": "what's in this image",
+  "chat_id": "web-chat-2",
+  "content": "分析照片中的安全隐患，生成报告发我",
   "attachments": [
-    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy82MTlhYTc5ODZiN2U5ZDc5Yjg4Nzg3YjRhNGM3NDA2ZjQzMWEzYzk2LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTBIVVUzTldWN1pPWFJNWEg0VkI2JTJGMjAyNjA1MDglMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTA4VDA2MTQyMFomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSXdTRlZWTTA1WFZqZGFUMWhTVFZoSU5GWkNOaUlzSW1WNGNDSTZNVGMzT0RJME5qZzVOaXdpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLkhmTEd5X2hDX20xRzJxTm5YdUxBNm9ZQnZxc05oOGVGZHhmYVpSUjlTNUJxZjJQM3BXc05saDV0Q0tCMHlJanhHdnlUUnY1amtRUFBzbk1KV0NaMGNBJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9YWU4NzA0M2U4NTI1ZmIzMzlmNGNiYjEwYzk1YTEyZWJhYzU4NjY5NDFhMWIyNmViMDg5NTRiZjg5NDI1MjllYQ"
+    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy8lRTUlOUIlQkUlRTclODklODcxLmpwZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPVoyQkRMSFdYNjhPR05XWVI1OVU4JTJGMjAyNjA1MTQlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTE0VDA2NDczN1omWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSmFNa0pFVEVoWFdEWTRUMGRPVjFsU05UbFZPQ0lzSW1WNGNDSTZNVGMzT0RjNE5ETTBOU3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLjU2QTFHWm9MMVNadmxwUGdCZ1d5V1VSZGVEaTFTTDlMb0FCZUk4djgwdF9NUEZKakxtU0w2em8xajB2N3ZlR1dPZElGY01sRDRXUDRaRkpIM200OVl3JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9Mjk0Y2ZhNjQ0NmY5YTA1NTExYWMzMGRkMzc3NGNhZDI5NmU4NTY1NWQ4NDc3NzFhYWUwZmMwYzZhNWQ1MGU5Mw"
   ],
   "metadata": {},
   "raw": {}
@@ -660,12 +648,13 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-main",
+  "frontend_id": "web-wd",
   "user_id": "web-demo-1",
   "chat_id": "web-chat-1",
   "content": "what's in this video",
   "attachments": [
-    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy9WaWRlbyUyMFByb2plY3QlMjAxLm1wND9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUpZUFpLUVg0NlFKRFVWUktOS1hWJTJGMjAyNjA1MTElMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTExVDAwNTk1OVomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSktXVkJhUzFGWU5EWlJTa1JWVmxKTFRrdFlWaUlzSW1WNGNDSTZNVGMzT0RVd05ETTVOU3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLjFPLWNtUEJMaGc4N3hXUVNDY3k4UzFNMnJnVlRlWE5hZ0R1dmlvenBqOVE4bUZmWUlFSUF1dVlMczcxTExwMm1DREgxcFJrU0FGNDNDTlJ4OFFhOERRJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9YTA0ZGExYTVlNDMxMTBjZDIyOGNmZmJmMzNmM2FlZTMwZDBmYjNkNGE3MDAzOGIyZmE1ZjEwZjIxMTNkZWIwZA"
+    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy82MTlhYTc5ODZiN2U5ZDc5Yjg4Nzg3YjRhNGM3NDA2ZjQzMWEzYzk2LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTYwOUZBM0FUS0lCUUlQN1dKQTlPJTJGMjAyNjA1MTIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTEyVDA4MTI0NlomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSTJNRGxHUVROQlZFdEpRbEZKVURkWFNrRTVUeUlzSW1WNGNDSTZNVGMzT0RZeE5qYzBOQ3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLjFLdmg5YnlYQTZxN1Y3S2xQWDRfcVVjSkF0YW0yNnNIRnYwbmw0VV91YmloTXBFX3dmLVZlNlI3WmVEN2NBdXFKM3V6dV96NHRqTWpqY3R3M19lNUtnJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9NmIzZGI4NzM5OGJjMWE2YmQ3MDU4YjVkNTI0ZmY5Nzg0ZWVmNDU5ZmI1NmZmMjJhY2M5ODU4MTE2YTg0Mjc1ZQ",
+    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy8lRTUlOUIlQkUlRTclODklODcxLmpwZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTYwOUZBM0FUS0lCUUlQN1dKQTlPJTJGMjAyNjA1MTIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTEyVDA4MTMwOFomWC1BbXotRXhwaXJlcz00MzE5OCZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSTJNRGxHUVROQlZFdEpRbEZKVURkWFNrRTVUeUlzSW1WNGNDSTZNVGMzT0RZeE5qYzBOQ3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLjFLdmg5YnlYQTZxN1Y3S2xQWDRfcVVjSkF0YW0yNnNIRnYwbmw0VV91YmloTXBFX3dmLVZlNlI3WmVEN2NBdXFKM3V6dV96NHRqTWpqY3R3M19lNUtnJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9ZTQxMTJlMGFlZjZjNTFhZmNlNGRkNTE0MWQxMGRiMmI3NmQ0YTY2NmQ5ZTYzN2ZjYjZiN2ZiYmM2MjQwMjQzNQ"
   ],
   "metadata": {},
   "raw": {}

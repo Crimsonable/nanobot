@@ -69,8 +69,10 @@ async def test_spawn_gateway_uses_dedicated_health_port(monkeypatch: pytest.Monk
 
     args = list(captured["args"])
     port_index = args.index("--port")
+    workspace_index = args.index("--workspace")
     assert args[port_index + 1] == "31111"
     assert args[port_index + 1] != "29995"
+    assert args[workspace_index + 1] == str(tmp_path / "workspace")
     env = captured["kwargs"]["env"]
     assert env["BRIDGE_URL_OVERRIDE"] == "ws://127.0.0.1:29995"
     assert env["BRIDGE_ALLOW_FROM_OVERRIDE"] == "*"

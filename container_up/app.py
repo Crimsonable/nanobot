@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from container_up.attachment_paths import normalize_outbound_attachments
@@ -67,6 +68,7 @@ class CancelRequest(BaseModel):
 
 class ReleaseRequest(BaseModel):
     user_id: str
+    frontend_id: str = ""
     bucket_id: str = ""
     instance_id: str = ""
     reason: str = ""
@@ -162,7 +164,9 @@ async def _dispatch_im_event(payload: dict[str, Any]) -> dict[str, Any]:
     frontend_id = _resolve_frontend_id(None, metadata)
     attachments = list(event.get("attachments") or [])
     if not metadata.get("attachments_materialized"):
-        attachments = normalize_attachments(str(event.get("content") or ""), attachments)
+        attachments = normalize_attachments(
+            str(event.get("content") or ""), attachments
+        )
     binding = await _route_message(
         frontend_id=frontend_id,
         user_id=str(event.get("usr_id") or "").strip() or "user",
@@ -206,7 +210,11 @@ async def _deliver_outbound_message(
 async def _forward_outbound_message(packet: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(packet.get("metadata") or {})
     attachments = list(packet.get("attachments") or [])
-    if metadata.get("_progress") or metadata.get("_stream_delta") or metadata.get("_stream_end"):
+    if (
+        metadata.get("_progress")
+        or metadata.get("_stream_delta")
+        or metadata.get("_stream_end")
+    ):
         return {"ok": True, "response": None, "skipped": "non_terminal_event"}
 
     content = str(packet.get("content") or "")
@@ -214,6 +222,12 @@ async def _forward_outbound_message(packet: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "response": None, "skipped": "empty_content"}
 
     chat_id = str(packet.get("chat_id") or "")
+    logger.info(
+        "forward outbound chat_id={} meta_preview={} content_preview={}",
+        chat_id,
+        str(metadata),
+        content[:20],
+    )
     response = await _deliver_outbound_message(
         chat_id=chat_id,
         content=content,
@@ -355,9 +369,14 @@ async def post_message(payload: MessageRequest) -> dict[str, Any]:
 async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
     frontend_id = str(payload.frontend_id or "").strip()
     if not frontend_id:
-        instance = repo.get_user_instance(payload.usr_id)
-        if instance is not None:
-            frontend_id = str(instance.get("frontend_id") or "").strip()
+        instances = repo.list_for_user(payload.usr_id)
+        if len(instances) == 1:
+            frontend_id = str(instances[0].get("frontend_id") or "").strip()
+        elif len(instances) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="frontend_id is required when the same user_id exists in multiple frontends",
+            )
     if not frontend_id:
         try:
             frontend_id = _resolve_frontend_id(None, {})
@@ -392,12 +411,14 @@ async def post_cancel(payload: CancelRequest) -> dict[str, Any]:
 async def runtime_release(payload: ReleaseRequest) -> dict[str, Any]:
     instance = scheduler.sync_runtime_release(
         user_id=payload.user_id,
+        frontend_id=payload.frontend_id or None,
         bucket_id=payload.bucket_id or None,
         instance_id=payload.instance_id or None,
     )
     return {
         "status": "accepted",
         "user_id": payload.user_id,
+        "frontend_id": payload.frontend_id or None,
         "bucket_id": payload.bucket_id or None,
         "instance_id": payload.instance_id or None,
         "instance_status": None if instance is None else instance.get("status"),
@@ -442,7 +463,9 @@ async def post_upload_attachment(payload: UploadAttachmentRequest) -> dict[str, 
 @app.post("/api/bridge/outbound")
 async def post_bridge_outbound(payload: BridgeOutboundRequest) -> dict[str, Any]:
     metadata = dict(payload.metadata)
-    frontend_id = str(payload.frontend_id or metadata.get("frontend_id") or "").strip() or None
+    frontend_id = (
+        str(payload.frontend_id or metadata.get("frontend_id") or "").strip() or None
+    )
     try:
         return await _forward_outbound_message(
             {

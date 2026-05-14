@@ -368,6 +368,7 @@ class ProcessManager:
             return
         payload = {
             "user_id": instance.user_id,
+            "frontend_id": instance.frontend_id,
             "bucket_id": BUCKET_ID,
             "instance_id": instance.instance_id,
             "reason": reason,

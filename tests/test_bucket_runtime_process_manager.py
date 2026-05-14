@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +36,10 @@ class _ReadySocket:
 class _FakeResponse:
     def raise_for_status(self) -> None:
         return None
+
+
+async def _completed_coro() -> None:
+    return None
 
 
 @pytest.mark.asyncio
@@ -191,6 +197,64 @@ def test_build_process_env_exports_container_up_urls(monkeypatch: pytest.MonkeyP
         env["CONTAINER_UP_BRIDGE_OUTBOUND_URL"]
         == "http://container-up:8080/api/bridge/outbound"
     )
+
+
+@pytest.mark.asyncio
+async def test_create_instance_passes_workspace_and_config_to_local_service_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = ProcessManager(idle_ttl=60)
+    workspace = tmp_path / "workspaces" / "web-wd" / "web-demo-2"
+    config_path = tmp_path / "common" / "web-wd" / "config.json"
+    template_dir = tmp_path / "common" / "web-wd" / "templates"
+    skills_dir = tmp_path / "common" / "web-wd" / "skills"
+    captured: dict[str, object] = {}
+
+    frontend_config = SimpleNamespace(
+        config_path=config_path,
+        template_dir=template_dir,
+        builtin_skills_dir=skills_dir,
+        raw={},
+    )
+
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.frontend_config_for",
+        lambda frontend_id: frontend_config,
+    )
+    monkeypatch.setattr(
+        manager._workspace_manager,
+        "ensure_workspace",
+        lambda workspace_path, *, template_root: workspace_path,
+    )
+    monkeypatch.setattr(manager, "_wait_instance_ready", lambda _port: _completed_coro())
+    monkeypatch.setattr(manager, "_ensure_instance_socket", lambda _instance: _completed_coro())
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=None, stdout=None)
+
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    instance = await manager.create_instance(
+        frontend_id="web-wd",
+        user_id="web-demo-2",
+        instance_id="web-wd__web-demo-2",
+        workspace_path=str(workspace),
+    )
+
+    args = list(captured["args"])
+    assert args[:4] == [sys.executable, "-m", "bucket_runtime.local_service", "--config"]
+    assert str(args[4]) == str(config_path)
+    assert args[5:7] == ["--workspace", str(workspace)]
+    assert instance.workspace_path == workspace
+    assert instance.instance_id == "web-wd__web-demo-2"
+    assert instance.frontend_id == "web-wd"
+    assert instance.user_id == "web-demo-2"
 
 
 @pytest.mark.asyncio
