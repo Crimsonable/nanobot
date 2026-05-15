@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 
@@ -202,3 +203,91 @@ async def test_message_tool_resolves_mixed_media_paths() -> None:
         "https://example.com/url.png",
         "http://example.com/http.png",
     ]
+
+
+@pytest.mark.asyncio
+async def test_message_tool_uploads_local_bridge_media_via_container_up(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    attachment = tmp_path / "report.pdf"
+    attachment.write_text("hello", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "nanobot.utils.document._upload_local_attachment_ref",
+        lambda path, metadata=None: f"https://files.example/{path.name}",
+    )
+
+    tool = MessageTool(send_callback=_send)
+    tool.set_context(
+        "bridge",
+        "chat-1",
+        metadata={"frontend_id": "web-main", "usr_id": "user-1"},
+    )
+
+    result = await tool.execute(content="see attached", media=[str(attachment)])
+
+    assert result == "Message sent to bridge:chat-1 with 1 attachments"
+    assert sent[0].media == [
+        {
+            "url": "https://files.example/report.pdf",
+            "filename": "report.pdf",
+            "content_type": "application/pdf",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_message_tool_keeps_remote_bridge_media_as_is() -> None:
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    tool = MessageTool(send_callback=_send)
+    tool.set_context(
+        "bridge",
+        "chat-1",
+        metadata={"frontend_id": "web-main", "usr_id": "user-1"},
+    )
+
+    url = "https://example.com/file.pdf"
+    await tool.execute(content="see attached", media=[url])
+
+    assert sent[0].media == [url]
+
+
+@pytest.mark.asyncio
+async def test_message_tool_reports_bridge_upload_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    attachment = tmp_path / "report.pdf"
+    attachment.write_text("hello", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "nanobot.utils.document._upload_local_attachment_ref",
+        lambda path, metadata=None: None,
+    )
+
+    tool = MessageTool(send_callback=_send)
+    tool.set_context(
+        "bridge",
+        "chat-1",
+        metadata={"frontend_id": "web-main", "usr_id": "user-1"},
+    )
+
+    result = await tool.execute(content="see attached", media=[str(attachment)])
+
+    assert result.startswith("Error sending message: failed to upload attachment via container_up:")
+    assert sent == []

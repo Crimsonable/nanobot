@@ -300,6 +300,9 @@ class QxtIMParser:
         if event_type == "check_url":
             print("Received URL verification request")
             return self.encrypt(text="success"), None
+        if event_type != "p2p_chat_receive_msg":
+            logger.info("ignore qxt subscribe event_type=%s", event_type)
+            return self.encrypt(text="success"), None
 
         return self.encrypt(text="success"), self.normalize_subscribe_payload(payload)
 

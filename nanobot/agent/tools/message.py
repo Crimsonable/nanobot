@@ -1,5 +1,6 @@
 """Message tool for sending messages to users."""
 
+import mimetypes
 import os
 from contextvars import ContextVar
 from pathlib import Path
@@ -106,6 +107,62 @@ class MessageTool(Tool):
             "Do NOT use read_file to send files — that only reads content for your own analysis."
         )
 
+    @staticmethod
+    def _is_remote_media_ref(ref: str) -> bool:
+        return ref.startswith(("http://", "https://"))
+
+    @staticmethod
+    def _uploaded_attachment_payload(path: Path, url: str) -> dict[str, str]:
+        return {
+            "url": url,
+            "filename": path.name,
+            "content_type": (
+                mimetypes.guess_type(path.name, strict=False)[0]
+                or "application/octet-stream"
+            ),
+        }
+
+    def _resolve_media_paths(self, media: list[str]) -> list[str]:
+        resolved: list[str] = []
+        for ref in media:
+            if self._is_remote_media_ref(ref) or os.path.isabs(ref):
+                resolved.append(ref)
+            else:
+                resolved.append(str(self._workspace / ref))
+        return resolved
+
+    def _bridge_attachment_metadata(self) -> dict[str, Any]:
+        return dict(self._default_metadata.get())
+
+    def _maybe_upload_bridge_media(
+        self,
+        *,
+        channel: str,
+        media: list[str],
+    ) -> list[Any]:
+        if channel != "bridge":
+            return media
+
+        from nanobot.utils.document import _upload_local_attachment_ref
+
+        uploaded: list[Any] = []
+        metadata = self._bridge_attachment_metadata()
+        for ref in media:
+            if self._is_remote_media_ref(ref):
+                uploaded.append(ref)
+                continue
+
+            path = Path(ref).expanduser()
+            if not path.is_file():
+                uploaded.append(ref)
+                continue
+
+            uploaded_ref = _upload_local_attachment_ref(path, metadata=metadata)
+            if not uploaded_ref:
+                raise RuntimeError(f"failed to upload attachment via container_up: {path}")
+            uploaded.append(self._uploaded_attachment_payload(path, uploaded_ref))
+        return uploaded
+
     async def execute(
         self,
         content: str,
@@ -147,13 +204,8 @@ class MessageTool(Tool):
             return "Error: Message sending not configured"
 
         if media:
-            resolved = []
-            for p in media:
-                if p.startswith(("http://", "https://")) or os.path.isabs(p):
-                    resolved.append(p)
-                else:
-                    resolved.append(str(self._workspace / p))
-            media = resolved
+            media = self._resolve_media_paths(media)
+            media = self._maybe_upload_bridge_media(channel=channel, media=media)
 
         metadata = dict(self._default_metadata.get()) if same_target else {}
         if message_id:

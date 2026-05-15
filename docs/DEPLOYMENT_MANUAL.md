@@ -625,7 +625,7 @@ kubectl delete -f k8s/base/namespace.yaml
 
 
 web server测试：
-env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-stream","user_id":"web-demo-2","chat_id":"web-chat-2","content":"你的工作目录在哪里","attachments":[],"metadata":{},"raw":{}}'
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-stream","user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
 
 curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   -H 'Content-Type: application/json' \
