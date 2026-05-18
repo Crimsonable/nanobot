@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -90,12 +92,6 @@ class OutboundRequest(BaseModel):
     attachments: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
-
-
-class UploadAttachmentRequest(BaseModel):
-    frontend_id: str
-    user_id: str
-    local_path: str
 
 
 class DebugP2PRequest(BaseModel):
@@ -223,10 +219,11 @@ async def _forward_outbound_message(packet: dict[str, Any]) -> dict[str, Any]:
 
     chat_id = str(packet.get("chat_id") or "")
     logger.info(
-        "forward outbound chat_id={} meta_preview={} content_preview={}",
+        "forward outbound chat_id={} meta_preview={} content_preview={} attachments={}",
         chat_id,
         str(metadata),
-        content[:20],
+        content,
+        attachments,
     )
     response = await _deliver_outbound_message(
         chat_id=chat_id,
@@ -446,18 +443,103 @@ async def outbound(payload: OutboundRequest) -> dict[str, Any]:
 
 
 @app.post("/internal/attachments/upload")
-async def post_upload_attachment(payload: UploadAttachmentRequest) -> dict[str, Any]:
+async def post_upload_attachment(
+    request: Request,
+) -> dict[str, Any]:
+    content_type = str(request.headers.get("content-type") or "").lower()
     try:
-        frontend = frontend_config_for(payload.frontend_id)
-        return await asyncio.to_thread(
-            upload_local_attachment,
-            frontend_id=frontend.id if frontend else payload.frontend_id,
-            user_id=payload.user_id,
-            local_path=payload.local_path,
-            frontend_config=frontend.raw if frontend else None,
+        if not content_type.startswith("multipart/form-data"):
+            raise HTTPException(
+                status_code=400,
+                detail="only multipart/form-data with file is supported",
+            )
+
+        form = await request.form()
+        upload = form.get("file")
+        frontend_id = str(form.get("frontend_id") or "").strip()
+        user_id = str(form.get("user_id") or "").strip()
+        if not frontend_id:
+            raise HTTPException(status_code=400, detail="frontend_id is required")
+        logger.info(
+            "attachment upload request: content_type='{}' has_file={} frontend_id='{}' user_id='{}'",
+            content_type,
+            upload is not None,
+            frontend_id,
+            user_id,
         )
+        if upload is None:
+            raise HTTPException(
+                status_code=400,
+                detail="multipart/form-data field 'file' is required",
+            )
+        if not hasattr(upload, "read") or not hasattr(upload, "filename"):
+            raise HTTPException(
+                status_code=400,
+                detail="multipart/form-data field 'file' must be an uploaded file",
+            )
+
+        temp_path: str | None = None
+        try:
+            suffix = ""
+            filename = str(getattr(upload, "filename", "") or "").strip()
+            if "." in filename:
+                suffix = os.path.splitext(filename)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                temp_path = tmp.name
+                while True:
+                    chunk = await upload.read(1024 * 1024)  # type: ignore[operator]
+                    if not chunk:
+                        break
+                    tmp.write(chunk)
+            frontend = frontend_config_for(frontend_id)
+            uploaded = await asyncio.to_thread(
+                upload_local_attachment,
+                frontend_id=frontend.id if frontend else frontend_id,
+                user_id=user_id,
+                local_path=temp_path,
+                frontend_config=frontend.raw if frontend else None,
+            )
+            if filename:
+                uploaded["filename"] = filename
+            content_type = str(getattr(upload, "content_type", "") or "").strip()
+            if content_type:
+                uploaded["content_type"] = content_type
+            logger.info(
+                "attachment upload success: frontend_id='{}' user_id='{}' filename='{}' url='{}'",
+                frontend_id,
+                user_id,
+                uploaded.get("filename"),
+                uploaded.get("url"),
+            )
+            return uploaded
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+    except HTTPException as exc:
+        logger.error(
+            "attachment upload rejected: status={} detail='{}' content_type='{}'",
+            exc.status_code,
+            exc.detail,
+            content_type,
+        )
+        raise
     except RuntimeError as exc:
+        logger.error(
+            "attachment upload runtime error: {} content_type='{}'",
+            str(exc),
+            content_type,
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "attachment upload unexpected error: {} content_type='{}'",
+            type(exc).__name__,
+            content_type,
+        )
+        raise HTTPException(status_code=500, detail="internal attachment upload error") from exc
 
 
 @app.post("/api/bridge/outbound")

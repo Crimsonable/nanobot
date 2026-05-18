@@ -355,7 +355,7 @@ def _upload_local_attachment_ref(
 ) -> str | None:
     meta = dict(metadata or {})
     frontend_id = str(meta.get("frontend_id") or "").strip()
-    user_id = str(meta.get("usr_id") or meta.get("user_id") or "user").strip() or "user"
+    user_id = str(meta.get("usr_id") or meta.get("user_id") or "").strip()
     if not frontend_id:
         logger.warning(
             "Skipping local attachment upload for {}: missing frontend_id", path
@@ -375,14 +375,25 @@ def _upload_local_attachment_ref(
                 os.environ.get("CONTAINER_UP_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS", "30")
             ),
         ) as client:
-            response = client.post(
-                url,
-                json={
-                    "frontend_id": frontend_id,
-                    "user_id": user_id,
-                    "local_path": str(path),
-                },
+            mime = (
+                mimetypes.guess_type(path.name)[0]
+                or detect_image_mime(path)
+                or "application/octet-stream"
             )
+            with path.open("rb") as f:
+                files = {
+                    "file": (path.name, f, mime),
+                }
+                data = {
+                    "frontend_id": frontend_id,
+                }
+                if user_id:
+                    data["user_id"] = user_id
+                response = client.post(
+                    url,
+                    data=data,
+                    files=files,
+                )
             response.raise_for_status()
             payload = response.json()
     except Exception as exc:

@@ -91,3 +91,64 @@ def test_web_server_inbound_propagates_http_error(monkeypatch) -> None:
 
     assert result.status_code == 503
     assert result.json() == {"detail": "backend unavailable"}
+
+
+def test_web_server_create_instances_for_test(monkeypatch) -> None:
+    captured_posts: list[dict[str, object]] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def post(self, url: str, json: dict[str, object]) -> _FakeResponse:
+            captured_posts.append({"url": url, "json": json})
+            return _FakeResponse({"status": "accepted", "instance_id": json["user_id"]})
+
+    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up.nanobot:8080")
+    monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/test/create-instances",
+            json={"frontend_id": "web-main", "n": 3, "content": "create test instance"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["frontend_id"] == "web-main"
+    assert body["count"] == 3
+    assert len(body["requests"]) == 3
+    assert len(body["responses"]) == 3
+    assert len(captured_posts) == 3
+    assert {item["url"] for item in captured_posts} == {
+        "http://container-up.nanobot:8080/inbound/web-main"
+    }
+
+    expected_user_ids = [item["user_id"] for item in body["requests"]]
+    expected_chat_ids = [item["chat_id"] for item in body["requests"]]
+    assert all(user_id.startswith("test-user-") for user_id in expected_user_ids)
+    assert all(chat_id.startswith("test-chat-") for chat_id in expected_chat_ids)
+
+    forwarded_payloads = [item["json"] for item in captured_posts]
+    assert [item["user_id"] for item in forwarded_payloads] == expected_user_ids
+    assert [item["chat_id"] for item in forwarded_payloads] == expected_chat_ids
+    assert all(item["content"] == "create test instance" for item in forwarded_payloads)

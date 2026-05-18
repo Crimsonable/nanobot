@@ -5,8 +5,43 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from container_up.app import UploadAttachmentRequest, post_upload_attachment
+from container_up.app import post_upload_attachment
 from nanobot.utils.document import _upload_local_attachment_ref
+
+
+class _MultipartRequest:
+    def __init__(self, form: dict[str, object]) -> None:
+        self.headers = {"content-type": "multipart/form-data; boundary=test"}
+        self._form = form
+
+    async def form(self) -> dict[str, object]:
+        return self._form
+
+
+class _FakeUploadFile:
+    def __init__(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        self.filename = filename
+        self.content_type = content_type
+        self._content = content
+        self._offset = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        if self._offset >= len(self._content):
+            return b""
+        if size < 0:
+            chunk = self._content[self._offset :]
+            self._offset = len(self._content)
+            return chunk
+        start = self._offset
+        end = min(len(self._content), start + size)
+        self._offset = end
+        return self._content[start:end]
 
 
 @pytest.mark.asyncio
@@ -41,10 +76,16 @@ async def test_container_up_upload_endpoint_returns_uploaded_metadata(
     monkeypatch.setattr("container_up.app.upload_local_attachment", fake_upload_local_attachment)
 
     result = await post_upload_attachment(
-        UploadAttachmentRequest(
-            frontend_id="feishu-main",
-            user_id="user-1",
-            local_path=str(tmp_path / "demo.png"),
+        _MultipartRequest(
+            {
+                "frontend_id": "feishu-main",
+                "user_id": "user-1",
+                "file": _FakeUploadFile(
+                    filename="demo.png",
+                    content=b"fake-image-bytes",
+                    content_type="image/png",
+                ),
+            }
         )
     )
 
@@ -53,7 +94,7 @@ async def test_container_up_upload_endpoint_returns_uploaded_metadata(
         "frontend_id_lookup": "feishu-main",
         "frontend_id": "feishu-main",
         "user_id": "user-1",
-        "local_path": str(tmp_path / "demo.png"),
+        "local_path": captured["local_path"],
         "frontend_config": {"attachment_storage": {}},
     }
 
@@ -75,10 +116,16 @@ async def test_container_up_upload_endpoint_maps_runtime_error(
 
     with pytest.raises(HTTPException) as exc_info:
         await post_upload_attachment(
-            UploadAttachmentRequest(
-                frontend_id="feishu-main",
-                user_id="user-1",
-                local_path=str(tmp_path / "demo.png"),
+            _MultipartRequest(
+                {
+                    "frontend_id": "feishu-main",
+                    "user_id": "user-1",
+                    "file": _FakeUploadFile(
+                        filename="demo.png",
+                        content=b"fake-image-bytes",
+                        content_type="image/png",
+                    ),
+                }
             )
         )
 
@@ -111,9 +158,10 @@ def test_document_upload_local_attachment_ref_calls_container_up(
         def __exit__(self, exc_type, exc, tb) -> bool:
             return False
 
-        def post(self, url: str, json: dict[str, object]) -> _FakeResponse:
+        def post(self, url: str, data: dict[str, object], files: dict[str, object]) -> _FakeResponse:
             captured["url"] = url
-            captured["json"] = json
+            captured["data"] = data
+            captured["files_keys"] = sorted(files.keys())
             return _FakeResponse()
 
     monkeypatch.setenv(
@@ -129,8 +177,8 @@ def test_document_upload_local_attachment_ref_calls_container_up(
 
     assert result == "https://files.example.com/report.pdf"
     assert captured["url"] == "http://127.0.0.1:18080/internal/attachments/upload"
-    assert captured["json"] == {
+    assert captured["data"] == {
         "frontend_id": "feishu-main",
         "user_id": "user-1",
-        "local_path": str(attachment),
     }
+    assert captured["files_keys"] == ["file"]

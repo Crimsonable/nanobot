@@ -222,8 +222,8 @@ class MinioAttachmentStore:
 
 def upload_local_attachment(
     *,
-    frontend_id: str,
-    user_id: str,
+    frontend_id: str | None = None,
+    user_id: str | None = None,
     local_path: str,
     frontend_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -239,8 +239,8 @@ def upload_local_attachment(
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     object_key = store._object_key(
         path=path,
-        frontend_id=frontend_id,
-        user_id=user_id,
+        frontend_id=str(frontend_id or ""),
+        user_id=str(user_id or ""),
     )
     store._upload_file_sync(path, object_key, content_type)
     return {

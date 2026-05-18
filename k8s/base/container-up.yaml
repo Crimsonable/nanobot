@@ -29,7 +29,7 @@ spec:
       serviceAccountName: container-up
       containers:
         - name: container-up
-          image: 192.168.48.104:5000/nanobot-container-up:v1.0.1
+          image: 192.168.48.104:5000/nanobot-container-up:v1.0.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -49,7 +49,7 @@ spec:
             - name: BUCKET_NAME_PREFIX
               value: nanobot-bucket
             - name: BUCKET_RUNTIME_IMAGE
-              value: 192.168.48.104:5000/nanobot-bucket-runtime:v1.0.1
+              value: 192.168.48.104:5000/nanobot-bucket-runtime:v1.0.7
             - name: BUCKET_IMAGE_PULL_POLICY
               value: IfNotPresent
             - name: BUCKET_SERVICE_PORT
@@ -57,7 +57,7 @@ spec:
             - name: BUCKET_CONTAINER_PORT
               value: "8080"
             - name: BUCKET_MAX_INSTANCES_PER_BUCKET
-              value: "20"
+              value: "50"
             - name: BUCKET_IDLE_TTL_SECONDS
               value: "600"
             - name: BUCKET_IDLE_SWEEP_INTERVAL_SECONDS
@@ -67,6 +67,9 @@ spec:
               mountPath: /mnt/env
             - name: source-root
               mountPath: /mnt/source
+              readOnly: true
+            - name: common-root
+              mountPath: /mnt/common
               readOnly: true
           readinessProbe:
             httpGet:
@@ -87,3 +90,6 @@ spec:
         - name: source-root
           persistentVolumeClaim:
             claimName: nanobot-source-pvc
+        - name: common-root
+          persistentVolumeClaim:
+            claimName: nanobot-common-pvc

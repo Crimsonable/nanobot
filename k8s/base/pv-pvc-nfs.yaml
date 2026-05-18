@@ -51,3 +51,30 @@ spec:
     requests:
       storage: 20Gi
   volumeName: nanobot-source-pv
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-common-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: 192.168.48.104
+    path: /data/nanobot_backend_k8s/common
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-common-pvc
+  namespace: nanobot
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 20Gi
+  volumeName: nanobot-common-pv

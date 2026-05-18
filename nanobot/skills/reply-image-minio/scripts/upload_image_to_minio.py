@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 from pathlib import Path
+from uuid import uuid4
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-DEFAULT_CONTAINERUP_BASE_URL = "http://127.0.0.1:8080"
+DEFAULT_CONTAINERUP_BASE_URL = "http://192.168.48.104:30080"
 DEFAULT_FRONTEND_ID = "web-main"
-DEFAULT_USER_ID = "skill-user"
 
 
 def getenv(name: str, default: str) -> str:
@@ -39,8 +40,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--user-id",
-        default=getenv("CONTAINERUP_USER_ID", DEFAULT_USER_ID),
-        help="user id for upload API (default: CONTAINERUP_USER_ID or skill-user)",
+        default=getenv("CONTAINERUP_USER_ID", ""),
+        help="optional user id for upload API (default: CONTAINERUP_USER_ID or empty)",
     )
     parser.add_argument(
         "--alt",
@@ -58,21 +59,48 @@ def is_remote_ref(ref: str) -> bool:
 def upload_local_via_containerup(
     *,
     base_url: str,
-    frontend_id: str,
-    user_id: str,
+    frontend_id: str = "",
+    user_id: str = "",
     local_path: str,
 ) -> dict[str, object]:
     endpoint = f"{base_url.rstrip('/')}/internal/attachments/upload"
-    payload = {
-        "frontend_id": frontend_id,
-        "user_id": user_id,
-        "local_path": local_path,
-    }
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    local_file = Path(local_path)
+    if not local_file.is_file():
+        raise RuntimeError(f"local file not found: {local_file}")
+    mime = mimetypes.guess_type(local_file.name)[0] or "application/octet-stream"
+    boundary = f"----nanobot-{uuid4().hex}"
+
+    parts: list[bytes] = []
+
+    def _add_text_field(name: str, value: str) -> None:
+        parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        parts.append(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8")
+        )
+        parts.append(value.encode("utf-8"))
+        parts.append(b"\r\n")
+
+    _add_text_field("frontend_id", frontend_id or DEFAULT_FRONTEND_ID)
+    if user_id:
+        _add_text_field("user_id", user_id)
+
+    parts.append(f"--{boundary}\r\n".encode("utf-8"))
+    parts.append(
+        (
+            f'Content-Disposition: form-data; name="file"; '
+            f'filename="{local_file.name}"\r\n'
+        ).encode("utf-8")
+    )
+    parts.append(f"Content-Type: {mime}\r\n\r\n".encode("utf-8"))
+    parts.append(local_file.read_bytes())
+    parts.append(b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+
     request = Request(
         endpoint,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
     try:
@@ -105,16 +133,9 @@ def main() -> int:
 
     result: dict[str, object]
     if is_remote_ref(raw_ref):
-        result = {
-            "url": raw_ref,
-            "filename": "",
-            "content_type": "",
-            "storage": "",
-            "bucket": "",
-            "object_key": "",
-            "input_ref": raw_ref,
-            "is_remote": True,
-        }
+        raise SystemExit(
+            "file_ref is already URL format; reference it directly and do not call this upload script"
+        )
     else:
         local_path = Path(raw_ref).expanduser()
         if not local_path.is_absolute():
