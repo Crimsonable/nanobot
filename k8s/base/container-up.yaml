@@ -42,6 +42,8 @@ spec:
               value: /mnt/source
             - name: SOURCE_PVC
               value: nanobot-source-pvc
+            - name: BUCKET_COMMON_ROOT
+              value: /mnt/common
             - name: CONTAINER_UP_PORT
               value: "8080"
             - name: BUCKET_NAMESPACE

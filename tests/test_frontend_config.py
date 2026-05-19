@@ -25,6 +25,7 @@ def test_frontend_paths_follow_fixed_bucket_layout(tmp_path, monkeypatch) -> Non
     )
     monkeypatch.setenv("BUCKET_MOUNT_ROOT", str(tmp_path))
     monkeypatch.setenv("BUCKET_MOUNT_PVC", "nanobot-data-pvc")
+    monkeypatch.setenv("BUCKET_COMMON_ROOT", str(common_root))
     monkeypatch.setattr("container_up.settings.BUCKET_MOUNT_ROOT", Path(tmp_path))
     monkeypatch.setattr("container_up.settings.BUCKET_COMMON_ROOT", common_root)
     monkeypatch.setattr("container_up.settings.FRONTENDS_CONFIG_PATH", config_file)

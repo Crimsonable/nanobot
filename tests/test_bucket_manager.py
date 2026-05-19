@@ -41,6 +41,7 @@ def test_bucket_manager_builds_deployment_manifest() -> None:
     assert "BUCKET_ID" in env_names
     assert "BUCKET_MOUNT_ROOT" in env_names
     assert "BUCKET_MOUNT_PVC" in env_names
+    assert "BUCKET_COMMON_ROOT" in env_names
     assert "SOURCE_ROOT" in env_names
     assert "SOURCE_PVC" in env_names
     assert "CONTAINER_UP_BASE_URL" in env_names
@@ -51,7 +52,11 @@ def test_bucket_manager_builds_deployment_manifest() -> None:
     assert volume_mounts == [
         {"name": "bucket-mount-root", "mountPath": "/mnt/nanobot"},
         {"name": "source-root", "mountPath": "/mnt/nanobot/source", "readOnly": True},
+        {"name": "common-root", "mountPath": "/mnt/common", "readOnly": True},
     ]
+
+    volumes = manifest["spec"]["template"]["spec"]["volumes"]
+    assert {"name": "common-root", "persistentVolumeClaim": {"claimName": "nanobot-common-pvc"}} in volumes
 
 
 def test_build_bucket_base_url_uses_namespace_short_name() -> None:

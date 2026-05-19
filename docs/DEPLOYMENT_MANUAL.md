@@ -627,7 +627,7 @@ kubectl delete -f k8s/base/namespace.yaml
 web server测试：
 说明：`attachments` 里如果已经是 `http/https` URL，直接按 URL 使用；不要下载到本地，也不要写入本地缓存。仅当附件是本地路径时，才走上传并替换为可访问 URL。
 
-env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-stream","user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-wd","user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
 
 curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   -H 'Content-Type: application/json' \
@@ -650,7 +650,21 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   "frontend_id": "web-wd",
   "user_id": "web-demo-1",
   "chat_id": "web-chat-2",
-  "content": "把这张图片引用到md内容里发给我",
+  "content": "/cancel",
+  "attachments": [],
+  "metadata": {},
+  "raw": {}
+}
+JSON
+
+curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "frontend_id": "web-wd",
+  "user_id": "web-demo-1",
+  "chat_id": "web-chat-2",
+  "content": "分析图中存在的安全隐患，并生成pdf报告发给我",
   "attachments": [
     "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy8wMGFjOTM4N2Q4MWNjMjBhYjIzOWUxM2I1YjFhYWRkZjFmOGUxMTQ5LmpwZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTI1RTBUWkhBSzRBMlBYR0dNOVRFJTJGMjAyNjA1MTglMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTE4VDAzNDE0OVomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSXlOVVV3VkZwSVFVczBRVEpRV0VkSFRUbFVSU0lzSW1WNGNDSTZNVGMzT1RFeE9Ea3dOU3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLlllTjhpNFR6VnlsYWtQTnpOalZEOWxYVmNpbndPTjBpNkNDVmRGSWNGeFpJMmFGMjlwUlhreFhPV1hJTHRiclVOaFhrUGNtckVYQl9vVFhCOGhiMGx3JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9NTkwMTEyZWEwZTdjNzNkNDE0MTRlNzFkYzUwNDI0YmUyNDZlZjhmYmNjM2Q2OWQ5ZDI3MTYzMjBiNjdjN2I2Zg"
   ],

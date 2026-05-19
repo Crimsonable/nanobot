@@ -11,6 +11,7 @@ import httpx
 
 from container_up.settings import (
     BUCKET_CONTAINER_PORT,
+    BUCKET_COMMON_ROOT,
     BUCKET_MOUNT_PVC,
     BUCKET_MOUNT_ROOT,
     BUCKET_NAMESPACE,
@@ -28,8 +29,8 @@ from container_up.settings import (
     BUCKET_READY_TIMEOUT,
     BUCKET_REQUEST_TIMEOUT,
     BUCKET_SKIP_HEALTHCHECK,
-    SOURCE_ROOT,
     SOURCE_PVC,
+    SOURCE_ROOT,
 )
 
 
@@ -142,6 +143,7 @@ class BucketManager:
             {"name": "BUCKET_ID", "value": bucket_id},
             {"name": "BUCKET_MOUNT_ROOT", "value": str(BUCKET_MOUNT_ROOT)},
             {"name": "BUCKET_MOUNT_PVC", "value": BUCKET_MOUNT_PVC},
+            {"name": "BUCKET_COMMON_ROOT", "value": str(BUCKET_COMMON_ROOT)},
             {"name": "SOURCE_ROOT", "value": str(SOURCE_ROOT)},
             {"name": "SOURCE_PVC", "value": SOURCE_PVC},
             {
@@ -205,6 +207,11 @@ class BucketManager:
                                         "mountPath": str(SOURCE_ROOT),
                                         "readOnly": True,
                                     },
+                                    {
+                                        "name": "common-root",
+                                        "mountPath": str(BUCKET_COMMON_ROOT),
+                                        "readOnly": True,
+                                    },
                                 ],
                                 "readinessProbe": {
                                     "httpGet": {
@@ -232,6 +239,10 @@ class BucketManager:
                             {
                                 "name": "source-root",
                                 "persistentVolumeClaim": {"claimName": SOURCE_PVC},
+                            },
+                            {
+                                "name": "common-root",
+                                "persistentVolumeClaim": {"claimName": "nanobot-common-pvc"},
                             },
                         ],
                     },

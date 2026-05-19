@@ -25,10 +25,10 @@ APP_PORT = int(os.getenv("BUCKET_RUNTIME_PORT", "8080"))
 
 BUCKET_MOUNT_ROOT = Path(_required_env("BUCKET_MOUNT_ROOT")).expanduser()
 SOURCE_ROOT = Path(_required_env("SOURCE_ROOT")).expanduser()
+COMMON_ROOT = Path(_required_env("BUCKET_COMMON_ROOT")).expanduser()
 CONTAINER_UP_SOURCE_ROOT = SOURCE_ROOT / "container_up"
 BUCKET_RUNTIME_SOURCE_ROOT = SOURCE_ROOT / "bucket_runtime"
 NANOBOT_SOURCE_ROOT = SOURCE_ROOT / "nanobot"
-COMMON_ROOT = BUCKET_MOUNT_ROOT / "common"
 WORKSPACE_ROOT = BUCKET_MOUNT_ROOT / "workspaces"
 
 INSTANCE_HOST = os.getenv("INSTANCE_HOST", "127.0.0.1")
