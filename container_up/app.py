@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import uvicorn
@@ -40,6 +43,19 @@ scheduler = BucketScheduler(
     bucket_client=BucketClient(),
 )
 cleanup_task: asyncio.Task[None] | None = None
+
+
+def _normalize_remote_attachment_payload(url: str) -> dict[str, Any]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="attachment_url must be an http(s) URL")
+    filename = Path(parsed.path).name or "attachment.bin"
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return {
+        "url": url,
+        "filename": filename,
+        "content_type": content_type,
+    }
 
 
 class InboundRequest(BaseModel):
@@ -446,10 +462,40 @@ async def post_upload_attachment(
 ) -> dict[str, Any]:
     request_content_type = str(request.headers.get("content-type") or "").lower()
     try:
+        if request_content_type.startswith("application/json"):
+            raw_payload = await request.json()
+            if isinstance(raw_payload, dict):
+                payload = dict(raw_payload)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="json body must be an object",
+                )
+
+            frontend_id = str(payload.get("frontend_id") or "").strip()
+            user_id = str(payload.get("user_id") or "").strip()
+            attachment_url = str(
+                payload.get("attachment_url") or payload.get("url") or ""
+            ).strip()
+            if not frontend_id:
+                raise HTTPException(status_code=400, detail="frontend_id is required")
+            if not attachment_url:
+                raise HTTPException(status_code=400, detail="attachment_url is required")
+            frontend = frontend_config_for(frontend_id)
+            normalized = _normalize_remote_attachment_payload(attachment_url)
+            logger.info(
+                "attachment normalize request: content_type='{}' frontend_id='{}' user_id='{}' url='{}'",
+                request_content_type,
+                frontend.id if frontend else frontend_id,
+                user_id,
+                attachment_url,
+            )
+            return normalized
+
         if not request_content_type.startswith("multipart/form-data"):
             raise HTTPException(
                 status_code=400,
-                detail="only multipart/form-data with file is supported",
+                detail="only multipart/form-data with file or application/json with attachment_url is supported",
             )
 
         form = await request.form()

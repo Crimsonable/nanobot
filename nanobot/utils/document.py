@@ -101,7 +101,7 @@ def _extract_pdf(path: Path) -> str:
             pages.append(f"--- Page {i} ---\n{text}")
         return _truncate("\n\n".join(pages), _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.error("Failed to extract PDF {}: {}", path, e)
+        logger.exception("Failed to extract PDF {}", path)
         return f"[error: failed to extract PDF: {e!s}]"
 
 
@@ -116,7 +116,7 @@ def _extract_docx(path: Path) -> str:
         paragraphs: list[str] = [p.text for p in doc.paragraphs if p.text.strip()]
         return _truncate("\n\n".join(paragraphs), _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.error("Failed to extract DOCX {}: {}", path, e)
+        logger.exception("Failed to extract DOCX {}", path)
         return f"[error: failed to extract DOCX: {e!s}]"
 
 
@@ -145,7 +145,7 @@ def _extract_xlsx(path: Path) -> str:
         finally:
             wb.close()
     except Exception as e:
-        logger.error("Failed to extract XLSX {}: {}", path, e)
+        logger.exception("Failed to extract XLSX {}", path)
         return f"[error: failed to extract XLSX: {e!s}]"
 
 
@@ -166,7 +166,7 @@ def _extract_pptx(path: Path) -> str:
                 slides.append(f"--- Slide {i} ---\n" + "\n".join(slide_text))
         return _truncate("\n\n".join(slides), _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.error("Failed to extract PPTX {}: {}", path, e)
+        logger.exception("Failed to extract PPTX {}", path)
         return f"[error: failed to extract PPTX: {e!s}]"
 
 
@@ -205,7 +205,7 @@ def _extract_text_file(path: Path) -> str:
             content = path.read_text(encoding="latin-1")
         return _truncate(content, _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.error("Failed to read text file {}: {}", path, e)
+        logger.exception("Failed to read text file {}", path)
         return f"[error: failed to read file: {e!s}]"
 
 
@@ -348,62 +348,90 @@ def _container_up_attachment_upload_url() -> str:
     return str(os.environ.get("CONTAINER_UP_ATTACHMENT_UPLOAD_URL") or "").strip()
 
 
-def _upload_local_attachment_ref(
-    path: Path,
+def _materialize_attachment_payload(
+    ref: str | Path,
     *,
     metadata: dict[str, Any] | None = None,
-) -> str | None:
+) -> dict[str, Any] | None:
     meta = dict(metadata or {})
     frontend_id = str(meta.get("frontend_id") or "").strip()
     user_id = str(meta.get("usr_id") or meta.get("user_id") or "").strip()
     if not frontend_id:
-        logger.warning("Skipping local attachment upload for {}: missing frontend_id", path)
+        logger.warning("Skipping attachment normalization for {}: missing frontend_id", ref)
         return None
 
     url = _container_up_attachment_upload_url()
     if not url:
         logger.warning(
-            "Skipping local attachment upload for {}: missing CONTAINER_UP_ATTACHMENT_UPLOAD_URL",
-            path,
+            "Skipping attachment normalization for {}: missing CONTAINER_UP_ATTACHMENT_UPLOAD_URL",
+            ref,
         )
         return None
+
+    raw_ref = str(ref).strip()
+    local_path = Path(raw_ref).expanduser()
+    timeout_seconds = float(
+        os.environ.get("CONTAINER_UP_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS", "30")
+    )
     try:
-        with httpx.Client(
-            timeout=float(
-                os.environ.get("CONTAINER_UP_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS", "30")
-            ),
-        ) as client:
-            mime = (
-                mimetypes.guess_type(path.name)[0]
-                or detect_image_mime(path)
-                or "application/octet-stream"
-            )
-            with path.open("rb") as f:
-                files = {
-                    "file": (path.name, f, mime),
-                }
-                data = {
+        with httpx.Client(timeout=timeout_seconds) as client:
+            if local_path.is_file():
+                mime = (
+                    mimetypes.guess_type(local_path.name)[0]
+                    or detect_image_mime(local_path)
+                    or "application/octet-stream"
+                )
+                with local_path.open("rb") as f:
+                    files = {
+                        "file": (local_path.name, f, mime),
+                    }
+                    data = {
+                        "frontend_id": frontend_id,
+                    }
+                    if user_id:
+                        data["user_id"] = user_id
+                    response = client.post(
+                        url,
+                        data=data,
+                        files=files,
+                    )
+            else:
+                if not _is_remote_attachment_ref(raw_ref):
+                    raise RuntimeError(f"unsupported attachment ref: {raw_ref}")
+                payload: str | dict[str, str] = {
                     "frontend_id": frontend_id,
+                    "attachment_url": raw_ref,
                 }
                 if user_id:
-                    data["user_id"] = user_id
-                response = client.post(
-                    url,
-                    data=data,
-                    files=files,
-                )
+                    payload["user_id"] = user_id
+                response = client.post(url, json=payload)
             response.raise_for_status()
-            payload = response.json()
+            parsed = response.json()
     except Exception as exc:
         logger.warning(
-            "Failed to upload local attachment {} via container-up: {}", path, exc
+            "Failed to normalize attachment {} via container-up: {}", ref, exc
         )
-        raise RuntimeError(f"container_up upload failed for {path}: {exc}") from exc
-    uploaded = str(payload.get("url") or "").strip()
-    if not uploaded:
-        logger.warning("container-up upload returned no URL for {}", path)
+        raise RuntimeError(f"container_up attachment normalize failed for {ref}: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        logger.warning("container-up normalize returned non-object payload for {}: {}", ref, parsed)
         return None
-    return uploaded
+    uploaded = str(parsed.get("url") or "").strip()
+    if not uploaded:
+        logger.warning("container-up normalize returned no URL for {}", ref)
+        return None
+    return parsed
+
+
+def _upload_local_attachment_ref(
+    path: Path,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    payload = _materialize_attachment_payload(path, metadata=metadata)
+    if not payload:
+        return None
+    return str(payload.get("url") or "").strip() or None
 
 
 def extract_documents(
@@ -422,8 +450,8 @@ def extract_documents(
     Ordinary files are appended to the text content in the form
     ``“<mime>”：<url>``.
 
-    Local attachments are uploaded to the configured MinIO ``attachments``
-    bucket first; remote HTTP(S) URLs are consumed directly.
+    All attachment refs are first materialized through the container_up
+    attachment endpoint into a standard attachment JSON payload.
     """
     supports_visual_url = _is_vllm_provider_backend(provider=provider, metadata=metadata)
     visual_refs: list[str] = []
@@ -436,9 +464,6 @@ def extract_documents(
             continue
 
         local_path = Path(ref_str).expanduser()
-        resolved_ref = ref_str
-        mime: str | None = None
-
         if local_path.is_file():
             try:
                 size = local_path.stat().st_size
@@ -452,18 +477,20 @@ def extract_documents(
                     max_file_size // (1024 * 1024),
                 )
                 continue
-            mime = _detect_attachment_mime(ref_str, local_path)
-            uploaded_ref = _upload_local_attachment_ref(local_path, metadata=metadata)
-            if not uploaded_ref:
-                continue
-            resolved_ref = uploaded_ref
-        else:
-            mime = _detect_attachment_mime(ref_str)
-            if not _is_remote_attachment_ref(ref_str):
-                logger.warning(
-                    "Skipping unsupported non-local attachment reference: {}", ref_str
-                )
-                continue
+        elif not _is_remote_attachment_ref(ref_str):
+            logger.warning(
+                "Skipping unsupported non-local attachment reference: {}", ref_str
+            )
+            continue
+
+        payload = _materialize_attachment_payload(ref_str, metadata=metadata)
+        if not payload:
+            continue
+        resolved_ref = str(payload.get("url") or "").strip()
+        mime = str(payload.get("content_type") or "").strip() or None
+        if not resolved_ref:
+            logger.warning("Skipping attachment with empty URL after normalization: {}", ref_str)
+            continue
 
         if supports_visual_url and _is_visual_mime(mime):
             block_type = _visual_block_type_for_mime(mime)

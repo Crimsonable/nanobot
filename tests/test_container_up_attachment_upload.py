@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from container_up.app import post_upload_attachment
-from nanobot.utils.document import _upload_local_attachment_ref
+from nanobot.utils.document import _materialize_attachment_payload, _upload_local_attachment_ref
 
 
 class _MultipartRequest:
@@ -16,6 +16,15 @@ class _MultipartRequest:
 
     async def form(self) -> dict[str, object]:
         return self._form
+
+
+class _JsonRequest:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.headers = {"content-type": "application/json"}
+        self._payload = payload
+
+    async def json(self) -> dict[str, object]:
+        return self._payload
 
 
 class _FakeUploadFile:
@@ -140,6 +149,37 @@ async def test_container_up_upload_endpoint_maps_runtime_error(
     assert exc_info.value.detail == "minio is not configured"
 
 
+@pytest.mark.asyncio
+async def test_container_up_upload_endpoint_normalizes_remote_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_frontend_config_for(frontend_id: str):
+        captured["frontend_id_lookup"] = frontend_id
+        return type("Frontend", (), {"id": frontend_id, "raw": {"attachment_storage": {}}})()
+
+    monkeypatch.setattr("container_up.app.frontend_config_for", fake_frontend_config_for)
+
+    result = await post_upload_attachment(
+        _JsonRequest(
+            {
+                "frontend_id": "feishu-main",
+                "user_id": "user-1",
+                "attachment_url": "https://files.example.com/path/report.pdf?token=abc",
+            }
+        )
+    )
+
+    assert captured["frontend_id_lookup"] == "feishu-main"
+    assert result == {
+        "url": "https://files.example.com/path/report.pdf?token=abc",
+        "filename": "report.pdf",
+        "content_type": "application/pdf",
+    }
+
+
+
 def test_document_upload_local_attachment_ref_calls_container_up(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -189,3 +229,68 @@ def test_document_upload_local_attachment_ref_calls_container_up(
         "user_id": "user-1",
     }
     assert captured["files_keys"] == ["file"]
+
+
+def test_document_materialize_remote_attachment_calls_container_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "url": "https://files.example.com/report.pdf?token=1",
+                "filename": "report.pdf",
+                "content_type": "application/pdf",
+            }
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self) -> "_FakeClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def post(
+            self,
+            url: str,
+            data: dict[str, object] | None = None,
+            files: dict[str, object] | None = None,
+            json: dict[str, object] | None = None,
+        ) -> _FakeResponse:
+            captured["url"] = url
+            captured["data"] = data
+            captured["files"] = files
+            captured["json"] = json
+            return _FakeResponse()
+
+    monkeypatch.setenv(
+        "CONTAINER_UP_ATTACHMENT_UPLOAD_URL",
+        "http://127.0.0.1:18080/internal/attachments/upload",
+    )
+    monkeypatch.setattr("nanobot.utils.document.httpx.Client", _FakeClient)
+
+    result = _materialize_attachment_payload(
+        "https://upstream.example.com/path/report.pdf?token=abc",
+        metadata={"frontend_id": "feishu-main", "usr_id": "user-1"},
+    )
+
+    assert result == {
+        "url": "https://files.example.com/report.pdf?token=1",
+        "filename": "report.pdf",
+        "content_type": "application/pdf",
+    }
+    assert captured["url"] == "http://127.0.0.1:18080/internal/attachments/upload"
+    assert captured["data"] is None
+    assert captured["files"] is None
+    assert captured["json"] == {
+        "frontend_id": "feishu-main",
+        "user_id": "user-1",
+        "attachment_url": "https://upstream.example.com/path/report.pdf?token=abc",
+    }

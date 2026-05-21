@@ -1,0 +1,5 @@
+{
+  "upload_target": "http://192.168.48.104:30080/internal/attachments/upload",
+  "frontend_id": "web-main",
+  "user_id": ""
+}

@@ -19,7 +19,10 @@ def _tool(
     )
 
 
-def _response(status: int = 200, json: dict | None = None) -> httpx.Response:
+def _response(
+    status: int = 200,
+    json: dict | None = None,
+) -> httpx.Response:
     """Build a mock httpx.Response with a dummy request attached."""
     r = httpx.Response(status, json=json)
     r._request = httpx.Request("GET", "https://mock")
@@ -60,6 +63,55 @@ async def test_brave_search(monkeypatch):
     result = await tool.execute(query="nanobot", count=1)
     assert "NanoBot" in result
     assert "https://example.com" in result
+
+
+@pytest.mark.asyncio
+async def test_brave_search_retries_rate_limit_once(monkeypatch):
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    async def mock_sleep(delay: float):
+        sleeps.append(delay)
+
+    async def mock_get(self, url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _response(status=429, json={"error": "rate limit"})
+        return _response(json={
+            "web": {"results": [{"title": "Recovered", "url": "https://example.com", "description": "ok"}]}
+        })
+
+    monkeypatch.setattr("nanobot.agent.tools.web.asyncio.sleep", mock_sleep)
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    tool = _tool(provider="brave", api_key="brave-key")
+    result = await tool.execute(query="nanobot", count=1)
+
+    assert calls["n"] == 2
+    assert "Recovered" in result
+    assert sleeps == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_brave_search_returns_clear_rate_limit_after_retries(monkeypatch):
+    calls = {"n": 0}
+
+    async def mock_sleep(delay: float):
+        return None
+
+    async def mock_get(self, url, **kw):
+        calls["n"] += 1
+        return _response(status=429, json={"error": "rate limit"})
+
+    monkeypatch.setattr("nanobot.agent.tools.web.asyncio.sleep", mock_sleep)
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    tool = _tool(provider="brave", api_key="brave-key")
+    result = await tool.execute(query="nanobot", count=1)
+
+    assert calls["n"] == 2
+    assert "Brave search rate limited" in result
+    assert "consecutive web_search" in result
 
 
 @pytest.mark.asyncio
@@ -294,3 +346,82 @@ async def test_duckduckgo_timeout_returns_error(monkeypatch):
     result = await tool.execute(query="test")
     gate.set()
     assert "Error" in result
+
+
+@pytest.mark.asyncio
+async def test_olostep_search_formats_answer_and_sources(monkeypatch):
+    from types import SimpleNamespace
+
+    calls: dict[str, str] = {}
+
+    class MockAsyncOlostep:
+        def __init__(self, api_key: str):
+            calls["api_key"] = api_key
+            self.answers = self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def create(self, task: str):
+            calls["task"] = task
+            return SimpleNamespace(
+                answer="Mocked Olostep answer",
+                sources=[SimpleNamespace(title="Example Source", url="https://example.com")],
+            )
+
+    import sys
+    import types
+
+    fake_mod = types.ModuleType("olostep")
+    fake_mod.AsyncOlostep = MockAsyncOlostep
+    fake_mod.Olostep_BaseError = Exception
+    monkeypatch.setitem(sys.modules, "olostep", fake_mod)
+
+    tool = _tool(provider="olostep", api_key="olostep-key")
+    result = await tool.execute(query="test query")
+
+    assert calls["api_key"] == "olostep-key"
+    assert calls["task"] == "test query"
+    assert "Mocked Olostep answer" in result
+    assert "Example Source" in result
+    assert "https://example.com" in result
+
+
+@pytest.mark.asyncio
+async def test_olostep_missing_key_falls_back_to_duckduckgo(monkeypatch):
+    import sys
+    import types
+    from unittest.mock import patch
+
+    class MockDDGS:
+        def __init__(self, **kw):
+            pass
+
+        def text(self, query, max_results=5):
+            return [{"title": "Fallback", "href": "https://ddg.example", "body": "fallback"}]
+
+    fake_mod = types.ModuleType("olostep")
+    fake_mod.AsyncOlostep = object
+    fake_mod.Olostep_BaseError = Exception
+    monkeypatch.setitem(sys.modules, "olostep", fake_mod)
+
+    monkeypatch.delenv("OLOSTEP_API_KEY", raising=False)
+    with patch("ddgs.DDGS", MockDDGS):
+        tool = _tool(provider="olostep", api_key="")
+        result = await tool.execute(query="test query")
+
+    assert "Fallback" in result
+
+
+@pytest.mark.asyncio
+async def test_olostep_package_missing_returns_install_hint(monkeypatch):
+    import sys
+    monkeypatch.delitem(sys.modules, "olostep", raising=False)
+    monkeypatch.setitem(sys.modules, "olostep", None)
+    tool = _tool(provider="olostep", api_key="olostep-key")
+    result = await tool.execute(query="test query")
+
+    assert result == "Error: olostep package not installed. Run: pip install olostep"
