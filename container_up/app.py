@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
@@ -446,9 +444,9 @@ async def outbound(payload: OutboundRequest) -> dict[str, Any]:
 async def post_upload_attachment(
     request: Request,
 ) -> dict[str, Any]:
-    content_type = str(request.headers.get("content-type") or "").lower()
+    request_content_type = str(request.headers.get("content-type") or "").lower()
     try:
-        if not content_type.startswith("multipart/form-data"):
+        if not request_content_type.startswith("multipart/form-data"):
             raise HTTPException(
                 status_code=400,
                 detail="only multipart/form-data with file is supported",
@@ -462,7 +460,7 @@ async def post_upload_attachment(
             raise HTTPException(status_code=400, detail="frontend_id is required")
         logger.info(
             "attachment upload request: content_type='{}' has_file={} frontend_id='{}' user_id='{}'",
-            content_type,
+            request_content_type,
             upload is not None,
             frontend_id,
             user_id,
@@ -477,67 +475,56 @@ async def post_upload_attachment(
                 status_code=400,
                 detail="multipart/form-data field 'file' must be an uploaded file",
             )
+        if not hasattr(upload, "file"):
+            raise HTTPException(
+                status_code=400,
+                detail="multipart/form-data field 'file' must provide file stream",
+            )
 
-        temp_path: str | None = None
-        try:
-            suffix = ""
-            filename = str(getattr(upload, "filename", "") or "").strip()
-            if "." in filename:
-                suffix = os.path.splitext(filename)[1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                temp_path = tmp.name
-                while True:
-                    chunk = await upload.read(1024 * 1024)  # type: ignore[operator]
-                    if not chunk:
-                        break
-                    tmp.write(chunk)
-            frontend = frontend_config_for(frontend_id)
-            uploaded = await asyncio.to_thread(
-                upload_local_attachment,
-                frontend_id=frontend.id if frontend else frontend_id,
-                user_id=user_id,
-                local_path=temp_path,
-                frontend_config=frontend.raw if frontend else None,
-            )
-            if filename:
-                uploaded["filename"] = filename
-            content_type = str(getattr(upload, "content_type", "") or "").strip()
-            if content_type:
-                uploaded["content_type"] = content_type
-            logger.info(
-                "attachment upload success: frontend_id='{}' user_id='{}' filename='{}' url='{}'",
-                frontend_id,
-                user_id,
-                uploaded.get("filename"),
-                uploaded.get("url"),
-            )
-            return uploaded
-        finally:
-            if temp_path:
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
+        filename = str(getattr(upload, "filename", "") or "").strip()
+        frontend = frontend_config_for(frontend_id)
+        uploaded = await asyncio.to_thread(
+            upload_local_attachment,
+            frontend_id=frontend.id if frontend else frontend_id,
+            user_id=user_id,
+            fileobj=upload.file,  # validated above
+            source_filename=filename or "upload.bin",
+            content_type=str(getattr(upload, "content_type", "") or "").strip() or None,
+            frontend_config=frontend.raw if frontend else None,
+        )
+        if filename:
+            uploaded["filename"] = filename
+        upload_content_type = str(getattr(upload, "content_type", "") or "").strip()
+        if upload_content_type:
+            uploaded["content_type"] = upload_content_type
+        logger.info(
+            "attachment upload success: frontend_id='{}' user_id='{}' filename='{}' url='{}'",
+            frontend_id,
+            user_id,
+            uploaded.get("filename"),
+            uploaded.get("url"),
+        )
+        return uploaded
     except HTTPException as exc:
         logger.error(
             "attachment upload rejected: status={} detail='{}' content_type='{}'",
             exc.status_code,
             exc.detail,
-            content_type,
+            request_content_type,
         )
         raise
     except RuntimeError as exc:
         logger.error(
             "attachment upload runtime error: {} content_type='{}'",
             str(exc),
-            content_type,
+            request_content_type,
         )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception(
             "attachment upload unexpected error: {} content_type='{}'",
             type(exc).__name__,
-            content_type,
+            request_content_type,
         )
         raise HTTPException(status_code=500, detail="internal attachment upload error") from exc
 

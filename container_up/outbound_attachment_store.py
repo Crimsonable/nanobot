@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,6 +162,16 @@ class MinioAttachmentStore:
             ExtraArgs=extra_args,
         )
 
+    def _upload_fileobj_sync(self, fileobj: Any, object_key: str, content_type: str) -> None:
+        client = self._build_client()
+        extra_args = {"ContentType": content_type}
+        client.upload_fileobj(
+            fileobj,
+            self.config.bucket,
+            object_key,
+            ExtraArgs=extra_args,
+        )
+
     def _resolve_object_url_sync(self, object_key: str) -> str:
         if self.config.public_base_url:
             return f"{self.config.public_base_url}/{quote(object_key)}"
@@ -189,13 +198,7 @@ class MinioAttachmentStore:
         )
 
     def _object_key(self, *, path: Path, frontend_id: str, user_id: str) -> str:
-        stat = path.stat()
-        digest_input = (
-            f"{path.resolve(strict=False)}:{stat.st_size}:{stat.st_mtime_ns}"
-        ).encode("utf-8")
-        digest = hashlib.sha1(digest_input).hexdigest()
-        suffix = path.suffix.lower()
-        filename = f"{digest}{suffix}" if suffix else digest
+        filename = path.name
         parts = [
             self.config.key_prefix,
             safe_frontend_id(frontend_id),
@@ -224,29 +227,30 @@ def upload_local_attachment(
     *,
     frontend_id: str | None = None,
     user_id: str | None = None,
-    local_path: str,
+    fileobj: Any,
+    source_filename: str,
+    content_type: str | None = None,
     frontend_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    path = Path(local_path).expanduser()
-    if not path.is_file():
-        raise RuntimeError(f"attachment path is not a file: {local_path}")
-
     config = minio_config_from_frontend(frontend_config)
     if config is None:
         raise RuntimeError(f"minio attachment storage is not configured for frontend: {frontend_id}")
 
     store = MinioAttachmentStore(config)
-    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    effective_name = Path(str(source_filename or "").strip()).name or "upload.bin"
+    resolved_content_type = content_type or mimetypes.guess_type(effective_name)[0] or "application/octet-stream"
     object_key = store._object_key(
-        path=path,
+        path=Path(effective_name),
         frontend_id=str(frontend_id or ""),
         user_id=str(user_id or ""),
     )
-    store._upload_file_sync(path, object_key, content_type)
+    if hasattr(fileobj, "seek"):
+        fileobj.seek(0)
+    store._upload_fileobj_sync(fileobj, object_key, resolved_content_type)
     return {
         "url": store._resolve_object_url_sync(object_key),
-        "filename": path.name,
-        "content_type": content_type,
+        "filename": effective_name,
+        "content_type": resolved_content_type,
         "storage": "minio",
         "bucket": config.bucket,
         "object_key": object_key,

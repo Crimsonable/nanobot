@@ -501,128 +501,8 @@ kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
 
 ```bash
 kubectl logs -n nanobot deploy/container-up -f
+kubectl logs -n nanobot deploy/nanobot-bucket-0 -f
 ```
-
-### 7.6 验证动态调度
-
-先做端口转发：
-
-```bash
-kubectl port-forward -n nanobot svc/container-up 8080:8080
-kubectl port-forward --address 0.0.0.0 -n nanobot svc/container-up 8080:8080
-```
-
-新开一个终端做健康检查：
-
-```bash
-curl http://127.0.0.1:8080/health/live
-curl http://127.0.0.1:8080/health/ready
-curl http://127.0.0.1:8080/healthz
-```
-
-再发送一条入站请求触发 bucket 创建：
-
-```bash
-curl -X POST http://127.0.0.1:8080/inbound/feishu-main \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "user_id": "demo-user",
-    "chat_id": "default",
-    "content": "hello",
-    "attachments": [],
-    "metadata": {},
-    "raw": {}
-  }'
-```
-
-检查资源变化：
-
-```bash
-kubectl get deploy,po,svc -n nanobot
-kubectl logs -n nanobot deploy/container-up --tail=200
-kubectl logs -n nanobot deploy/nanobot-bucket-0 --tail=200
-```
-
-## 8. 常用运维命令
-
-查看资源：
-
-```bash
-kubectl get all -n nanobot
-kubectl get pvc -n nanobot
-kubectl describe pod -n nanobot <pod-name>
-```
-
-查看网关日志：
-
-```bash
-kubectl logs -n nanobot deploy/container-up --tail=200
-```
-
-查看 bucket 日志：
-
-```bash
-kubectl logs -n nanobot deploy/nanobot-bucket-0 --tail=200
-```
-
-重启网关：
-
-```bash
-kubectl rollout restart deployment/container-up -n nanobot
-```
-
-删除某个 bucket：
-
-```bash
-kubectl delete deployment -n nanobot nanobot-bucket-0
-kubectl delete service -n nanobot nanobot-bucket-0
-```
-
-卸载：
-
-```bash
-kubectl delete -f k8s/base/container-up.yaml
-kubectl delete -f k8s/base/rbac.yaml
-kubectl delete -f k8s/base/pv-pvc-nfs.yaml
-kubectl delete -f k8s/base/namespace.yaml
-```
-
-## 9. 部署检查清单
-
-至少检查以下项：
-
-1. `container-up` Pod Ready
-2. `container-up` 容器内可执行 `kubectl`
-3. `common/frontends.json` 已成功挂载
-4. `common/<frontend-id>/config.json` 已成功挂载
-5. `workspaces/<frontend-id>/<user-id>` 可写
-6. 首次入站请求可以自动创建 `nanobot-bucket-*`
-7. `bucket_runtime` 能启动用户进程
-8. 出站消息能回调到 `container_up`
-
-## 10. 关键文件
-
-部署时主要参考：
-
-- [docs/PROJECT_ARCHITECTURE.md](./PROJECT_ARCHITECTURE.md)
-- [docs/K8S_BRANCH_LAYOUT.md](./K8S_BRANCH_LAYOUT.md)
-- [docs/WEB_FRONTEND_API.md](./WEB_FRONTEND_API.md)
-- [Dockerfile.container_up](../Dockerfile.container_up)
-- [Dockerfile.bucket_runtime](../Dockerfile.bucket_runtime)
-- [k8s/base/container-up.yaml](../k8s/base/container-up.yaml)
-- [k8s/base/nanobot-bucket-template.yaml](../k8s/base/nanobot-bucket-template.yaml)
-- [k8s/base/pv-pvc-nfs.yaml](../k8s/base/pv-pvc-nfs.yaml)
-- [k8s/dev-kind/kind-cluster.yaml](../k8s/dev-kind/kind-cluster.yaml)
-- [k8s/dev-kind/storage-local.yaml](../k8s/dev-kind/storage-local.yaml)
-
-## 11. 注意事项
-
-1. 当前仓库中的示例配置含有占位或历史配置值，正式部署前必须替换成你自己的配置。
-2. 这套架构依赖共享存储，但当前实现只要求 Kubernetes 提供一个共享 PVC，并把它挂到 `BUCKET_MOUNT_ROOT`。
-3. `container_up` 不只是网关，它还负责动态创建 bucket，因此镜像里必须带 `kubectl`。
-4. 如果镜像从远程仓库拉取，必须同步调整 YAML 中的 `image` 和 `imagePullPolicy`。
-5. `workspaces` 是持久目录，删除 bucket Pod 不会删除用户工作数据。
-
 
 web server测试：
 说明：`attachments` 里如果已经是 `http/https` URL，直接按 URL 使用；不要下载到本地，也不要写入本地缓存。仅当附件是本地路径时，才走上传并替换为可访问 URL。
@@ -664,9 +544,23 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   "frontend_id": "web-wd",
   "user_id": "web-demo-1",
   "chat_id": "web-chat-2",
-  "content": "分析图中存在的安全隐患，并生成pdf报告发给我",
+  "content": "生成word文件发我",
+  "attachments": [],
+  "metadata": {},
+  "raw": {}
+}
+JSON
+
+curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "frontend_id": "web-wd",
+  "user_id": "web-demo-1",
+  "chat_id": "web-chat-2",
+  "content": "提交人孙宸，提交时间2026/05/20，分析图片中的安全风险，并生成pdf报告",
   "attachments": [
-    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy8wMGFjOTM4N2Q4MWNjMjBhYjIzOWUxM2I1YjFhYWRkZjFmOGUxMTQ5LmpwZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTI1RTBUWkhBSzRBMlBYR0dNOVRFJTJGMjAyNjA1MTglMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTE4VDAzNDE0OVomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSXlOVVV3VkZwSVFVczBRVEpRV0VkSFRUbFVSU0lzSW1WNGNDSTZNVGMzT1RFeE9Ea3dOU3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLlllTjhpNFR6VnlsYWtQTnpOalZEOWxYVmNpbndPTjBpNkNDVmRGSWNGeFpJMmFGMjlwUlhreFhPV1hJTHRiclVOaFhrUGNtckVYQl9vVFhCOGhiMGx3JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9NTkwMTEyZWEwZTdjNzNkNDE0MTRlNzFkYzUwNDI0YmUyNDZlZjhmYmNjM2Q2OWQ5ZDI3MTYzMjBiNjdjN2I2Zg"
+    "http://192.168.48.104:9000/attachments/2026/05/19/3eeed76636d54c9c9e0252c6517e5cd0/tmp_c8c38602127542f09ea8336e65661a10.jpg","http://192.168.48.104:9000/attachments/2026/05/20/a835cde7fcf943ea9922023770ab0242/tmp_f79d82c30e97bfc19447817a3adc76b3.jpg"
   ],
   "metadata": {},
   "raw": {}

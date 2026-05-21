@@ -243,7 +243,7 @@ async def test_message_tool_uploads_local_bridge_media_via_container_up(
 
 
 @pytest.mark.asyncio
-async def test_message_tool_keeps_remote_bridge_media_as_is() -> None:
+async def test_message_tool_normalizes_remote_bridge_media_to_attachment_objects() -> None:
     sent: list[OutboundMessage] = []
 
     async def _send(msg: OutboundMessage) -> None:
@@ -259,7 +259,49 @@ async def test_message_tool_keeps_remote_bridge_media_as_is() -> None:
     url = "https://example.com/file.pdf"
     await tool.execute(content="see attached", media=[url])
 
-    assert sent[0].media == [url]
+    assert sent[0].media == [
+        {
+            "url": url,
+            "filename": "file.pdf",
+            "content_type": "application/pdf",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_message_tool_uses_extension_fallback_for_remote_bridge_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    def fake_guess_type(_url: str, strict: bool = False):
+        return (None, None)
+
+    monkeypatch.setattr(
+        "nanobot.agent.tools.message.mimetypes.guess_type",
+        fake_guess_type,
+    )
+
+    tool = MessageTool(send_callback=_send)
+    tool.set_context(
+        "bridge",
+        "chat-1",
+        metadata={"frontend_id": "web-main", "usr_id": "user-1"},
+    )
+
+    url = "https://example.com/report.docx"
+    await tool.execute(content="see attached", media=[url])
+
+    assert sent[0].media == [
+        {
+            "url": url,
+            "filename": "report.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+    ]
 
 
 @pytest.mark.asyncio

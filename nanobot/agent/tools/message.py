@@ -5,11 +5,22 @@ import os
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_workspace_path
+
+_ATTACHMENT_MIME_OVERRIDES = {
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pdf": "application/pdf",
+}
 
 
 @tool_parameters(
@@ -19,7 +30,7 @@ from nanobot.config.paths import get_workspace_path
         chat_id=StringSchema("Optional: target chat/user ID"),
         media=ArraySchema(
             StringSchema(""),
-            description="Optional: list of file paths to attach (images, video, audio, documents)",
+            description="Optional: list of file paths/urls to attach (images, video, audio, documents)",
         ),
         buttons=ArraySchema(
             ArraySchema(StringSchema("Button label")),
@@ -40,9 +51,17 @@ class MessageTool(Tool):
         workspace: str | Path | None = None,
     ):
         self._send_callback = send_callback
-        self._workspace = Path(workspace).expanduser() if workspace is not None else get_workspace_path()
-        self._default_channel: ContextVar[str] = ContextVar("message_default_channel", default=default_channel)
-        self._default_chat_id: ContextVar[str] = ContextVar("message_default_chat_id", default=default_chat_id)
+        self._workspace = (
+            Path(workspace).expanduser()
+            if workspace is not None
+            else get_workspace_path()
+        )
+        self._default_channel: ContextVar[str] = ContextVar(
+            "message_default_channel", default=default_channel
+        )
+        self._default_chat_id: ContextVar[str] = ContextVar(
+            "message_default_chat_id", default=default_chat_id
+        )
         self._default_message_id: ContextVar[str | None] = ContextVar(
             "message_default_message_id",
             default=default_message_id,
@@ -51,7 +70,9 @@ class MessageTool(Tool):
             "message_default_metadata",
             default={},
         )
-        self._sent_in_turn_var: ContextVar[bool] = ContextVar("message_sent_in_turn", default=False)
+        self._sent_in_turn_var: ContextVar[bool] = ContextVar(
+            "message_sent_in_turn", default=False
+        )
         self._record_channel_delivery_var: ContextVar[bool] = ContextVar(
             "message_record_channel_delivery",
             default=False,
@@ -70,7 +91,9 @@ class MessageTool(Tool):
         self._default_message_id.set(message_id)
         self._default_metadata.set(metadata or {})
 
-    def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
+    def set_send_callback(
+        self, callback: Callable[[OutboundMessage], Awaitable[None]]
+    ) -> None:
         """Set the callback for sending messages."""
         self._send_callback = callback
 
@@ -112,14 +135,30 @@ class MessageTool(Tool):
         return ref.startswith(("http://", "https://"))
 
     @staticmethod
+    def _attachment_content_type(filename: str) -> str:
+        suffix = Path(filename).suffix.lower()
+        guessed = mimetypes.guess_type(filename, strict=False)[0]
+        return guessed or _ATTACHMENT_MIME_OVERRIDES.get(
+            suffix,
+            "application/octet-stream",
+        )
+
+    @staticmethod
     def _uploaded_attachment_payload(path: Path, url: str) -> dict[str, str]:
         return {
             "url": url,
             "filename": path.name,
-            "content_type": (
-                mimetypes.guess_type(path.name, strict=False)[0]
-                or "application/octet-stream"
-            ),
+            "content_type": MessageTool._attachment_content_type(path.name),
+        }
+
+    @staticmethod
+    def _remote_attachment_payload(url: str) -> dict[str, str]:
+        parsed = urlparse(url)
+        filename = Path(parsed.path).name or "attachment.bin"
+        return {
+            "url": url,
+            "filename": filename,
+            "content_type": MessageTool._attachment_content_type(filename),
         }
 
     def _resolve_media_paths(self, media: list[str]) -> list[str]:
@@ -149,7 +188,7 @@ class MessageTool(Tool):
         metadata = self._bridge_attachment_metadata()
         for ref in media:
             if self._is_remote_media_ref(ref):
-                uploaded.append(ref)
+                uploaded.append(self._remote_attachment_payload(ref))
                 continue
 
             path = Path(ref).expanduser()
@@ -157,9 +196,14 @@ class MessageTool(Tool):
                 uploaded.append(ref)
                 continue
 
-            uploaded_ref = _upload_local_attachment_ref(path, metadata=metadata)
+            uploaded_ref = _upload_local_attachment_ref(
+                path,
+                metadata=metadata,
+            )
             if not uploaded_ref:
-                raise RuntimeError(f"failed to upload attachment via container_up: {path}")
+                raise RuntimeError(
+                    f"failed to upload attachment via container_up: {path}"
+                )
             uploaded.append(self._uploaded_attachment_payload(path, uploaded_ref))
         return uploaded
 
@@ -171,14 +215,16 @@ class MessageTool(Tool):
         message_id: str | None = None,
         media: list[str] | None = None,
         buttons: list[list[str]] | None = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> str:
         from nanobot.utils.helpers import strip_think
+
         content = strip_think(content)
 
         if buttons is not None:
             if not isinstance(buttons, list) or any(
-                not isinstance(row, list) or any(not isinstance(label, str) for label in row)
+                not isinstance(row, list)
+                or any(not isinstance(label, str) for label in row)
                 for row in buttons
             ):
                 return "Error: buttons must be a list of list of strings"
@@ -203,31 +249,33 @@ class MessageTool(Tool):
         if not self._send_callback:
             return "Error: Message sending not configured"
 
-        if media:
-            media = self._resolve_media_paths(media)
-            media = self._maybe_upload_bridge_media(channel=channel, media=media)
-
-        metadata = dict(self._default_metadata.get()) if same_target else {}
-        if message_id:
-            metadata["message_id"] = message_id
-        if self._record_channel_delivery_var.get():
-            metadata["_record_channel_delivery"] = True
-
-        msg = OutboundMessage(
-            channel=channel,
-            chat_id=chat_id,
-            content=content,
-            media=media or [],
-            buttons=buttons or [],
-            metadata=metadata,
-        )
-
         try:
+            if media:
+                media = self._resolve_media_paths(media)
+                media = self._maybe_upload_bridge_media(channel=channel, media=media)
+
+            metadata = dict(self._default_metadata.get()) if same_target else {}
+            if message_id:
+                metadata["message_id"] = message_id
+            if self._record_channel_delivery_var.get():
+                metadata["_record_channel_delivery"] = True
+
+            msg = OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=content,
+                media=media or [],
+                buttons=buttons or [],
+                metadata=metadata,
+            )
+
             await self._send_callback(msg)
             if channel == default_channel and chat_id == default_chat_id:
                 self._sent_in_turn = True
             media_info = f" with {len(media)} attachments" if media else ""
-            button_info = f" with {sum(len(row) for row in buttons)} button(s)" if buttons else ""
+            button_info = (
+                f" with {sum(len(row) for row in buttons)} button(s)" if buttons else ""
+            )
             return f"Message sent to {channel}:{chat_id}{media_info}{button_info}"
         except Exception as e:
             return f"Error sending message: {str(e)}"

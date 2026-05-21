@@ -30,6 +30,7 @@ class _FakeUploadFile:
         self.content_type = content_type
         self._content = content
         self._offset = 0
+        self.file = self
 
     async def read(self, size: int = -1) -> bytes:
         if self._offset >= len(self._content):
@@ -59,12 +60,16 @@ async def test_container_up_upload_endpoint_returns_uploaded_metadata(
         *,
         frontend_id: str,
         user_id: str,
-        local_path: str,
+        fileobj: object,
+        source_filename: str,
+        content_type: str | None = None,
         frontend_config: dict[str, object] | None = None,
     ) -> dict[str, object]:
         captured["frontend_id"] = frontend_id
         captured["user_id"] = user_id
-        captured["local_path"] = local_path
+        captured["fileobj"] = fileobj
+        captured["source_filename"] = source_filename
+        captured["content_type"] = content_type
         captured["frontend_config"] = frontend_config
         return {
             "url": "https://files.example.com/demo.png",
@@ -94,7 +99,9 @@ async def test_container_up_upload_endpoint_returns_uploaded_metadata(
         "frontend_id_lookup": "feishu-main",
         "frontend_id": "feishu-main",
         "user_id": "user-1",
-        "local_path": captured["local_path"],
+        "fileobj": captured["fileobj"],
+        "source_filename": "demo.png",
+        "content_type": "image/png",
         "frontend_config": {"attachment_storage": {}},
     }
 

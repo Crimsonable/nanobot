@@ -357,9 +357,7 @@ def _upload_local_attachment_ref(
     frontend_id = str(meta.get("frontend_id") or "").strip()
     user_id = str(meta.get("usr_id") or meta.get("user_id") or "").strip()
     if not frontend_id:
-        logger.warning(
-            "Skipping local attachment upload for {}: missing frontend_id", path
-        )
+        logger.warning("Skipping local attachment upload for {}: missing frontend_id", path)
         return None
 
     url = _container_up_attachment_upload_url()
@@ -400,7 +398,7 @@ def _upload_local_attachment_ref(
         logger.warning(
             "Failed to upload local attachment {} via container-up: {}", path, exc
         )
-        return None
+        raise RuntimeError(f"container_up upload failed for {path}: {exc}") from exc
     uploaded = str(payload.get("url") or "").strip()
     if not uploaded:
         logger.warning("container-up upload returned no URL for {}", path)
@@ -430,6 +428,7 @@ def extract_documents(
     supports_visual_url = _is_vllm_provider_backend(provider=provider, metadata=metadata)
     visual_refs: list[str] = []
     attachment_refs: list[str] = []
+    image_count = 0
 
     for ref in media_paths:
         ref_str = str(ref or "").strip()
@@ -471,6 +470,8 @@ def extract_documents(
             if not block_type:
                 continue
             visual_refs.append(encode_visual_media_ref(block_type, resolved_ref))
+            image_count += 1
+            attachment_refs.append(f"image_{image_count}: " + _attachment_reference_line(mime, resolved_ref))
         else:
             attachment_refs.append(_attachment_reference_line(mime, resolved_ref))
 
