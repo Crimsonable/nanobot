@@ -544,7 +544,7 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   "frontend_id": "web-wd",
   "user_id": "web-demo-1",
   "chat_id": "web-chat-2",
-  "content": "生成word文件发我",
+  "content": "你刚刚在执行skill脚本的过程中遇到什么问题了吗",
   "attachments": [],
   "metadata": {},
   "raw": {}

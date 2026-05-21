@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 from urllib.request import urlopen
 from urllib.error import URLError
+from uuid import uuid4
 
 from jinja2 import Template
 
