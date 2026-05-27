@@ -123,7 +123,7 @@ common/
 - `BUCKET_NAME_PREFIX`
   - bucket Deployment / Service 名称前缀
 - `BUCKET_MAX_INSTANCES_PER_BUCKET`
-  - 单 bucket 最大实例数
+  - 单 bucket 最大实例数；同时也是传给 `bucket_runtime` 的进程上限
 - `BUCKET_IDLE_TTL_SECONDS`
   - 空闲 bucket 缩容阈值
 - `BUCKET_RUNTIME_IMAGE`

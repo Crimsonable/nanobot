@@ -117,14 +117,44 @@ async def create_instances_for_test(payload: BatchInboundTestRequest) -> dict[st
         }
         requests.append({"user_id": user_id, "chat_id": chat_id})
         tasks.append(_forward_inbound(frontend_id, forwarded_payload))
-    responses = await asyncio.gather(*tasks)
+    responses = await asyncio.gather(*tasks, return_exceptions=True)
+    results: list[dict[str, Any]] = []
+    success_count = 0
+    failure_count = 0
+    for request, response in zip(requests, responses):
+        if isinstance(response, Exception):
+            failure_count += 1
+            detail = response.detail if isinstance(response, HTTPException) else str(response)
+            results.append(
+                {
+                    **request,
+                    "status": "failed",
+                    "error": detail,
+                }
+            )
+            continue
+        success_count += 1
+        results.append(
+            {
+                **request,
+                "status": "accepted",
+                "response": response,
+            }
+        )
+    status = "accepted"
+    if failure_count and success_count:
+        status = "partial_success"
+    elif failure_count:
+        status = "failed"
     return {
-        "status": "accepted",
+        "status": status,
         "frontend_id": frontend_id,
         "batch_id": batch_id,
         "count": payload.n,
+        "success_count": success_count,
+        "failure_count": failure_count,
         "requests": requests,
-        "responses": responses,
+        "responses": results,
     }
 
 

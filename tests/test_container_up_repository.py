@@ -69,6 +69,46 @@ def test_repository_creates_new_bucket_when_capacity_is_exhausted(tmp_path) -> N
     assert bucket["bucket_id"] == "bucket-1"
 
 
+def test_repository_reuses_bucket_after_instance_release(tmp_path) -> None:
+    repo = BindingRepository(tmp_path / "bindings.db")
+    repo.init_db()
+
+    for index in range(20):
+        user_id = f"user-{index}"
+        repo.reserve_user_instance(
+            frontend_id="feishu-main",
+            user_id=user_id,
+            workspace_path=f"/tmp/workspaces/{user_id}",
+        )
+        repo.mark_user_instance_online("feishu-main", user_id)
+
+    bucket = repo.get_bucket("bucket-0")
+    assert bucket is not None
+    assert bucket["current_instances"] == 20
+    assert bucket["status"] == "full"
+
+    repo.release_user_instance(
+        "feishu-main",
+        "user-0",
+        bucket_id="bucket-0",
+        instance_id="feishu-main__user-0",
+    )
+
+    bucket = repo.get_bucket("bucket-0")
+    assert bucket is not None
+    assert bucket["current_instances"] == 19
+    assert bucket["status"] == "running"
+
+    _, bucket, created = repo.reserve_user_instance(
+        frontend_id="feishu-main",
+        user_id="user-20",
+        workspace_path="/tmp/workspaces/user-20",
+    )
+
+    assert created is True
+    assert bucket["bucket_id"] == "bucket-0"
+
+
 def test_repository_reuses_creating_reservation_without_double_counting(tmp_path) -> None:
     repo = BindingRepository(tmp_path / "bindings.db")
     repo.init_db()

@@ -14,6 +14,7 @@ from container_up.bucket_manager import BucketManager
 from container_up.workspace_manager import WorkspaceManager
 
 logger = logging.getLogger(__name__)
+_BUCKET_CAPACITY_ERROR = "bucket has reached max process capacity"
 
 
 @dataclass(frozen=True)
@@ -63,53 +64,68 @@ class BucketScheduler:
                     return runtime
 
             workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
-            user, bucket, created = self._repo.reserve_user_instance(
-                frontend_id=frontend_id,
-                user_id=user_id,
-                workspace_path=str(workspace),
-            )
-            self._assert_binding_consistency(
-                user,
-                frontend_id=frontend_id,
-                user_id=user_id,
-                workspace_path=str(workspace),
-            )
-            if not created:
-                self._repo.touch_user_activity(frontend_id, user_id)
+            for attempt in range(3):
+                user, bucket, created = self._repo.reserve_user_instance(
+                    frontend_id=frontend_id,
+                    user_id=user_id,
+                    workspace_path=str(workspace),
+                )
+                self._assert_binding_consistency(
+                    user,
+                    frontend_id=frontend_id,
+                    user_id=user_id,
+                    workspace_path=str(workspace),
+                )
+                if not created:
+                    self._repo.touch_user_activity(frontend_id, user_id)
+                    return self._runtime_from_records(user, bucket)
+
+                runtime = self._runtime_from_records(user, bucket)
+                try:
+                    await self._bucket_manager.ensure_bucket_exists(bucket)
+                    await self._bucket_manager.wait_bucket_ready(bucket)
+                    await self._bucket_client.create_user_instance(
+                        runtime.bucket_url,
+                        {
+                            "frontend_id": frontend_id,
+                            "user_id": user_id,
+                            "instance_id": runtime.instance_id,
+                            "workspace_path": runtime.workspace_path,
+                        },
+                    )
+                except Exception as exc:
+                    self._repo.rollback_user_instance_reservation(
+                        frontend_id,
+                        user_id,
+                        runtime.bucket_id,
+                    )
+                    if self._is_bucket_capacity_error(exc) and attempt < 2:
+                        logger.warning(
+                            "bucket reported capacity exhaustion despite scheduler reservation; "
+                            "marking bucket full and retrying frontend_id=%s user_id=%s bucket_id=%s",
+                            frontend_id,
+                            user_id,
+                            runtime.bucket_id,
+                        )
+                        self._mark_bucket_full(runtime.bucket_id)
+                        continue
+                    raise
+
+                user = self._repo.mark_user_instance_online(frontend_id, user_id)
+                self._assert_binding_consistency(
+                    user,
+                    frontend_id=frontend_id,
+                    user_id=user_id,
+                    workspace_path=str(workspace),
+                )
+                bucket = self._repo.get_bucket(runtime.bucket_id)
+                if bucket is None:
+                    raise RuntimeError(f"bucket disappeared after online transition: {runtime.bucket_id}")
                 return self._runtime_from_records(user, bucket)
 
-            runtime = self._runtime_from_records(user, bucket)
-            try:
-                await self._bucket_manager.ensure_bucket_exists(bucket)
-                await self._bucket_manager.wait_bucket_ready(bucket)
-                await self._bucket_client.create_user_instance(
-                    runtime.bucket_url,
-                    {
-                        "frontend_id": frontend_id,
-                        "user_id": user_id,
-                        "instance_id": runtime.instance_id,
-                        "workspace_path": runtime.workspace_path,
-                    },
-                )
-            except Exception:
-                self._repo.rollback_user_instance_reservation(
-                    frontend_id,
-                    user_id,
-                    runtime.bucket_id,
-                )
-                raise
-
-            user = self._repo.mark_user_instance_online(frontend_id, user_id)
-            self._assert_binding_consistency(
-                user,
-                frontend_id=frontend_id,
-                user_id=user_id,
-                workspace_path=str(workspace),
+            raise RuntimeError(
+                f"failed to allocate runtime after retrying bucket capacity for {frontend_id}/{user_id}"
             )
-            bucket = self._repo.get_bucket(runtime.bucket_id)
-            if bucket is None:
-                raise RuntimeError(f"bucket disappeared after online transition: {runtime.bucket_id}")
-            return self._runtime_from_records(user, bucket)
 
     async def route_inbound(
         self,
@@ -249,6 +265,15 @@ class BucketScheduler:
                 "binding instance_id mismatch: "
                 f"expected {expected_instance_id}, got {actual_instance_id}"
             )
+
+    @staticmethod
+    def _is_bucket_capacity_error(exc: Exception) -> bool:
+        return _BUCKET_CAPACITY_ERROR in str(exc)
+
+    def _mark_bucket_full(self, bucket_id: str) -> None:
+        touch_bucket = getattr(self._repo, "touch_bucket", None)
+        if callable(touch_bucket):
+            touch_bucket(bucket_id, status="full")
 
     async def _get_live_runtime(self, user: dict[str, Any]) -> UserInstanceRuntime | None:
         bucket_id = str(user.get("bucket_id") or "")

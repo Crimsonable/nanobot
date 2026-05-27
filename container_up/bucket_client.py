@@ -38,9 +38,13 @@ class BucketClient:
 
     async def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text.strip() or str(exc)
+                raise RuntimeError(detail) from exc
 
 
 def build_bucket_url(bucket_id: str) -> str:

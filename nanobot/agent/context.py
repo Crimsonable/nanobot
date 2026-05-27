@@ -218,6 +218,7 @@ class ContextBuilder:
             return text
         if (text or "").strip() in self._EMPTY_MESSAGE_MARKERS:
             text = self._IMAGE_ONLY_PROMPT
+        print(blocks)
         return blocks + [{"type": "text", "text": text}]
 
     @classmethod

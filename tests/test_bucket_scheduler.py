@@ -18,6 +18,9 @@ class _FakeRepo:
     def touch_user_activity(self, frontend_id: str, user_id: str) -> None:
         self.touched.append((frontend_id, user_id))
 
+    def touch_bucket(self, bucket_id: str, *, status: str | None = None) -> None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_route_inbound_preserves_request_id_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -426,6 +429,103 @@ async def test_get_or_create_recreates_stale_online_instance() -> None:
             "workspace_path": "/tmp/ws/user-1",
         },
     )
+    assert runtime.bucket_id == "bucket-1"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_retries_when_bucket_runtime_reports_capacity_exhausted() -> None:
+    class _Repo(_FakeRepo):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reserve_calls = 0
+            self.rollbacks: list[tuple[str, str, str]] = []
+            self.bucket_touches: list[tuple[str, str | None]] = []
+
+        def get_user_instance(self, frontend_id: str, user_id: str) -> None:
+            assert frontend_id == "qxt-main"
+            assert user_id == "user-1"
+            return None
+
+        def reserve_user_instance(
+            self,
+            *,
+            frontend_id: str,
+            user_id: str,
+            workspace_path: str,
+        ) -> tuple[dict[str, str], dict[str, str], bool]:
+            self.reserve_calls += 1
+            bucket_id = "bucket-0" if self.reserve_calls == 1 else "bucket-1"
+            return (
+                {
+                    "user_id": user_id,
+                    "workspace_path": workspace_path,
+                    "status": "creating",
+                    "bucket_id": bucket_id,
+                    "instance_id": build_instance_id(frontend_id, user_id),
+                    "frontend_id": frontend_id,
+                },
+                {
+                    "bucket_id": bucket_id,
+                    "service_host": f"http://{bucket_id}",
+                    "bucket_name": f"nanobot-{bucket_id}",
+                    "namespace": "nanobot",
+                },
+                True,
+            )
+
+        def rollback_user_instance_reservation(
+            self,
+            frontend_id: str,
+            user_id: str,
+            bucket_id: str,
+        ) -> None:
+            self.rollbacks.append((frontend_id, user_id, bucket_id))
+
+        def touch_bucket(self, bucket_id: str, *, status: str | None = None) -> None:
+            self.bucket_touches.append((bucket_id, status))
+
+        def mark_user_instance_online(self, frontend_id: str, user_id: str) -> dict[str, str]:
+            return {
+                "user_id": user_id,
+                "workspace_path": "/tmp/ws/user-1",
+                "status": "online",
+                "bucket_id": "bucket-1",
+                "instance_id": build_instance_id(frontend_id, user_id),
+                "frontend_id": frontend_id,
+            }
+
+        def get_bucket(self, bucket_id: str) -> dict[str, str]:
+            assert bucket_id == "bucket-1"
+            return {"bucket_id": "bucket-1", "service_host": "http://bucket-1"}
+
+    class _WorkspaceManager:
+        def get_or_create_workspace(self, frontend_id: str, user_id: str) -> str:
+            assert frontend_id == "qxt-main"
+            assert user_id == "user-1"
+            return "/tmp/ws/user-1"
+
+    repo = _Repo()
+    bucket_manager = AsyncMock()
+    bucket_client = AsyncMock()
+    bucket_client.create_user_instance.side_effect = [
+        RuntimeError('{"detail":"bucket has reached max process capacity"}'),
+        {"status": "online"},
+    ]
+    scheduler = BucketScheduler(
+        repo=repo,
+        workspace_manager=_WorkspaceManager(),
+        bucket_manager=bucket_manager,
+        bucket_client=bucket_client,
+    )
+
+    runtime = await scheduler.get_or_create_user_instance(
+        user_id="user-1",
+        frontend_id="qxt-main",
+    )
+
+    assert repo.rollbacks == [("qxt-main", "user-1", "bucket-0")]
+    assert repo.bucket_touches == [("bucket-0", "full")]
+    assert bucket_client.create_user_instance.await_count == 2
     assert runtime.bucket_id == "bucket-1"
 
 

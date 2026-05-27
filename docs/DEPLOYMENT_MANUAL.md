@@ -514,7 +514,7 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   --data-binary @- <<'JSON'
 {
   "frontend_id": "web-wd",
-  "user_id": "web-demo-1",
+  "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
   "content": "/new",
   "attachments": [],
@@ -528,7 +528,7 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   --data-binary @- <<'JSON'
 {
   "frontend_id": "web-wd",
-  "user_id": "web-demo-1",
+  "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
   "content": "/cancel",
   "attachments": [],
@@ -542,9 +542,9 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   --data-binary @- <<'JSON'
 {
   "frontend_id": "web-wd",
-  "user_id": "web-demo-1",
+  "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
-  "content": "你刚刚在执行skill脚本的过程中遇到什么问题了吗",
+  "content": "test",
   "attachments": [],
   "metadata": {},
   "raw": {}
@@ -556,9 +556,9 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   --data-binary @- <<'JSON'
 {
   "frontend_id": "web-wd",
-  "user_id": "web-demo-1",
+  "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
-  "content": "提交人孙宸，提交时间2026/05/20，分析图片中的安全风险，并生成pdf报告",
+  "content": "提交人孙宸，提交时间2026/05/20，分析图片中的安全风险",
   "attachments": [
     "http://192.168.48.104:9000/attachments/2026/05/19/3eeed76636d54c9c9e0252c6517e5cd0/tmp_c8c38602127542f09ea8336e65661a10.jpg","http://192.168.48.104:9000/attachments/2026/05/20/a835cde7fcf943ea9922023770ab0242/tmp_f79d82c30e97bfc19447817a3adc76b3.jpg"
   ],
@@ -585,10 +585,114 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
 }
 JSON
 
+`POST /test/create-instances` 用于一次性创建多条测试会话并并发转发到 `container-up`，适合压测或批量验证实例拉起逻辑。接口会自动生成 `user_id` 和 `chat_id`，格式分别为 `test-user-{batch_id}-{index}`、`test-chat-{batch_id}-{index}`。
+
+请求示例：
+
+```bash
 curl -sS -X POST 'http://127.0.0.1:8090/test/create-instances' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "frontend_id": "web-stream",
-    "n": 50,
-    "content": "测试"
-  }'
+  --data-binary @- <<'JSON'
+{
+  "frontend_id": "web-stream",
+  "n": 3,
+  "content": "测试批量拉起实例"
+}
+JSON
+```
+
+参数说明：
+
+- `frontend_id`：目标前端 ID，对应实际转发的 `/inbound/{frontend_id}`。
+- `n`：创建的测试实例数量，取值范围 `1-1000`。
+- `content`：发送给每个测试实例的消息内容，默认值为 `ping`。
+
+返回示例：
+
+```json
+{
+  "status": "accepted",
+  "frontend_id": "web-stream",
+  "batch_id": "a1b2c3d4",
+  "count": 3,
+  "success_count": 3,
+  "failure_count": 0,
+  "requests": [
+    {
+      "user_id": "test-user-a1b2c3d4-1",
+      "chat_id": "test-chat-a1b2c3d4-1"
+    },
+    {
+      "user_id": "test-user-a1b2c3d4-2",
+      "chat_id": "test-chat-a1b2c3d4-2"
+    },
+    {
+      "user_id": "test-user-a1b2c3d4-3",
+      "chat_id": "test-chat-a1b2c3d4-3"
+    }
+  ],
+  "responses": [
+    {
+      "user_id": "test-user-a1b2c3d4-1",
+      "chat_id": "test-chat-a1b2c3d4-1",
+      "status": "accepted",
+      "response": {
+        "status": "accepted"
+      }
+    },
+    {
+      "user_id": "test-user-a1b2c3d4-2",
+      "chat_id": "test-chat-a1b2c3d4-2",
+      "status": "accepted",
+      "response": {
+        "status": "accepted"
+      }
+    },
+    {
+      "user_id": "test-user-a1b2c3d4-3",
+      "chat_id": "test-chat-a1b2c3d4-3",
+      "status": "accepted",
+      "response": {
+        "status": "accepted"
+      }
+    }
+  ]
+}
+```
+
+如果批量创建过程中部分实例失败，接口不会再整批直接报错，而是返回 `status: "partial_success"`，并在 `responses` 中标出失败项，例如：
+
+```json
+{
+  "status": "partial_success",
+  "frontend_id": "web-stream",
+  "batch_id": "a1b2c3d4",
+  "count": 3,
+  "success_count": 2,
+  "failure_count": 1,
+  "responses": [
+    {
+      "user_id": "test-user-a1b2c3d4-1",
+      "chat_id": "test-chat-a1b2c3d4-1",
+      "status": "accepted",
+      "response": {
+        "status": "accepted"
+      }
+    },
+    {
+      "user_id": "test-user-a1b2c3d4-2",
+      "chat_id": "test-chat-a1b2c3d4-2",
+      "status": "failed",
+      "error": "{\"detail\":\"Server error '503 Service Unavailable' for url 'http://nanobot-bucket-1.nanobot:8080/instances'\"}"
+    },
+    {
+      "user_id": "test-user-a1b2c3d4-3",
+      "chat_id": "test-chat-a1b2c3d4-3",
+      "status": "accepted",
+      "response": {
+        "status": "accepted"
+      }
+    }
+  ]
+}
+```

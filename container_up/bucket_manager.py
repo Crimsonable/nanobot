@@ -21,7 +21,7 @@ from container_up.settings import (
     BUCKET_INSTANCE_IDLE_TTL_SECONDS,
     BUCKET_INSTANCE_STOP_GRACE_SECONDS,
     BUCKET_KUBECTL_BIN,
-    BUCKET_MAX_PROCESSES,
+    BUCKET_MAX_INSTANCES_PER_BUCKET,
     BUCKET_NANOBOT_PORT_END,
     BUCKET_NANOBOT_PORT_START,
     BUCKET_RUNTIME_IMAGE,
@@ -159,7 +159,7 @@ class BucketManager:
                 "name": "INSTANCE_EVICT_INTERVAL_SECONDS",
                 "value": str(BUCKET_INSTANCE_EVICT_INTERVAL_SECONDS),
             },
-            {"name": "MAX_PROCESSES_PER_BUCKET", "value": str(BUCKET_MAX_PROCESSES)},
+            {"name": "MAX_PROCESSES_PER_BUCKET", "value": str(BUCKET_MAX_INSTANCES_PER_BUCKET)},
             {"name": "NANOBOT_PORT_START", "value": str(BUCKET_NANOBOT_PORT_START)},
             {"name": "NANOBOT_PORT_END", "value": str(BUCKET_NANOBOT_PORT_END)},
         ]
