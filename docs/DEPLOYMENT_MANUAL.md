@@ -496,7 +496,7 @@ kubectl rollout status deployment/container-up -n nanobot
 kubectl get pods -n nanobot -o wide
 ```
 kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
-
+kubectl delete ns nanobot && kubectl delete pv nanobot-data-pv nanobot-source-pv nanobot-common-pv
 查看日志：
 
 ```bash
@@ -541,10 +541,10 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-wd",
+  "frontend_id": "web-main",
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
-  "content": "test",
+  "content": "两分钟后提醒我给公司打电话",
   "attachments": [],
   "metadata": {},
   "raw": {}

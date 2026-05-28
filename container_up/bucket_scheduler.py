@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from container_up.binding_repository import BindingRepository
 from container_up.binding_repository import build_instance_id
@@ -13,7 +13,6 @@ from container_up.bucket_client import BucketClient
 from container_up.bucket_manager import BucketManager
 from container_up.workspace_manager import WorkspaceManager
 
-logger = logging.getLogger(__name__)
 _BUCKET_CAPACITY_ERROR = "bucket has reached max process capacity"
 
 
@@ -102,7 +101,7 @@ class BucketScheduler:
                     if self._is_bucket_capacity_error(exc) and attempt < 2:
                         logger.warning(
                             "bucket reported capacity exhaustion despite scheduler reservation; "
-                            "marking bucket full and retrying frontend_id=%s user_id=%s bucket_id=%s",
+                            "marking bucket full and retrying frontend_id={} user_id={} bucket_id={}",
                             frontend_id,
                             user_id,
                             runtime.bucket_id,
@@ -295,7 +294,7 @@ class BucketScheduler:
             return runtime
         except httpx.HTTPStatusError as exc:
             logger.warning(
-                "stale runtime binding for user_id=%s bucket_id=%s instance_id=%s status=%s; recreating",
+                "stale runtime binding for user_id={} bucket_id={} instance_id={} status={}; recreating",
                 runtime.user_id,
                 runtime.bucket_id,
                 runtime.instance_id,
@@ -303,7 +302,7 @@ class BucketScheduler:
             )
         except httpx.RequestError:
             logger.warning(
-                "bucket probe failed for user_id=%s bucket_id=%s instance_id=%s; recreating",
+                "bucket probe failed for user_id={} bucket_id={} instance_id={}; recreating",
                 runtime.user_id,
                 runtime.bucket_id,
                 runtime.instance_id,

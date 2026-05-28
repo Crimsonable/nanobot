@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+from loguru import logger
 
 from container_up.frontend_config import FrontendConfig, load_frontend_configs
 from container_up.qxt_im_tool import QxtIMParser, build_im_receive_event
 from container_up.settings import IM_PROVIDER
 from container_up.web_im_tool import WebIMParser
 
-
-logger = logging.getLogger(__name__)
 _im_manager: "IMManager | None" = None
 
 

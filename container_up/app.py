@@ -21,6 +21,7 @@ from container_up.bucket_manager import BucketManager
 from container_up.bucket_scheduler import BucketScheduler
 from container_up.http_state import close_dispatch_session, init_dispatch_session
 from container_up.im_tools import get_im_manager, get_im_parser, init_im_parser
+from container_up.logging_setup import configure_logging
 from container_up.frontend_config import frontend_config_for
 from container_up.outbound_attachment_store import upload_local_attachment
 from container_up.qxt_im_tool import build_im_receive_event
@@ -666,6 +667,7 @@ async def debug_message(
 
 
 def main() -> None:
+    configure_logging()
     uvicorn.run(
         "container_up.app:app",
         host=APP_HOST,

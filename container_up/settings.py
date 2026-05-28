@@ -107,6 +107,14 @@ MINIO_PRESIGN_EXPIRY_SECONDS = _int_env("MINIO_PRESIGN_EXPIRY_SECONDS", 3600)
 
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", APP_ID).strip()
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", APP_SECRET).strip()
+CONTAINER_UP_LOG_DIR = Path(
+    os.getenv("CONTAINER_UP_LOG_DIR", str(BUCKET_MOUNT_ROOT / "logs" / "container_up")).strip()
+).expanduser()
+CONTAINER_UP_LOG_LEVEL = os.getenv("CONTAINER_UP_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+CONTAINER_UP_LOG_RETENTION = (
+    os.getenv("CONTAINER_UP_LOG_RETENTION", "30 days").strip() or "30 days"
+)
+CONTAINER_UP_LOG_COMPRESSION = os.getenv("CONTAINER_UP_LOG_COMPRESSION", "gz").strip()
 
 
 def build_bucket_base_url(bucket_id: str, bucket_name: str | None = None) -> str:

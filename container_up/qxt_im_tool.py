@@ -5,7 +5,6 @@ import base64
 import hashlib
 import inspect
 import json
-import logging
 import mimetypes
 import secrets
 import string
@@ -17,6 +16,7 @@ from urllib.parse import urlparse
 import aiohttp
 from aiohttp import ClientError
 from Crypto.Cipher import AES
+from loguru import logger
 
 from container_up.attachments import (
     attachment_from_content_url,
@@ -24,8 +24,6 @@ from container_up.attachments import (
 )
 from container_up.http_state import get_dispatch_session
 
-
-logger = logging.getLogger(__name__)
 _AES_BLOCK_SIZE = 16
 
 
@@ -172,7 +170,7 @@ class QxtIMParser:
             decrypted_bytes = cipher.decrypt(base64.b64decode(text))
             return self._pkcs7_unpad(decrypted_bytes).decode("utf-8")
         except Exception as exc:
-            logger.error("qxt aes decrypt failed: %s", exc)
+            logger.error("qxt aes decrypt failed: {}", exc)
             return None
 
     def _msgSignature(
@@ -272,12 +270,12 @@ class QxtIMParser:
                 RuntimeError,
                 json.JSONDecodeError,
             ) as exc:
-                logger.error("access_token retry attempt=%s error=%s", attempt, exc)
+                logger.error("access_token retry attempt={} error={}", attempt, exc)
                 last_error = exc
                 if attempt >= self.send_msg_retry_count:
                     break
                 await asyncio.sleep(self.send_msg_retry_backoff * attempt)
-        logger.error("access_token fetch failed: %s", last_error)
+        logger.error("access_token fetch failed: {}", last_error)
         return None
 
     def process_subscribe_form(
@@ -291,17 +289,22 @@ class QxtIMParser:
         )
         if not decrypted:
             raise ValueError("empty decrypted payload")
-        print("Decrypted subscribe payload:", decrypted)
         try:
             payload = dict(json.loads(decrypted))
         except json.JSONDecodeError as exc:
             raise ValueError("invalid payload") from exc
         event_type = str(payload.get("event_type") or "")
+        logger.debug(
+            "qxt subscribe payload parsed frontend_id={} event_type={} payload_size={}",
+            self.frontend_id,
+            event_type or "(empty)",
+            len(decrypted),
+        )
         if event_type == "check_url":
-            print("Received URL verification request")
+            logger.info("received qxt URL verification request frontend_id={}", self.frontend_id)
             return self.encrypt(text="success"), None
         if event_type != "p2p_chat_receive_msg":
-            logger.info("ignore qxt subscribe event_type=%s", event_type)
+            logger.info("ignore qxt subscribe event_type={}", event_type)
             return self.encrypt(text="success"), None
 
         return self.encrypt(text="success"), self.normalize_subscribe_payload(payload)
@@ -434,7 +437,7 @@ class QxtIMParser:
                     return data, filename
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
                 logger.error(
-                    "qxt attachment download retry attempt=%s url=%s error=%s",
+                    "qxt attachment download retry attempt={} url={} error={}",
                     attempt,
                     url,
                     exc,
@@ -443,7 +446,7 @@ class QxtIMParser:
                 if attempt >= self.send_msg_retry_count:
                     break
                 await asyncio.sleep(self.send_msg_retry_backoff * attempt)
-        logger.error("qxt attachment download failed url=%s error=%s", url, last_error)
+        logger.error("qxt attachment download failed url={} error={}", url, last_error)
         return None, filename_override or self._guess_filename(url)
 
     @staticmethod
@@ -505,7 +508,7 @@ class QxtIMParser:
                 ) as response:
                     response_text = await response.text()
                     logger.info(
-                        "%s response attempt=%s status=%s body_len=%s",
+                        "{} response attempt={} status={} body_len={}",
                         log_label,
                         attempt,
                         response.status,
@@ -524,7 +527,7 @@ class QxtIMParser:
                         "body": response_text,
                     }
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
-                logger.error("%s retry attempt=%s error=%s", log_label, attempt, exc)
+                logger.error("{} retry attempt={} error={}", log_label, attempt, exc)
                 last_error = exc
                 if attempt >= self.send_msg_retry_count:
                     break
@@ -588,7 +591,7 @@ class QxtIMParser:
                 ) as response:
                     response_text = await response.text()
                     logger.info(
-                        "media_upload response attempt=%s status=%s body_len=%s",
+                        "media_upload response attempt={} status={} body_len={}",
                         attempt,
                         response.status,
                         len(response_text),
@@ -613,7 +616,7 @@ class QxtIMParser:
                         "filename": filename,
                     }
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
-                logger.error("media_upload retry attempt=%s error=%s", attempt, exc)
+                logger.error("media_upload retry attempt={} error={}", attempt, exc)
                 last_error = exc
                 if attempt >= self.send_msg_retry_count:
                     break

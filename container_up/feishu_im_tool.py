@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import logging
 import mimetypes
 import re
 import threading
@@ -14,12 +13,11 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
+from loguru import logger
 
 from container_up.attachments import persist_attachment_bytes
 from container_up.settings import FEISHU_APP_ID, FEISHU_APP_SECRET
 
-
-logger = logging.getLogger(__name__)
 DispatchCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -784,7 +782,7 @@ class FeishuIMParser:
         response = client.im.v1.message_resource.get(request)
         if not response.success():
             logger.error(
-                "feishu resource download failed code=%s msg=%s message_id=%s file_key=%s",
+                "feishu resource download failed code={} msg={} message_id={} file_key={}",
                 response.code,
                 response.msg,
                 message_id,

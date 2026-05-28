@@ -35,6 +35,7 @@ class BridgeChannel(BaseChannel):
     display_name = "Bridge"
     _PROTOCOL_VERSION = 2
     _DELIVERY_TARGET_SEPARATOR = ":::"
+    _WS_MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
@@ -74,7 +75,11 @@ class BridgeChannel(BaseChannel):
 
         while self._running:
             try:
-                async with websockets.connect(self.config.bridge_url, proxy=None) as ws:
+                async with websockets.connect(
+                    self.config.bridge_url,
+                    proxy=None,
+                    max_size=self._WS_MAX_SIZE_BYTES,
+                ) as ws:
                     self._ws = ws
                     if packet := self._build_handshake_packet():
                         await ws.send(json.dumps(packet, ensure_ascii=False))
