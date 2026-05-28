@@ -37,11 +37,12 @@ from container_up.workspace_manager import WorkspaceManager
 
 repo = BindingRepository()
 bucket_manager = BucketManager()
+bucket_client = BucketClient()
 scheduler = BucketScheduler(
     repo=repo,
     workspace_manager=WorkspaceManager(BUCKET_WORKSPACE_ROOT),
     bucket_manager=bucket_manager,
-    bucket_client=BucketClient(),
+    bucket_client=bucket_client,
 )
 cleanup_task: asyncio.Task[None] | None = None
 
@@ -295,6 +296,8 @@ async def lifespan(_: FastAPI):
     if cleanup_task is not None:
         cleanup_task.cancel()
         await asyncio.gather(cleanup_task, return_exceptions=True)
+    await scheduler.shutdown()
+    await bucket_client.close()
     await close_dispatch_session()
 
 

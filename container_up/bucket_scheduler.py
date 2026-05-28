@@ -43,6 +43,8 @@ class BucketScheduler:
         self._bucket_manager = bucket_manager
         self._bucket_client = bucket_client
         self._user_locks: dict[str, asyncio.Lock] = {}
+        self._pending_user_touches: set[str] = set()
+        self._touch_tasks: set[asyncio.Task[None]] = set()
 
     async def get_or_create_user_instance(
         self,
@@ -59,7 +61,7 @@ class BucketScheduler:
             if existing is not None and existing.get("status") == "online" and existing.get("bucket_id"):
                 runtime = await self._get_live_runtime(existing)
                 if runtime is not None:
-                    self._repo.touch_user_activity(frontend_id, user_id)
+                    self._schedule_touch_user_activity(frontend_id, user_id)
                     return runtime
 
             workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
@@ -76,7 +78,7 @@ class BucketScheduler:
                     workspace_path=str(workspace),
                 )
                 if not created:
-                    self._repo.touch_user_activity(frontend_id, user_id)
+                    self._schedule_touch_user_activity(frontend_id, user_id)
                     return self._runtime_from_records(user, bucket)
 
                 runtime = self._runtime_from_records(user, bucket)
@@ -142,7 +144,7 @@ class BucketScheduler:
         packet["user_id"] = user_id
         packet["instance_id"] = runtime.instance_id
         await self._bucket_client.forward_inbound(runtime.bucket_url, packet)
-        self._repo.touch_user_activity(frontend_id, user_id)
+        self._schedule_touch_user_activity(frontend_id, user_id)
         return runtime
 
     async def route_cancel(
@@ -164,8 +166,45 @@ class BucketScheduler:
         packet["user_id"] = user_id
         packet["instance_id"] = runtime.instance_id
         await self._bucket_client.forward_cancel(runtime.bucket_url, packet)
-        self._repo.touch_user_activity(frontend_id, user_id)
+        self._schedule_touch_user_activity(frontend_id, user_id)
         return runtime
+
+    def _schedule_touch_user_activity(self, frontend_id: str, user_id: str) -> None:
+        user_key = f"{frontend_id}:{user_id}"
+        if user_key in self._pending_user_touches:
+            return
+        self._pending_user_touches.add(user_key)
+        task = asyncio.create_task(self._run_touch_user_activity(user_key, frontend_id, user_id))
+        self._touch_tasks.add(task)
+        task.add_done_callback(self._on_touch_task_done)
+
+    async def _run_touch_user_activity(
+        self,
+        user_key: str,
+        frontend_id: str,
+        user_id: str,
+    ) -> None:
+        try:
+            await asyncio.to_thread(self._repo.touch_user_activity, frontend_id, user_id)
+        finally:
+            self._pending_user_touches.discard(user_key)
+
+    def _on_touch_task_done(self, task: asyncio.Task[None]) -> None:
+        self._touch_tasks.discard(task)
+        try:
+            task.result()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("touch_user_activity background task failed: {}", exc)
+
+    async def shutdown(self) -> None:
+        if not self._touch_tasks:
+            return
+        tasks = list(self._touch_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._touch_tasks.clear()
+        self._pending_user_touches.clear()
 
     async def release_user_instance(self, frontend_id: str, user_id: str) -> dict[str, Any] | None:
         user = self._repo.get_user_instance(frontend_id, user_id)
