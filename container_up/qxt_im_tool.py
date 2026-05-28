@@ -400,7 +400,9 @@ class QxtIMParser:
         if not url.startswith(("http://", "https://")):
             return None
 
-        data, filename = await self._download_attachment_bytes(url, filename_override)
+        data, filename, _ = await self._download_attachment_bytes(
+            url, filename_override
+        )
         if not data:
             return None
         return persist_attachment_bytes(
@@ -416,7 +418,7 @@ class QxtIMParser:
         self,
         url: str,
         filename_override: str | None = None,
-    ) -> tuple[bytes | None, str]:
+    ) -> tuple[bytes | None, str, str | None]:
         last_error: Exception | None = None
         for attempt in range(1, self.send_msg_retry_count + 1):
             try:
@@ -434,7 +436,12 @@ class QxtIMParser:
                             headers=dict(response.headers),
                         )
                     )
-                    return data, filename
+                    return (
+                        data,
+                        filename,
+                        str(response.headers.get("Content-Type") or "").strip()
+                        or None,
+                    )
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
                 logger.error(
                     "qxt attachment download retry attempt={} url={} error={}",
@@ -447,7 +454,7 @@ class QxtIMParser:
                     break
                 await asyncio.sleep(self.send_msg_retry_backoff * attempt)
         logger.error("qxt attachment download failed url={} error={}", url, last_error)
-        return None, filename_override or self._guess_filename(url)
+        return None, filename_override or self._guess_filename(url), None
 
     @staticmethod
     def _attachment_filename_from_response(url: str, headers: dict[str, str]) -> str:
@@ -553,16 +560,15 @@ class QxtIMParser:
     ) -> tuple[bytes, str, str | None]:
         ref, filename_override = self._attachment_ref(attachment)
         parsed = urlparse(ref)
-        if parsed.scheme in {"http", "https"}:
-            raise RuntimeError(f"attachment must be a local file path: {ref}")
-        path = Path(ref).expanduser()
-
-        if not path.is_file():
-            raise RuntimeError(f"attachment file not found: {ref}")
-
-        payload = await asyncio.to_thread(path.read_bytes)
-        filename = filename_override or path.name or self._guess_filename(ref)
-        content_type = mimetypes.guess_type(filename)[0]
+        if parsed.scheme not in {"http", "https"}:
+            raise RuntimeError(f"attachment must be a url: {ref}")
+        payload, filename, content_type = await self._download_attachment_bytes(
+            ref, filename_override
+        )
+        if not payload:
+            raise RuntimeError(f"attachment download failed: {ref}")
+        if not content_type:
+            content_type = mimetypes.guess_type(filename)[0]
         return payload, filename, content_type
 
     async def _upload_attachment_with_retry(
