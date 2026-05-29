@@ -28,8 +28,8 @@ def get_runtime_subdir(name: str) -> Path:
 
 
 def get_media_dir(channel: str | None = None) -> Path:
-    """Return the media directory, optionally namespaced per channel."""
-    base = get_runtime_subdir("media")
+    """Return the media directory under the active workspace."""
+    base = ensure_dir(get_workspace_path() / "media")
     return ensure_dir(base / channel) if channel else base
 
 
