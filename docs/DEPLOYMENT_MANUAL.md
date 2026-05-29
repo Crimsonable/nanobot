@@ -507,13 +507,12 @@ kubectl logs -n nanobot deploy/nanobot-bucket-0 -f
 web server测试：
 说明：`attachments` 里如果已经是 `http/https` URL，直接按 URL 使用；不要下载到本地，也不要写入本地缓存。仅当附件是本地路径时，才走上传并替换为可访问 URL。
 
-env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound -H 'Content-Type: application/json' -d '{"frontend_id":"web-wd","user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound/web-wd -H 'Content-Type: application/json' -d '{"user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
 
-curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-wd",
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
   "content": "/new",
@@ -523,11 +522,10 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
 }
 JSON
 
-curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-wd",
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
   "content": "/cancel",
@@ -537,11 +535,10 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
 }
 JSON
 
-curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-main' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-main",
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
   "content": "创建一个txt文件",
@@ -551,11 +548,10 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
 }
 JSON
 
-curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-wd",
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
   "content": "提交人孙宸，提交时间2026/05/20，分析图片中的安全风险",
@@ -568,11 +564,10 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
 JSON
 
 
-curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
+curl -sS -X POST 'http://127.0.0.1:8090/inbound/web-wd' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
-  "frontend_id": "web-wd",
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
   "content": "提交人孙宸，提交时间2026/05/20，分析视频中的安全风险",

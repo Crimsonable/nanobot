@@ -15,7 +15,8 @@ RUN apt-get update && \
         build-essential \
         curl \
         wget \
-        libmagic1 && \
+        libmagic1 \
+        bubblewrap && \
     rm -rf /var/lib/apt/lists/* && \
     python - <<'PY' > /tmp/requirements.txt
 import tomllib

@@ -7,6 +7,7 @@ and register it in _BACKENDS below.
 
 import shlex
 from pathlib import Path
+import os
 
 from nanobot.config.paths import get_media_dir
 
@@ -28,7 +29,7 @@ def _bwrap(command: str, workspace: str, cwd: str) -> str:
 
     required  = ["/usr"]
     optional  = ["/bin", "/lib", "/lib64", "/etc/alternatives",
-                 "/etc/ssl/certs", "/etc/resolv.conf", "/etc/ld.so.cache"]
+                 "/etc/ssl/certs", "/etc/resolv.conf", "/etc/ld.so.cache", os.getenv("BUILTIN_SKILLS_DIR")]
 
     args = ["bwrap", "--new-session", "--die-with-parent"]
     for p in required: args += ["--ro-bind",     p, p]
