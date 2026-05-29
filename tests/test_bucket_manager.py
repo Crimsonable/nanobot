@@ -53,10 +53,14 @@ def test_bucket_manager_builds_deployment_manifest() -> None:
         {"name": "bucket-mount-root", "mountPath": "/mnt/nanobot"},
         {"name": "source-root", "mountPath": "/mnt/nanobot/source", "readOnly": True},
         {"name": "common-root", "mountPath": "/mnt/common", "readOnly": True},
+        {"name": "host-localtime", "mountPath": "/etc/localtime", "readOnly": True},
+        {"name": "host-timezone", "mountPath": "/etc/timezone", "readOnly": True},
     ]
 
     volumes = manifest["spec"]["template"]["spec"]["volumes"]
     assert {"name": "common-root", "persistentVolumeClaim": {"claimName": "nanobot-common-pvc"}} in volumes
+    assert {"name": "host-localtime", "hostPath": {"path": "/etc/localtime"}} in volumes
+    assert {"name": "host-timezone", "hostPath": {"path": "/etc/timezone"}} in volumes
 
 
 def test_build_bucket_base_url_uses_namespace_short_name() -> None:

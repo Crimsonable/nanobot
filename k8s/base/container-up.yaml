@@ -73,6 +73,12 @@ spec:
             - name: common-root
               mountPath: /mnt/common
               readOnly: true
+            - name: host-localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: host-timezone
+              mountPath: /etc/timezone
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -95,3 +101,9 @@ spec:
         - name: common-root
           persistentVolumeClaim:
             claimName: nanobot-common-pvc
+        - name: host-localtime
+          hostPath:
+            path: /etc/localtime
+        - name: host-timezone
+          hostPath:
+            path: /etc/timezone

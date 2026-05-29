@@ -544,7 +544,7 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   "frontend_id": "web-main",
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
-  "content": "两分钟后提醒我给公司打电话",
+  "content": "创建一个txt文件",
   "attachments": [],
   "metadata": {},
   "raw": {}
@@ -573,12 +573,11 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound' \
   --data-binary @- <<'JSON'
 {
   "frontend_id": "web-wd",
-  "user_id": "web-demo-1",
-  "chat_id": "web-chat-1",
-  "content": "what's in this video",
+  "user_id": "web-demo-2",
+  "chat_id": "web-chat-2",
+  "content": "提交人孙宸，提交时间2026/05/20，分析视频中的安全风险",
   "attachments": [
-    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy82MTlhYTc5ODZiN2U5ZDc5Yjg4Nzg3YjRhNGM3NDA2ZjQzMWEzYzk2LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTYwOUZBM0FUS0lCUUlQN1dKQTlPJTJGMjAyNjA1MTIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTEyVDA4MTI0NlomWC1BbXotRXhwaXJlcz00MzE5OSZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSTJNRGxHUVROQlZFdEpRbEZKVURkWFNrRTVUeUlzSW1WNGNDSTZNVGMzT0RZeE5qYzBOQ3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLjFLdmg5YnlYQTZxN1Y3S2xQWDRfcVVjSkF0YW0yNnNIRnYwbmw0VV91YmloTXBFX3dmLVZlNlI3WmVEN2NBdXFKM3V6dV96NHRqTWpqY3R3M19lNUtnJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9NmIzZGI4NzM5OGJjMWE2YmQ3MDU4YjVkNTI0ZmY5Nzg0ZWVmNDU5ZmI1NmZmMjJhY2M5ODU4MTE2YTg0Mjc1ZQ",
-    "http://192.168.48.104:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2F0dGFjaG1lbnRzL21hcmtkb3duLWltYWdlcy8lRTUlOUIlQkUlRTclODklODcxLmpwZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTYwOUZBM0FUS0lCUUlQN1dKQTlPJTJGMjAyNjA1MTIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTEyVDA4MTMwOFomWC1BbXotRXhwaXJlcz00MzE5OCZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSTJNRGxHUVROQlZFdEpRbEZKVURkWFNrRTVUeUlzSW1WNGNDSTZNVGMzT0RZeE5qYzBOQ3dpY0dGeVpXNTBJam9pYldsdWFXOWZZV1J0YVc0aWZRLjFLdmg5YnlYQTZxN1Y3S2xQWDRfcVVjSkF0YW0yNnNIRnYwbmw0VV91YmloTXBFX3dmLVZlNlI3WmVEN2NBdXFKM3V6dV96NHRqTWpqY3R3M19lNUtnJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZ2ZXJzaW9uSWQ9bnVsbCZYLUFtei1TaWduYXR1cmU9ZTQxMTJlMGFlZjZjNTFhZmNlNGRkNTE0MWQxMGRiMmI3NmQ0YTY2NmQ5ZTYzN2ZjYjZiN2ZiYmM2MjQwMjQzNQ"
+    "http://192.168.48.104:9000/attachments/2026/05/28/4b134cb715764ba7b64f63063d67e7e1/1.mp4"
   ],
   "metadata": {},
   "raw": {}

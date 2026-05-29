@@ -212,6 +212,16 @@ class BucketManager:
                                         "mountPath": str(BUCKET_COMMON_ROOT),
                                         "readOnly": True,
                                     },
+                                    {
+                                        "name": "host-localtime",
+                                        "mountPath": "/etc/localtime",
+                                        "readOnly": True,
+                                    },
+                                    {
+                                        "name": "host-timezone",
+                                        "mountPath": "/etc/timezone",
+                                        "readOnly": True,
+                                    },
                                 ],
                                 "readinessProbe": {
                                     "httpGet": {
@@ -243,6 +253,14 @@ class BucketManager:
                             {
                                 "name": "common-root",
                                 "persistentVolumeClaim": {"claimName": "nanobot-common-pvc"},
+                            },
+                            {
+                                "name": "host-localtime",
+                                "hostPath": {"path": "/etc/localtime"},
+                            },
+                            {
+                                "name": "host-timezone",
+                                "hostPath": {"path": "/etc/timezone"},
                             },
                         ],
                     },
