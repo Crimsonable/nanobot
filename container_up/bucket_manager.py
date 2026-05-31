@@ -195,6 +195,9 @@ class BucketManager:
                                 "name": "bucket-runtime",
                                 "image": BUCKET_RUNTIME_IMAGE,
                                 "imagePullPolicy": BUCKET_IMAGE_PULL_POLICY,
+                                "securityContext": {
+                                    "privileged": True,
+                                },
                                 "ports": [{"containerPort": BUCKET_CONTAINER_PORT}],
                                 "env": env,
                                 "volumeMounts": [

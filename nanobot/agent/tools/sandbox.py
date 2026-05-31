@@ -40,6 +40,9 @@ def _bwrap(command: str, workspace: str, cwd: str) -> str:
     skills_dir = os.getenv("BUILTIN_SKILLS_DIR")
     if skills_dir:
         optional.append(skills_dir)
+    browser_dir = os.getenv("PLAYWRIGHT_BROWSERS_PATH")
+    if browser_dir:
+        optional.append(browser_dir)
 
     args = ["bwrap", "--new-session", "--die-with-parent"]
     for p in required:

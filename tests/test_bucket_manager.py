@@ -48,6 +48,9 @@ def test_bucket_manager_builds_deployment_manifest() -> None:
     assert "SKILLS_ROOT" not in env_names
     assert "TEMPLATES_ROOT" not in env_names
 
+    security_context = manifest["spec"]["template"]["spec"]["containers"][0]["securityContext"]
+    assert security_context["privileged"] is True
+
     volume_mounts = manifest["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert volume_mounts == [
         {"name": "bucket-mount-root", "mountPath": "/mnt/nanobot"},
