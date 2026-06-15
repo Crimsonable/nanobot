@@ -8,7 +8,6 @@ spec:
   accessModes:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: standard
   hostPath:
     path: /data/nanobot_backend_k8s/data
 ---
@@ -20,7 +19,6 @@ metadata:
 spec:
   accessModes:
     - ReadWriteMany
-  storageClassName: standard
   resources:
     requests:
       storage: 1Ti
@@ -36,7 +34,6 @@ spec:
   accessModes:
     - ReadOnlyMany
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: standard
   hostPath:
     path: /data/nanobot_backend_k8s/source
 ---
@@ -48,8 +45,33 @@ metadata:
 spec:
   accessModes:
     - ReadOnlyMany
-  storageClassName: standard
   resources:
     requests:
       storage: 20Gi
   volumeName: nanobot-source-pv
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nanobot-common-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/nanobot_backend_k8s/common
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nanobot-common-pvc
+  namespace: nanobot
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 20Gi
+  volumeName: nanobot-common-pv

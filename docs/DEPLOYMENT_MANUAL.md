@@ -247,6 +247,55 @@ common/
 3. `common/frontends.json` 中不要保留示例密钥
 4. `common/<frontend-id>/templates/` 已准备好模板
 
+### 5.4 QXT 出站 TLS 证书检查
+
+如果 `container_up` 的日志里出现类似：
+
+```text
+access_token retry attempt=1 error=Cannot connect to host ... ssl:True [SSLCertVerificationError: ... certificate has expired]
+```
+
+这通常不是重试能解决的问题，而是 `ACCESS_URL` 对应的上游 HTTPS 证书有问题。
+
+优先检查：
+
+1. 上游服务证书是否已经过期
+2. 容器所在节点的系统时间是否正确
+3. 是否走了企业内部代理或自签 CA，且容器里没有安装对应根证书
+
+建议验证命令：
+
+```bash
+openssl s_client -connect im2test.chidi.com.cn:8888 -servername im2test.chidi.com.cn
+```
+
+处理原则：
+
+- 如果证书确实过期，先在上游服务端更新证书
+- 如果是内部 CA 信任链问题，把 CA 证书挂进容器并更新系统信任库
+- 不要把 TLS 校验关闭作为长期方案
+
+### 5.5 固定 MinIO 到指定节点
+
+MinIO 使用的是 `hostPath` 存储，Pod 如果被调度到别的节点，会读到另一台机器上的目录。
+如果你要让它始终固定在同一个节点上，需要先给目标节点打标签，再让 Deployment 只调度到该节点。
+
+示例：
+
+```bash
+kubectl label node <node-name> nanobot.io/minio-node=true
+```
+
+然后在 `k8s/minio/minio.yaml` 的 Pod 模板里使用：
+
+```yaml
+spec:
+  nodeSelector:
+    nanobot.io/minio-node: "true"
+```
+
+如果是 Kind 的单节点环境，通常把 `control-plane` 节点打上这个标签即可。
+
 ## 6. 方式一：Kind 本地 K8s 验证
 
 这个流程适合先在本机验证整套 K8s 方案。
@@ -510,6 +559,19 @@ web server测试：
 env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound/web-wd -H 'Content-Type: application/json' -d '{"user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
 
 curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "user_id": "web-demo-2",
+  "chat_id": "web-chat-2",
+  "content": "/new",
+  "attachments": [],
+  "metadata": {},
+  "raw": {}
+}
+JSON
+
+curl -sS -X POST 'http://192.168.102.189:30080/inbound/web-test' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {

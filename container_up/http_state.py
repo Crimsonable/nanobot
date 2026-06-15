@@ -4,14 +4,16 @@ import aiohttp
 
 from container_up.settings import SEND_MSG_TIMEOUT
 
-
 _dispatch_session: aiohttp.ClientSession | None = None
 
 
 def init_dispatch_session() -> aiohttp.ClientSession:
     global _dispatch_session
+    connector = aiohttp.TCPConnector(ssl=False)
+
     _dispatch_session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=SEND_MSG_TIMEOUT)
+        timeout=aiohttp.ClientTimeout(total=SEND_MSG_TIMEOUT),
+        connector=connector,
     )
     return _dispatch_session
 
