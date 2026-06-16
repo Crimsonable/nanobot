@@ -597,13 +597,13 @@ curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
 }
 JSON
 
-curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
+curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-main' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
   "user_id": "web-demo-2",
   "chat_id": "web-chat-2",
-  "content": "k8s的pod要怎么判断，给我一个kubectl exec",
+  "content": "你是谁",
   "attachments": [],
   "metadata": {},
   "raw": {}
