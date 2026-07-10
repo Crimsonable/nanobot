@@ -79,9 +79,19 @@ class ProcessManager:
         async with lock:
             existing = self._processes.get(instance_id)
             if existing is not None and existing.process.returncode is None:
-                existing.last_active_at = time.time()
-                await self._ensure_instance_socket(existing)
-                return existing
+                if self._workspace_is_missing(existing.workspace_path):
+                    logger.warning(
+                        "workspace missing for live instance; restarting instance_id={} workspace={}",
+                        instance_id,
+                        existing.workspace_path,
+                    )
+                    self._processes.pop(instance_id, None)
+                    await self._stop_instance(existing)
+                    existing = None
+                else:
+                    existing.last_active_at = time.time()
+                    await self._ensure_instance_socket(existing)
+                    return existing
 
             if existing is None and len(self._live_processes()) >= MAX_PROCESSES_PER_BUCKET:
                 raise RuntimeError("bucket has reached max process capacity")
@@ -145,6 +155,12 @@ class ProcessManager:
         instance = await self.get_instance(instance_id)
         if instance is None:
             raise RuntimeError(f"instance is not online: {instance_id}")
+        instance = await self.create_instance(
+            frontend_id=instance.frontend_id,
+            user_id=instance.user_id,
+            instance_id=instance.instance_id,
+            workspace_path=str(instance.workspace_path),
+        )
         instance.last_active_at = time.time()
         await self._send_instance(
             instance,
@@ -193,6 +209,15 @@ class ProcessManager:
         instance = self._processes.pop(instance_id, None)
         if instance is None:
             return
+        await self._stop_instance(instance, notify_release=notify_release, reason=reason)
+
+    async def _stop_instance(
+        self,
+        instance: UserProcess,
+        *,
+        notify_release: bool = False,
+        reason: str = "",
+    ) -> None:
         if instance.relay_task is not None:
             instance.relay_task.cancel()
             await asyncio.gather(instance.relay_task, return_exceptions=True)
@@ -205,7 +230,7 @@ class ProcessManager:
             except Exception:
                 pass
         await terminate_process_group(instance.process, timeout=INSTANCE_STOP_GRACE_SECONDS)
-        self._port_allocator.release(instance_id)
+        self._port_allocator.release(instance.instance_id)
         if notify_release:
             await self._notify_release(instance, reason=reason)
 
@@ -255,6 +280,10 @@ class ProcessManager:
             return max(1, int(value))
         except ValueError:
             return self._idle_ttl
+
+    @staticmethod
+    def _workspace_is_missing(workspace_path: Path) -> bool:
+        return not Path(workspace_path).expanduser().resolve(strict=False).exists()
 
     async def _wait_instance_ready(self, port: int) -> None:
         deadline = time.time() + 30

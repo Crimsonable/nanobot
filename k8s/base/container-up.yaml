@@ -51,7 +51,7 @@ spec:
             - name: BUCKET_NAME_PREFIX
               value: nanobot-bucket
             - name: BUCKET_RUNTIME_IMAGE
-              value: 192.168.48.104:5000/nanobot-bucket-runtime:v1.0.8
+              value: 192.168.48.104:5000/nanobot-bucket-runtime:v1.0.9
             - name: BUCKET_IMAGE_PULL_POLICY
               value: IfNotPresent
             - name: BUCKET_SERVICE_PORT

@@ -496,7 +496,7 @@ def extract_documents(
             block_type = _visual_block_type_for_mime(mime)
             if not block_type:
                 continue
-            visual_refs.append(encode_visual_media_ref(block_type, resolved_ref))
+            # visual_refs.append(encode_visual_media_ref(block_type, resolved_ref))
             image_count += 1
             attachment_refs.append(f"image_{image_count}: " + _attachment_reference_line(mime, resolved_ref))
         else:

@@ -1,0 +1,29 @@
+{
+  "service_name": "engineering-scene-image-analysis",
+  "tool_name": "analyze_engineering_scene_image",
+  "host": "0.0.0.0",
+  "transport_security": {
+    "enable_dns_rebinding_protection": true,
+    "allowed_hosts": [
+      "localhost",
+      "localhost:*",
+      "127.0.0.1",
+      "127.0.0.1:*",
+      "engineering-scene-mcp",
+      "engineering-scene-mcp:*",
+      "engineering-scene-mcp.nanobot.svc.cluster.local",
+      "engineering-scene-mcp.nanobot.svc.cluster.local:*",
+      "192.168.48.104",
+      "192.168.48.104:*"
+    ],
+    "allowed_origins": []
+  },
+  "vllm": {
+    "api_url": "http://192.168.30.25:31553/v1",
+    "api_key": "EMPTY",
+    "model": "qwen3627bjjaohz"
+  },
+  "request_timeout_seconds": 120.0,
+  "default_temperature": 0.7,
+  "system_prompt": "你是一个工程场景图像分析助手。\n请结合图片内容和用户提示词，对工程现场、施工环境、设备状态、安全风险、作业行为和可见异常进行准确分析。\n输出应直接给出分析结论，不要编造图片中不存在的信息；如果无法确认，请明确说明不确定点。\n"
+}

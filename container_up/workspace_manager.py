@@ -24,6 +24,4 @@ class WorkspaceManager:
         ).resolve(strict=False)
 
     def get_or_create_workspace(self, frontend_id: str, user_id: str) -> Path:
-        workspace = self.workspace_path(frontend_id, user_id)
-        workspace.mkdir(parents=True, exist_ok=True)
-        return workspace
+        return self.workspace_path(frontend_id, user_id)

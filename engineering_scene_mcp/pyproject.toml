@@ -1,0 +1,26 @@
+[project]
+name = "engineering-scene-mcp"
+version = "0.1.0"
+description = "Stateless HTTP MCP service for engineering scene image analysis"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116.0,<1.0.0",
+    "uvicorn>=0.35.0,<1.0.0",
+    "httpx>=0.28.0,<1.0.0",
+    "mcp>=1.26.0,<2.0.0",
+    "pydantic>=2.12.0,<3.0.0",
+    "pydantic-settings>=2.12.0,<3.0.0",
+]
+
+[project.scripts]
+engineering-scene-mcp = "engineering_scene_mcp.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["engineering_scene_mcp"]
+
+[tool.hatch.build.targets.wheel.sources]
+"engineering_scene_mcp" = "engineering_scene_mcp"

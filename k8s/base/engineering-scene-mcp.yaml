@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: engineering-scene-mcp
+  namespace: nanobot
+spec:
+  type: NodePort
+  selector:
+    app: engineering-scene-mcp
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+      nodePort: 30087
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engineering-scene-mcp
+  namespace: nanobot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: engineering-scene-mcp
+  template:
+    metadata:
+      labels:
+        app: engineering-scene-mcp
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: engineering-scene-mcp
+          image: nanobot-engineering-scene-mcp:v0.1.0
+          imagePullPolicy: IfNotPresent
+          workingDir: /mnt/source/engineering_scene_mcp
+          ports:
+            - name: http
+              containerPort: 8090
+          volumeMounts:
+            - name: source-root
+              mountPath: /mnt/source
+              readOnly: true
+            - name: host-localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: host-timezone
+              mountPath: /etc/timezone
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: source-root
+          persistentVolumeClaim:
+            claimName: nanobot-source-pvc
+        - name: host-localtime
+          hostPath:
+            path: /etc/localtime
+        - name: host-timezone
+          hostPath:
+            path: /etc/timezone

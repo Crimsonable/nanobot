@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import httpx
@@ -20,6 +21,11 @@ class _FakeRepo:
 
     def touch_bucket(self, bucket_id: str, *, status: str | None = None) -> None:
         return None
+
+
+async def _flush_touch_tasks(scheduler: BucketScheduler) -> None:
+    if scheduler._touch_tasks:
+        await asyncio.gather(*list(scheduler._touch_tasks))
 
 
 @pytest.mark.asyncio
@@ -73,11 +79,14 @@ async def test_route_inbound_preserves_request_id_semantics(monkeypatch: pytest.
         },
     )
     assert returned == runtime
+    await _flush_touch_tasks(scheduler)
     assert repo.touched == [("feishu-main", "user-1")]
 
 
 @pytest.mark.asyncio
 async def test_get_or_create_reuses_live_online_instance() -> None:
+    workspace_calls: list[tuple[str, str]] = []
+
     class _Repo(_FakeRepo):
         def get_user_instance(self, frontend_id: str, user_id: str) -> dict[str, str]:
             assert frontend_id == "feishu-main"
@@ -98,11 +107,16 @@ async def test_get_or_create_reuses_live_online_instance() -> None:
                 "service_host": "http://bucket-0",
             }
 
+    class _WorkspaceManager:
+        def get_or_create_workspace(self, frontend_id: str, user_id: str) -> str:
+            workspace_calls.append((frontend_id, user_id))
+            return "/tmp/ws/user-1"
+
     repo = _Repo()
     bucket_client = AsyncMock()
     scheduler = BucketScheduler(
         repo=repo,
-        workspace_manager=AsyncMock(),
+        workspace_manager=_WorkspaceManager(),
         bucket_manager=AsyncMock(),
         bucket_client=bucket_client,
     )
@@ -121,7 +135,46 @@ async def test_get_or_create_reuses_live_online_instance() -> None:
         instance_id="inst-1",
         frontend_id="feishu-main",
     )
+    await _flush_touch_tasks(scheduler)
     assert repo.touched == [("feishu-main", "user-1")]
+    assert workspace_calls == [("feishu-main", "user-1")]
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_does_not_recreate_workspace_for_live_online_instance(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspaces" / "web-test" / "2021088"
+
+    class _Repo(_FakeRepo):
+        def get_user_instance(self, frontend_id: str, user_id: str) -> dict[str, str]:
+            return {
+                "frontend_id": frontend_id,
+                "user_id": user_id,
+                "workspace_path": str(workspace),
+                "status": "online",
+                "bucket_id": "bucket-0",
+                "instance_id": "inst-1",
+            }
+
+        def get_bucket(self, bucket_id: str) -> dict[str, str]:
+            return {"bucket_id": bucket_id, "service_host": "http://bucket-0"}
+
+    scheduler = BucketScheduler(
+        repo=_Repo(),
+        workspace_manager=WorkspaceManager(tmp_path / "workspaces"),
+        bucket_manager=AsyncMock(),
+        bucket_client=AsyncMock(),
+    )
+
+    runtime = await scheduler.get_or_create_user_instance(
+        user_id="2021088",
+        frontend_id="web-test",
+    )
+
+    await _flush_touch_tasks(scheduler)
+    assert runtime.workspace_path == str(workspace.resolve())
+    assert not workspace.exists()
 
 
 @pytest.mark.asyncio
@@ -591,4 +644,5 @@ async def test_route_cancel_preserves_request_id_semantics(monkeypatch: pytest.M
         },
     )
     assert returned == runtime
+    await _flush_touch_tasks(scheduler)
     assert repo.touched == [("feishu-main", "user-1")]

@@ -57,6 +57,7 @@ class BucketScheduler:
         user_key = f"{frontend_id}:{user_id}"
         lock = self._user_locks.setdefault(user_key, asyncio.Lock())
         async with lock:
+            workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
             existing = self._repo.get_user_instance(frontend_id, user_id)
             if existing is not None and existing.get("status") == "online" and existing.get("bucket_id"):
                 runtime = await self._get_live_runtime(existing)
@@ -64,7 +65,6 @@ class BucketScheduler:
                     self._schedule_touch_user_activity(frontend_id, user_id)
                     return runtime
 
-            workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
             for attempt in range(3):
                 user, bucket, created = self._repo.reserve_user_instance(
                     frontend_id=frontend_id,

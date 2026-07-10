@@ -122,6 +122,93 @@ async def test_forward_outbound_preserves_chat_id_and_identity_metadata(
 
 
 @pytest.mark.asyncio
+async def test_forward_inbound_restarts_instance_when_workspace_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = ProcessManager(idle_ttl=60)
+    workspace = tmp_path / "workspaces" / "web-main" / "user-1"
+    sent_packets: list[dict[str, object]] = []
+    stopped_instances: list[str] = []
+
+    async def fake_send_instance(_instance: UserProcess, packet: dict[str, object]) -> None:
+        sent_packets.append(packet)
+
+    async def fake_stop_instance(
+        instance: UserProcess,
+        *,
+        notify_release: bool = False,
+        reason: str = "",
+    ) -> None:
+        stopped_instances.append(instance.instance_id)
+
+    monkeypatch.setattr(manager, "_send_instance", fake_send_instance)
+    monkeypatch.setattr(manager, "_stop_instance", fake_stop_instance)
+    monkeypatch.setattr(manager, "_wait_instance_ready", lambda _port: _completed_coro())
+    monkeypatch.setattr(manager, "_ensure_instance_socket", lambda _instance: _completed_coro())
+
+    frontend_config = SimpleNamespace(
+        config_path=tmp_path / "common" / "web-main" / "config.json",
+        template_dir=tmp_path / "templates",
+        builtin_skills_dir=tmp_path / "skills",
+        raw={},
+    )
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.frontend_config_for",
+        lambda _frontend_id: frontend_config,
+    )
+    monkeypatch.setattr(
+        manager._workspace_manager,
+        "ensure_workspace",
+        lambda workspace_path, *, template_root: workspace_path,
+    )
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return SimpleNamespace(returncode=None, stdout=None)
+
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    instance = UserProcess(
+        instance_id="inst-1",
+        frontend_id="web-main",
+        user_id="user-1",
+        workspace_path=workspace,
+        port=20123,
+        process=SimpleNamespace(returncode=None, stdout=None),
+        started_at=0.0,
+        last_active_at=0.0,
+    )
+    manager._processes["inst-1"] = instance
+
+    await manager.forward_inbound(
+        "inst-1",
+        {
+            "channel": "bridge",
+            "chat_id": "conv-1",
+            "content": "hello",
+            "attachments": [],
+            "metadata": {"trace_id": "trace-1"},
+        },
+    )
+
+    assert stopped_instances == ["inst-1"]
+    assert manager._processes["inst-1"] is not instance
+    assert sent_packets == [
+        {
+            "type": "inbound_message",
+            "channel": "bridge",
+            "chat_id": "conv-1",
+            "content": "hello",
+            "attachments": [],
+            "metadata": {"trace_id": "trace-1"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_relay_instance_keeps_running_when_outbound_forward_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -255,6 +342,76 @@ async def test_create_instance_passes_workspace_and_config_to_local_service_proc
     assert instance.instance_id == "web-wd__web-demo-2"
     assert instance.frontend_id == "web-wd"
     assert instance.user_id == "web-demo-2"
+
+
+@pytest.mark.asyncio
+async def test_create_instance_restarts_live_process_when_workspace_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = ProcessManager(idle_ttl=60)
+    workspace = tmp_path / "workspaces" / "web-wd" / "web-demo-2"
+    stopped_instances: list[str] = []
+    frontend_config = SimpleNamespace(
+        config_path=tmp_path / "common" / "web-wd" / "config.json",
+        template_dir=tmp_path / "common" / "web-wd" / "templates",
+        builtin_skills_dir=tmp_path / "common" / "web-wd" / "skills",
+        raw={},
+    )
+
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.frontend_config_for",
+        lambda _frontend_id: frontend_config,
+    )
+    monkeypatch.setattr(
+        manager._workspace_manager,
+        "ensure_workspace",
+        lambda workspace_path, *, template_root: workspace_path,
+    )
+    monkeypatch.setattr(manager, "_wait_instance_ready", lambda _port: _completed_coro())
+    monkeypatch.setattr(manager, "_ensure_instance_socket", lambda _instance: _completed_coro())
+
+    async def fake_stop_instance(
+        instance: UserProcess,
+        *,
+        notify_release: bool = False,
+        reason: str = "",
+    ) -> None:
+        stopped_instances.append(instance.instance_id)
+
+    monkeypatch.setattr(manager, "_stop_instance", fake_stop_instance)
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return SimpleNamespace(returncode=None, stdout=None)
+
+    monkeypatch.setattr(
+        "bucket_runtime.process_manager.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    old_instance = UserProcess(
+        instance_id="web-wd__web-demo-2",
+        frontend_id="web-wd",
+        user_id="web-demo-2",
+        workspace_path=workspace,
+        port=20123,
+        process=SimpleNamespace(returncode=None, stdout=None),
+        started_at=0.0,
+        last_active_at=0.0,
+    )
+    manager._processes[old_instance.instance_id] = old_instance
+
+    new_instance = await manager.create_instance(
+        frontend_id="web-wd",
+        user_id="web-demo-2",
+        instance_id="web-wd__web-demo-2",
+        workspace_path=str(workspace),
+    )
+
+    assert stopped_instances == ["web-wd__web-demo-2"]
+    assert new_instance is manager._processes["web-wd__web-demo-2"]
+    assert new_instance is not old_instance
+    assert new_instance.workspace_path == workspace
 
 
 @pytest.mark.asyncio

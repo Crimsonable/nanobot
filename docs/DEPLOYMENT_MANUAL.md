@@ -541,16 +541,25 @@ kubectl apply -f k8s/base/rbac.yaml
 kubectl apply -f k8s/base/pv-pvc-nfs.yaml
 kubectl apply -f k8s/base/container-up.yaml
 kubectl apply -f k8s/base/container-up-nodeport.yaml
+kubectl apply -f k8s/base/engineering-scene-mcp.yaml
+
 kubectl rollout status deployment/container-up -n nanobot
 kubectl get pods -n nanobot -o wide
 ```
+kubectl apply -f k8s/base/namespace.yaml
+kubectl apply -f k8s/base/rbac.yaml
 kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
+kubectl apply -f k8s/base/container-up.yaml
+kubectl apply -f k8s/base/container-up-nodeport.yaml
+kubectl apply -f k8s/base/engineering-scene-mcp.yaml
+
 kubectl delete ns nanobot && kubectl delete pv nanobot-data-pv nanobot-source-pv nanobot-common-pv
 查看日志：
 
 ```bash
 kubectl logs -n nanobot deploy/container-up -f
 kubectl logs -n nanobot deploy/nanobot-bucket-0 -f
+kubectl logs -n nanobot deploy/engineering-scene-mcp -f
 ```
 
 web server测试：

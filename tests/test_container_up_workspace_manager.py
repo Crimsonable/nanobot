@@ -11,4 +11,4 @@ def test_workspace_manager_uses_frontend_scoped_paths(tmp_path: Path) -> None:
     workspace = manager.get_or_create_workspace("feishu-main", "user-1")
 
     assert workspace == tmp_path / "workspaces" / "feishu-main" / "user-1"
-    assert workspace.is_dir()
+    assert not workspace.exists()

@@ -12,10 +12,13 @@ class WorkspaceManager:
         template_root: Path,
     ) -> Path:
         workspace = workspace_path.expanduser().resolve(strict=False)
+        if workspace.exists():
+            return workspace
+
         init_flag = workspace / ".workspace_initialized"
         workspace.mkdir(parents=True, exist_ok=True)
         source_templates = template_root
-        if source_templates.exists() and not init_flag.exists():
+        if source_templates.exists():
             self._copy_templates(source_templates, workspace)
             init_flag.write_text("true\n", encoding="utf-8")
         return workspace
