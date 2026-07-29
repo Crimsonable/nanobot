@@ -11,38 +11,34 @@
             ]
         }
     },
-    "providers": {
-        "vllm": {
-            "apiKey": "empty",
-            "apiBase": "http://192.168.0.27:8724/v1"
+    "tools": {
+        "exec": {
+            "sandbox": "bwrap",
+            "allowedEnvKeys": [
+                "PLAYWRIGHT_BROWSERS_PATH"
+            ]
         },
-        "zhipu": {
-            "apiKey": "db45743c332f4b15ad57af50c8635d3d.iWLInha7O5Bb1TIU"
-        },
-        "minimax": {
-            "apiKey": "sk-cp-DqP_25_H9NLvCBB-IRrk0LRqHC5cc1GqJvx689oy8jpR1SHIDbb536cGhbw_4dHpbuO0Kr9ljKhmlUzTLqIn9MH7ctJBycuJ_OhIgQ-04mc-9eIK5atKZ10",
-            "apiBase": "https://api.minimaxi.com/v1"
+        "mcpServers": {
+            "engineering-scene-mcp": {
+                "type": "streamableHttp",
+                "url": "http://engineering-scene-mcp.nanobot.svc.cluster.local:8090/mcp",
+                "toolTimeout": 120,
+                "enabledTools": [
+                    "analyze_engineering_scene_image"
+                ]
+            }
         }
     },
-    "tools": {
-        "mcpServers": {
-            "minimax": {
-                "command": "minimax-coding-plan-mcp",
-                "args": [
-                    "-y"
-                ],
-                "toolTimeout": 120,
-                "env": {
-                    "MINIMAX_API_KEY": "sk-cp-DqP_25_H9NLvCBB-IRrk0LRqHC5cc1GqJvx689oy8jpR1SHIDbb536cGhbw_4dHpbuO0Kr9ljKhmlUzTLqIn9MH7ctJBycuJ_OhIgQ-04mc-9eIK5atKZ10",
-                    "MINIMAX_API_HOST": "https://api.minimaxi.com"
-                }
-            }
+    "providers": {
+        "vllm": {
+            "apiKey": "3c19057182a675301cccf9f59b8463a5",
+            "apiBase": "http://192.168.30.23:33569/v1"
         }
     },
     "agents": {
         "defaults": {
-            "model": "MiniMax-M2.7",
-            "provider": "minimax",
+            "model": "glm52int4ikg7man",
+            "provider": "vllm",
             "timezone": "Asia/Shanghai",
             "contextWindowTokens": 100000
         }
