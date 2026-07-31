@@ -1,7 +1,7 @@
 [project]
 name = "engineering-scene-mcp"
 version = "0.1.0"
-description = "Stateless HTTP MCP service for engineering scene image analysis"
+description = "Stateless HTTP MCP service for engineering scene image and video analysis"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.116.0,<1.0.0",

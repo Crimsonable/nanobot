@@ -37,14 +37,14 @@ mcp = FastMCP(
 
 @mcp.tool(
     name=app_config.tool_name,
-    description="Analyze an engineering scene image with a user prompt and an image URL.",
+    description="Analyze an engineering scene image or video with a user prompt and a media URL.",
 )
 async def analyze_engineering_scene_image(
     prompt: str,
-    image_url: str,
+    media_url: str,
 ) -> AnalyzeImageOutput:
-    AnalyzeImageInput(prompt=prompt, image_url=image_url)
-    return await analyze_engineering_scene(prompt=prompt, image_url=image_url)
+    AnalyzeImageInput(prompt=prompt, media_url=media_url)
+    return await analyze_engineering_scene(prompt=prompt, media_url=media_url)
 
 
 @asynccontextmanager
