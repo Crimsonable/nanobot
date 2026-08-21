@@ -66,6 +66,34 @@ def test_bucket_manager_builds_deployment_manifest() -> None:
     assert {"name": "host-timezone", "hostPath": {"path": "/etc/timezone"}} in volumes
 
 
+def test_bucket_manager_adds_configured_node_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("container_up.bucket_manager.NANOBOT_NODE", "gpu-worker")
+    bucket = {
+        "bucket_id": "bucket-6",
+        "bucket_name": "nanobot-bucket-6",
+        "namespace": "nanobot",
+    }
+
+    manifest = BucketManager._build_deployment_manifest(bucket)
+
+    assert manifest["spec"]["template"]["spec"]["nodeSelector"] == {
+        "nanobot_node": "gpu-worker"
+    }
+
+
+def test_bucket_manager_omits_empty_node_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("container_up.bucket_manager.NANOBOT_NODE", "")
+    bucket = {
+        "bucket_id": "bucket-7",
+        "bucket_name": "nanobot-bucket-7",
+        "namespace": "nanobot",
+    }
+
+    manifest = BucketManager._build_deployment_manifest(bucket)
+
+    assert "nodeSelector" not in manifest["spec"]["template"]["spec"]
+
+
 def test_build_bucket_base_url_uses_namespace_short_name() -> None:
     assert build_bucket_base_url("bucket-5", "nanobot-bucket-5") == "http://nanobot-bucket-5.nanobot:8080"
 

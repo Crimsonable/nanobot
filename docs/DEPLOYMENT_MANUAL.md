@@ -373,6 +373,24 @@ kubectl apply -f k8s/dev-kind/storage-local.yaml
 kubectl apply -f k8s/base/container-up.yaml
 ```
 
+`container-up.yaml` 使用 `nanobot_node` 节点标签，并通过 `NANOBOT_NODE` 把同一个标签值传给
+container-up。container-up 动态创建 bucket runtime Deployment 时，会自动加入相同的
+`nodeSelector`。部署前先给目标节点打标签（清单默认值为 `true`）：
+
+```bash
+kubectl label node <node-name> nanobot_node=true
+```
+
+如需使用其他标签值，只需修改 `container-up.yaml` 中锚点所在的一处：
+
+```yaml
+nodeSelector:
+  nanobot_node: &nanobot_node "your-node-group"
+```
+
+若不需要节点限制，请同时删除清单中的 `nodeSelector` 和 `NANOBOT_NODE` 环境变量；代码在
+`NANOBOT_NODE` 为空或未设置时不会给 bucket runtime 添加调度限制。
+
 ### 6.6 查看部署状态
 
 ```bash
@@ -552,6 +570,7 @@ kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
 kubectl apply -f k8s/base/container-up.yaml
 kubectl apply -f k8s/base/container-up-nodeport.yaml
 kubectl apply -f k8s/base/engineering-scene-mcp.yaml
+kubectl apply -f k8s/minio/minio.yaml
 
 kubectl delete ns nanobot && kubectl delete pv nanobot-data-pv nanobot-source-pv nanobot-common-pv
 查看日志：

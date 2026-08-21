@@ -16,7 +16,11 @@ import httpx
 import websockets
 from loguru import logger
 
-from bucket_runtime.config import CONTAINER_UP_OUTBOUND_URL, OUTBOUND_TIMEOUT
+from bucket_runtime.config import (
+    BRIDGE_WS_MAX_SIZE_BYTES,
+    CONTAINER_UP_OUTBOUND_URL,
+    OUTBOUND_TIMEOUT,
+)
 from bucket_runtime.process_utils import (
     install_shutdown_signal_handlers,
     terminate_process,
@@ -50,6 +54,7 @@ class LocalNanobotService:
             self._handle_client,
             self.host,
             self.port,
+            max_size=BRIDGE_WS_MAX_SIZE_BYTES,
             ping_interval=None,
             ping_timeout=None,
         )

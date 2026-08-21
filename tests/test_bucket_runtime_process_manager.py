@@ -47,8 +47,10 @@ async def test_wait_instance_ready_requires_gateway_handshake(monkeypatch: pytes
     manager = ProcessManager(idle_ttl=60)
     attempts = [False, True]
     sockets: list[_ReadySocket] = []
+    connect_kwargs: list[dict[str, object]] = []
 
     def fake_connect(*_args, **_kwargs) -> _ReadySocket:
+        connect_kwargs.append(_kwargs)
         socket = _ReadySocket(gateway_ready=attempts.pop(0))
         sockets.append(socket)
         return socket
@@ -59,6 +61,46 @@ async def test_wait_instance_ready_requires_gateway_handshake(monkeypatch: pytes
 
     assert len(sockets) == 2
     assert [socket.sent for socket in sockets] == [[{"type": "ready_check"}], [{"type": "ready_check"}]]
+    assert [kwargs["max_size"] for kwargs in connect_kwargs] == [
+        10 * 1024 * 1024,
+        10 * 1024 * 1024,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_instance_socket_configures_bridge_websocket_message_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ProcessManager(idle_ttl=60)
+    captured: dict[str, object] = {}
+
+    class _Socket:
+        def __aiter__(self) -> "_Socket":
+            return self
+
+        async def __anext__(self) -> str:
+            raise StopAsyncIteration
+
+    async def fake_connect(*_args, **kwargs) -> _Socket:
+        captured["kwargs"] = kwargs
+        return _Socket()
+
+    monkeypatch.setattr("bucket_runtime.process_manager.websockets.connect", fake_connect)
+    instance = UserProcess(
+        instance_id="inst-1",
+        frontend_id="web-main",
+        user_id="user-1",
+        workspace_path=SimpleNamespace(),
+        port=20123,
+        process=SimpleNamespace(returncode=None, stdout=None),
+        started_at=0.0,
+        last_active_at=0.0,
+    )
+
+    await manager._ensure_instance_socket(instance)
+    assert captured["kwargs"]["max_size"] == 10 * 1024 * 1024
+    assert instance.relay_task is not None
+    await instance.relay_task
 
 
 @pytest.mark.asyncio

@@ -27,9 +27,13 @@ spec:
         app: container-up
     spec:
       serviceAccountName: container-up
+      # Change this value once; the YAML anchor also passes it to container-up,
+      # which applies the same selector to every dynamic bucket runtime.
+      nodeSelector:
+        nanobot_node: &nanobot_node "true"
       containers:
         - name: container-up
-          image: 192.168.48.104:5000/nanobot-container-up:v1.0.3
+          image: nanobot-container-up:v1.0.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -51,9 +55,11 @@ spec:
             - name: BUCKET_NAME_PREFIX
               value: nanobot-bucket
             - name: BUCKET_RUNTIME_IMAGE
-              value: 192.168.48.104:5000/nanobot-bucket-runtime:v1.0.9
+              value: nanobot-bucket-runtime:v1.0.9
             - name: BUCKET_IMAGE_PULL_POLICY
               value: IfNotPresent
+            - name: NANOBOT_NODE
+              value: *nanobot_node
             - name: BUCKET_SERVICE_PORT
               value: "8080"
             - name: BUCKET_CONTAINER_PORT

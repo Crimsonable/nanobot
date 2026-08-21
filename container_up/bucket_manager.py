@@ -22,6 +22,7 @@ from container_up.settings import (
     BUCKET_INSTANCE_STOP_GRACE_SECONDS,
     BUCKET_KUBECTL_BIN,
     BUCKET_MAX_INSTANCES_PER_BUCKET,
+    NANOBOT_NODE,
     BUCKET_NANOBOT_PORT_END,
     BUCKET_NANOBOT_PORT_START,
     BUCKET_RUNTIME_IMAGE,
@@ -163,6 +164,87 @@ class BucketManager:
             {"name": "NANOBOT_PORT_START", "value": str(BUCKET_NANOBOT_PORT_START)},
             {"name": "NANOBOT_PORT_END", "value": str(BUCKET_NANOBOT_PORT_END)},
         ]
+        pod_spec: dict[str, Any] = {
+            "containers": [
+                {
+                    "name": "bucket-runtime",
+                    "image": BUCKET_RUNTIME_IMAGE,
+                    "imagePullPolicy": BUCKET_IMAGE_PULL_POLICY,
+                    "securityContext": {
+                        "privileged": True,
+                    },
+                    "ports": [{"containerPort": BUCKET_CONTAINER_PORT}],
+                    "env": env,
+                    "volumeMounts": [
+                        {
+                            "name": "bucket-mount-root",
+                            "mountPath": str(BUCKET_MOUNT_ROOT),
+                        },
+                        {
+                            "name": "source-root",
+                            "mountPath": str(SOURCE_ROOT),
+                            "readOnly": True,
+                        },
+                        {
+                            "name": "common-root",
+                            "mountPath": str(BUCKET_COMMON_ROOT),
+                            "readOnly": True,
+                        },
+                        {
+                            "name": "host-localtime",
+                            "mountPath": "/etc/localtime",
+                            "readOnly": True,
+                        },
+                        {
+                            "name": "host-timezone",
+                            "mountPath": "/etc/timezone",
+                            "readOnly": True,
+                        },
+                    ],
+                    "readinessProbe": {
+                        "httpGet": {
+                            "path": "/health/ready",
+                            "port": BUCKET_CONTAINER_PORT,
+                        },
+                        "initialDelaySeconds": 5,
+                        "periodSeconds": 5,
+                    },
+                    "livenessProbe": {
+                        "httpGet": {
+                            "path": "/health/live",
+                            "port": BUCKET_CONTAINER_PORT,
+                        },
+                        "initialDelaySeconds": 20,
+                        "periodSeconds": 10,
+                    },
+                }
+            ],
+            "volumes": [
+                {
+                    "name": "bucket-mount-root",
+                    "persistentVolumeClaim": {"claimName": BUCKET_MOUNT_PVC},
+                },
+                {
+                    "name": "source-root",
+                    "persistentVolumeClaim": {"claimName": SOURCE_PVC},
+                },
+                {
+                    "name": "common-root",
+                    "persistentVolumeClaim": {"claimName": "nanobot-common-pvc"},
+                },
+                {
+                    "name": "host-localtime",
+                    "hostPath": {"path": "/etc/localtime"},
+                },
+                {
+                    "name": "host-timezone",
+                    "hostPath": {"path": "/etc/timezone"},
+                },
+            ],
+        }
+        if NANOBOT_NODE:
+            pod_spec["nodeSelector"] = {"nanobot_node": NANOBOT_NODE}
+
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -189,84 +271,7 @@ class BucketManager:
                             "bucket-id": bucket_id,
                         }
                     },
-                    "spec": {
-                        "containers": [
-                            {
-                                "name": "bucket-runtime",
-                                "image": BUCKET_RUNTIME_IMAGE,
-                                "imagePullPolicy": BUCKET_IMAGE_PULL_POLICY,
-                                "securityContext": {
-                                    "privileged": True,
-                                },
-                                "ports": [{"containerPort": BUCKET_CONTAINER_PORT}],
-                                "env": env,
-                                "volumeMounts": [
-                                    {
-                                        "name": "bucket-mount-root",
-                                        "mountPath": str(BUCKET_MOUNT_ROOT),
-                                    },
-                                    {
-                                        "name": "source-root",
-                                        "mountPath": str(SOURCE_ROOT),
-                                        "readOnly": True,
-                                    },
-                                    {
-                                        "name": "common-root",
-                                        "mountPath": str(BUCKET_COMMON_ROOT),
-                                        "readOnly": True,
-                                    },
-                                    {
-                                        "name": "host-localtime",
-                                        "mountPath": "/etc/localtime",
-                                        "readOnly": True,
-                                    },
-                                    {
-                                        "name": "host-timezone",
-                                        "mountPath": "/etc/timezone",
-                                        "readOnly": True,
-                                    },
-                                ],
-                                "readinessProbe": {
-                                    "httpGet": {
-                                        "path": "/health/ready",
-                                        "port": BUCKET_CONTAINER_PORT,
-                                    },
-                                    "initialDelaySeconds": 5,
-                                    "periodSeconds": 5,
-                                },
-                                "livenessProbe": {
-                                    "httpGet": {
-                                        "path": "/health/live",
-                                        "port": BUCKET_CONTAINER_PORT,
-                                    },
-                                    "initialDelaySeconds": 20,
-                                    "periodSeconds": 10,
-                                },
-                            }
-                        ],
-                        "volumes": [
-                            {
-                                "name": "bucket-mount-root",
-                                "persistentVolumeClaim": {"claimName": BUCKET_MOUNT_PVC},
-                            },
-                            {
-                                "name": "source-root",
-                                "persistentVolumeClaim": {"claimName": SOURCE_PVC},
-                            },
-                            {
-                                "name": "common-root",
-                                "persistentVolumeClaim": {"claimName": "nanobot-common-pvc"},
-                            },
-                            {
-                                "name": "host-localtime",
-                                "hostPath": {"path": "/etc/localtime"},
-                            },
-                            {
-                                "name": "host-timezone",
-                                "hostPath": {"path": "/etc/timezone"},
-                            },
-                        ],
-                    },
+                    "spec": pod_spec,
                 },
             },
         }

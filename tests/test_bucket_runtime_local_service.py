@@ -25,6 +25,38 @@ class _FakeRouterWebSocket:
 
 
 @pytest.mark.asyncio
+async def test_start_configures_bridge_websocket_message_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = LocalNanobotService(
+        config_path=tmp_path / "config.json",
+        workspace_path=tmp_path / "workspace",
+        host="127.0.0.1",
+        port=29995,
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeServer:
+        async def wait_closed(self) -> None:
+            return None
+
+    async def fake_serve(*args, **kwargs) -> _FakeServer:
+        captured["kwargs"] = kwargs
+        return _FakeServer()
+
+    async def fake_spawn_gateway() -> None:
+        return None
+
+    monkeypatch.setattr("bucket_runtime.local_service.websockets.serve", fake_serve)
+    monkeypatch.setattr(service, "_spawn_gateway", fake_spawn_gateway)
+
+    await service.start()
+
+    assert captured["kwargs"]["max_size"] == 10 * 1024 * 1024
+
+
+@pytest.mark.asyncio
 async def test_router_ready_check_reports_gateway_state(tmp_path: Path) -> None:
     service = LocalNanobotService(
         config_path=tmp_path / "config.json",

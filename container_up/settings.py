@@ -73,6 +73,10 @@ BUCKET_RUNTIME_IMAGE = os.getenv(
     os.getenv("BUCKET_IMAGE", "nanobot-bucket-runtime:v1.0.0"),
 ).strip()
 BUCKET_IMAGE_PULL_POLICY = os.getenv("BUCKET_IMAGE_PULL_POLICY", "IfNotPresent").strip()
+# Optional value of the ``nanobot_node`` Kubernetes node label.  When set,
+# dynamically-created bucket runtimes are restricted to nodes with the same
+# label.  Keeping this empty preserves Kubernetes' default scheduling behavior.
+NANOBOT_NODE = os.getenv("NANOBOT_NODE", "").strip()
 BUCKET_INSTANCE_IDLE_TTL_SECONDS = _int_env("BUCKET_INSTANCE_IDLE_TTL_SECONDS", 1800)
 BUCKET_INSTANCE_STOP_GRACE_SECONDS = _int_env("BUCKET_INSTANCE_STOP_GRACE_SECONDS", 10)
 BUCKET_INSTANCE_EVICT_INTERVAL_SECONDS = _int_env("BUCKET_INSTANCE_EVICT_INTERVAL_SECONDS", 60)

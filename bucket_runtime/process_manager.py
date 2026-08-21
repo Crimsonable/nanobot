@@ -14,6 +14,7 @@ import websockets
 from loguru import logger
 
 from bucket_runtime.config import (
+    BRIDGE_WS_MAX_SIZE_BYTES,
     BUCKET_ID,
     CONTAINER_UP_ATTACHMENT_UPLOAD_URL,
     CONTAINER_UP_BRIDGE_OUTBOUND_URL,
@@ -292,6 +293,7 @@ class ProcessManager:
                 async with websockets.connect(
                     f"ws://{INSTANCE_HOST}:{port}",
                     proxy=None,
+                    max_size=BRIDGE_WS_MAX_SIZE_BYTES,
                     ping_interval=None,
                     ping_timeout=None,
                 ) as websocket:
@@ -313,6 +315,7 @@ class ProcessManager:
         websocket = await websockets.connect(
             f"ws://{INSTANCE_HOST}:{instance.port}",
             proxy=None,
+            max_size=BRIDGE_WS_MAX_SIZE_BYTES,
             ping_interval=None,
             ping_timeout=None,
         )
