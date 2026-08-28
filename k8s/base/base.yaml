@@ -1,0 +1,311 @@
+# Production base resources: Namespace, RBAC, storage, container-up and NodePort.
+#
+# Storage switch (change only this value):
+#   local - use the hostPath PVs below
+#   nfs   - use the NFS PVs below
+#
+# Both sets of PVs are created so this remains a plain kubectl-compatible file.
+# The PVC selectors bind only the backend selected by this anchor.
+apiVersion: v1
+kind: List
+metadata:
+  annotations:
+    nanobot.io/storage-backend: &storage_backend local
+items:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: nanobot
+
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: container-up
+      namespace: nanobot
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: container-up-bucket-manager
+      namespace: nanobot
+    rules:
+      - apiGroups: ["apps"]
+        resources: ["deployments", "deployments/scale"]
+        verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+      - apiGroups: [""]
+        resources: ["pods", "services"]
+        verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: container-up-bucket-manager
+      namespace: nanobot
+    subjects:
+      - kind: ServiceAccount
+        name: container-up
+        namespace: nanobot
+    roleRef:
+      kind: Role
+      name: container-up-bucket-manager
+      apiGroup: rbac.authorization.k8s.io
+
+  # Local PV candidates.
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: nanobot-data-pv-local
+      labels:
+        nanobot.io/storage-backend: local
+        nanobot.io/volume: data
+    spec:
+      capacity:
+        storage: 1Ti
+      accessModes: [ReadWriteMany]
+      persistentVolumeReclaimPolicy: Retain
+      hostPath:
+        path: /data/nanobot_backend_k8s/data
+
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: nanobot-source-pv-local
+      labels:
+        nanobot.io/storage-backend: local
+        nanobot.io/volume: source
+    spec:
+      capacity:
+        storage: 20Gi
+      accessModes: [ReadOnlyMany]
+      persistentVolumeReclaimPolicy: Retain
+      hostPath:
+        path: /data/nanobot_backend_k8s/source
+
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: nanobot-common-pv-local
+      labels:
+        nanobot.io/storage-backend: local
+        nanobot.io/volume: common
+    spec:
+      capacity:
+        storage: 20Gi
+      accessModes: [ReadOnlyMany]
+      persistentVolumeReclaimPolicy: Retain
+      hostPath:
+        path: /data/nanobot_backend_k8s/common
+
+  # NFS PV candidates. Update server/path values for the target environment.
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: nanobot-data-pv-nfs
+      labels:
+        nanobot.io/storage-backend: nfs
+        nanobot.io/volume: data
+    spec:
+      capacity:
+        storage: 1Ti
+      accessModes: [ReadWriteMany]
+      persistentVolumeReclaimPolicy: Retain
+      nfs:
+        server: 192.168.48.104
+        path: /data/nanobot_backend_k8s/data
+
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: nanobot-source-pv-nfs
+      labels:
+        nanobot.io/storage-backend: nfs
+        nanobot.io/volume: source
+    spec:
+      capacity:
+        storage: 20Gi
+      accessModes: [ReadOnlyMany]
+      persistentVolumeReclaimPolicy: Retain
+      nfs:
+        server: 192.168.48.104
+        path: /data/nanobot_backend_k8s/source
+
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: nanobot-common-pv-nfs
+      labels:
+        nanobot.io/storage-backend: nfs
+        nanobot.io/volume: common
+    spec:
+      capacity:
+        storage: 20Gi
+      accessModes: [ReadOnlyMany]
+      persistentVolumeReclaimPolicy: Retain
+      nfs:
+        server: 192.168.48.104
+        path: /data/nanobot_backend_k8s/common
+
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: nanobot-data-pvc
+      namespace: nanobot
+    spec:
+      storageClassName: ""
+      accessModes: [ReadWriteMany]
+      resources:
+        requests:
+          storage: 1Ti
+      selector:
+        matchLabels:
+          nanobot.io/storage-backend: *storage_backend
+          nanobot.io/volume: data
+
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: nanobot-source-pvc
+      namespace: nanobot
+    spec:
+      storageClassName: ""
+      accessModes: [ReadOnlyMany]
+      resources:
+        requests:
+          storage: 20Gi
+      selector:
+        matchLabels:
+          nanobot.io/storage-backend: *storage_backend
+          nanobot.io/volume: source
+
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: nanobot-common-pvc
+      namespace: nanobot
+    spec:
+      storageClassName: ""
+      accessModes: [ReadOnlyMany]
+      resources:
+        requests:
+          storage: 20Gi
+      selector:
+        matchLabels:
+          nanobot.io/storage-backend: *storage_backend
+          nanobot.io/volume: common
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: container-up
+      namespace: nanobot
+    spec:
+      type: NodePort
+      selector:
+        app: container-up
+      ports:
+        - name: http
+          port: 8080
+          targetPort: 8080
+          nodePort: 30080
+
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: container-up
+      namespace: nanobot
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: container-up
+      template:
+        metadata:
+          labels:
+            app: container-up
+        spec:
+          serviceAccountName: container-up
+          # This value is also passed to dynamically-created bucket runtimes.
+          nodeSelector:
+            nanobot_node: &nanobot_node "prod"
+          containers:
+            - name: container-up
+              image: nanobot-container-up:v1.0.3
+              imagePullPolicy: IfNotPresent
+              ports:
+                - containerPort: 8080
+              env:
+                - name: BUCKET_MOUNT_ROOT
+                  value: /mnt/env
+                - name: BUCKET_MOUNT_PVC
+                  value: nanobot-data-pvc
+                - name: SOURCE_ROOT
+                  value: /mnt/source
+                - name: SOURCE_PVC
+                  value: nanobot-source-pvc
+                - name: BUCKET_COMMON_ROOT
+                  value: /mnt/common
+                - name: CONTAINER_UP_PORT
+                  value: "8080"
+                - name: BUCKET_NAMESPACE
+                  value: nanobot
+                - name: BUCKET_NAME_PREFIX
+                  value: nanobot-bucket
+                - name: BUCKET_RUNTIME_IMAGE
+                  value: nanobot-bucket-runtime:v1.0.9
+                - name: BUCKET_IMAGE_PULL_POLICY
+                  value: IfNotPresent
+                - name: NANOBOT_NODE
+                  value: *nanobot_node
+                - name: BUCKET_SERVICE_PORT
+                  value: "8080"
+                - name: BUCKET_CONTAINER_PORT
+                  value: "8080"
+                - name: BUCKET_MAX_INSTANCES_PER_BUCKET
+                  value: "50"
+                - name: BUCKET_IDLE_TTL_SECONDS
+                  value: "600"
+                - name: BUCKET_IDLE_SWEEP_INTERVAL_SECONDS
+                  value: "60"
+              volumeMounts:
+                - name: bucket-mount-root
+                  mountPath: /mnt/env
+                - name: source-root
+                  mountPath: /mnt/source
+                  readOnly: true
+                - name: common-root
+                  mountPath: /mnt/common
+                  readOnly: true
+                - name: host-localtime
+                  mountPath: /etc/localtime
+                  readOnly: true
+                - name: host-timezone
+                  mountPath: /etc/timezone
+                  readOnly: true
+              readinessProbe:
+                httpGet:
+                  path: /health/ready
+                  port: 8080
+                initialDelaySeconds: 5
+                periodSeconds: 5
+              livenessProbe:
+                httpGet:
+                  path: /health/live
+                  port: 8080
+                initialDelaySeconds: 20
+                periodSeconds: 10
+          volumes:
+            - name: bucket-mount-root
+              persistentVolumeClaim:
+                claimName: nanobot-data-pvc
+            - name: source-root
+              persistentVolumeClaim:
+                claimName: nanobot-source-pvc
+            - name: common-root
+              persistentVolumeClaim:
+                claimName: nanobot-common-pvc
+            - name: host-localtime
+              hostPath:
+                path: /etc/localtime
+            - name: host-timezone
+              hostPath:
+                path: /etc/timezone

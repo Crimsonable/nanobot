@@ -1,142 +1,3 @@
-# Nanobot K8s 部署手册
-
-本文只针对当前仓库的 Kubernetes 动态分桶部署方案，覆盖：
-
-- 依赖安装
-- 共享存储准备
-- 镜像构建
-- Kind 本地验证
-- 生产 K8s 集群部署
-- 验证与运维命令
-
-当前部署架构对应两个核心服务：
-
-- `container_up`
-  - 统一网关，负责接收入站请求、动态创建 bucket、统一出站。
-- `bucket_runtime`
-  - bucket Pod 内运行时，负责启动和管理用户级 Nanobot 进程。
-
-## 1. 部署前提
-
-### 1.1 操作系统建议
-
-推荐：
-
-- Ubuntu 22.04 / 24.04
-- Docker 可用
-- Kubernetes 集群网络互通
-
-### 1.2 必装依赖
-
-K8s 部署至少需要：
-
-- `git`
-- `docker`
-- `kubectl`
-- `kind`
-  - 只在本地验证时需要
-- `nfs-kernel-server`
-  - 只在你使用 NFS 服务端时需要
-- `nfs-common`
-  - K8s 节点使用 NFS 挂载时需要
-
-### 1.3 项目内实际依赖
-
-从当前仓库看，K8s 部署关键依赖来自：
-
-- Python 包：
-  - `fastapi`
-  - `uvicorn`
-  - `httpx`
-  - `websockets`
-  - `pydantic`
-  - `openai`
-  - `anthropic`
-- 系统工具：
-  - `kubectl`
-
-说明：
-
-- `Dockerfile.bucket_runtime` 已安装 Python 运行依赖
-- `Dockerfile.container_up` 已安装 Python 运行依赖
-- 当前项目的 bucket 动态创建逻辑在 [container_up/bucket_manager.py](../container_up/bucket_manager.py) 中通过 `kubectl apply` 和 `kubectl scale` 实现，因此 `container_up` 镜像必须包含 `kubectl`
-
-## 2. 依赖安装命令
-
-以下命令默认适用于 Ubuntu。
-
-### 2.1 安装 Git 和基础工具
-
-```bash
-sudo apt update
-sudo apt install -y git curl ca-certificates gnupg
-```
-
-### 2.2 安装 Docker 和 Docker Compose
-
-```bash
-sudo apt update
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo systemctl enable --now docker
-docker --version
-docker compose version
-```
-
-如需免 sudo：
-
-```bash
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
-### 2.3 安装 kubectl
-
-AMD64:
-
-```bash
-curl -LO "https://dl.k8s.io/release/v1.33.1/bin/linux/amd64/kubectl"
-sudo install -m 0755 kubectl /usr/local/bin/kubectl
-rm -f kubectl
-kubectl version --client
-```
-
-ARM64:
-
-```bash
-curl -LO "https://dl.k8s.io/release/v1.33.1/bin/linux/arm64/kubectl"
-sudo install -m 0755 kubectl /usr/local/bin/kubectl
-rm -f kubectl
-kubectl version --client
-```
-
-### 2.4 安装 kind
-
-AMD64:
-
-```bash
-curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
-chmod +x ./kind
-sudo mv ./kind /usr/local/bin/kind
-kind version
-```
-
-ARM64:
-
-```bash
-curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-arm64
-chmod +x ./kind
-sudo mv ./kind /usr/local/bin/kind
-kind version
-```
-
 ### 2.5 安装 NFS
 
 NFS 服务端：
@@ -367,21 +228,21 @@ kind load docker-image nanobot-container-up:v1.0.0 --name nanobot
 ### 6.5 部署资源
 
 ```bash
-kubectl apply -f k8s/base/namespace.yaml
-kubectl apply -f k8s/base/rbac.yaml
-kubectl apply -f k8s/dev-kind/storage-local.yaml
-kubectl apply -f k8s/base/container-up.yaml
+kubectl apply -f k8s/base/base.yaml
+kubectl apply -f k8s/base/engineering-scene-mcp.yaml
 ```
 
-`container-up.yaml` 使用 `nanobot_node` 节点标签，并通过 `NANOBOT_NODE` 把同一个标签值传给
+`base.yaml` 默认使用 `local` 存储；修改文件顶部的 `nanobot.io/storage-backend` 锚点为
+`nfs` 即可切换到 NFS PV。该文件使用 `nanobot_node` 节点标签，并通过 `NANOBOT_NODE` 把同一个标签值传给
 container-up。container-up 动态创建 bucket runtime Deployment 时，会自动加入相同的
-`nodeSelector`。部署前先给目标节点打标签（清单默认值为 `true`）：
+`nodeSelector`。部署前先给目标节点打标签（正式环境默认值为 `prod`）：
 
 ```bash
-kubectl label node <node-name> nanobot_node=true
+kubectl label node <node-name> nanobot_node=prod
+kubectl label node <mcp-node-name> nanobot_mcp_node=prod
 ```
 
-如需使用其他标签值，只需修改 `container-up.yaml` 中锚点所在的一处：
+如需使用其他标签值，只需修改 `base.yaml` 中锚点所在的一处：
 
 ```yaml
 nodeSelector:
@@ -390,58 +251,6 @@ nodeSelector:
 
 若不需要节点限制，请同时删除清单中的 `nodeSelector` 和 `NANOBOT_NODE` 环境变量；代码在
 `NANOBOT_NODE` 为空或未设置时不会给 bucket runtime 添加调度限制。
-
-### 6.6 查看部署状态
-
-```bash
-kubectl get pods -n nanobot
-kubectl get svc -n nanobot
-kubectl get pvc -n nanobot
-kubectl logs -n nanobot deploy/container-up -f
-```
-
-### 6.7 暴露网关并做健康检查
-
-```bash
-kubectl port-forward -n nanobot svc/container-up 8080:8080
-```
-
-新开一个终端：
-
-```bash
-curl http://127.0.0.1:8080/health/live
-curl http://127.0.0.1:8080/health/ready
-curl http://127.0.0.1:8080/healthz
-```
-
-### 6.8 验证 bucket 动态创建
-
-注意：
-
-- `container_up` 在创建 bucket 之前，会先在 `workspaces/<frontend_id>/<user_id>/` 下创建用户 workspace
-- 该目录在网关 Pod 内必须是可写的
-- 触发入口是 `POST /inbound/{frontend_id}`，不是 `POST /inbound`
-
-```bash
-curl --noproxy '*' -X POST http://127.0.0.1:8080/inbound/feishu-main \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "user_id": "demo-user",
-    "chat_id": "default",
-    "content": "hello",
-    "attachments": [],
-    "metadata": {},
-    "raw": {}
-  }'
-```
-
-然后查看 bucket 是否创建：
-
-```bash
-kubectl get deploy,po,svc -n nanobot
-kubectl logs -n nanobot deploy/container-up --tail=200
-kubectl logs -n nanobot deploy/nanobot-bucket-0 --tail=200
-```
 
 ## 7. 方式二：生产 K8s 集群部署
 
@@ -519,31 +328,21 @@ docker push <your-registry>/nanobot-container-up:v1.0.0
 
 ### 7.4 修改 K8s YAML
 
-部署前需要编辑三个文件：
+部署前需要编辑两个文件：
 
-- [k8s/base/container-up.yaml](../k8s/base/container-up.yaml)
-- [k8s/base/nanobot-bucket-template.yaml](../k8s/base/nanobot-bucket-template.yaml)
-- [k8s/base/pv-pvc-nfs.yaml](../k8s/base/pv-pvc-nfs.yaml) 或你自己的存储清单
+- [k8s/base/base.yaml](../k8s/base/base.yaml)
+- [k8s/base/engineering-scene-mcp.yaml](../k8s/base/engineering-scene-mcp.yaml)
 
 至少改这几项：
 
 1. `image`
 2. `imagePullPolicy`
-3. 共享 PVC 名称必须与 `container-up.yaml` 中的 `BUCKET_MOUNT_PVC` 一致
-4. NFS 版本下的 PV `server`
-5. NFS 版本下的 PV `path`
+3. 文件顶部的存储开关（`local` 或 `nfs`）
+4. NFS PV 的 `server` 和 `path`（使用 NFS 时）
+5. 正式环境和 MCP 的 `nodeSelector`
 
-当前最新实现要求：
-
-- 只提供一个共享 PVC，例如 `nanobot-data-pvc`
-- 该 PVC 在 Pod 内统一挂载到 `/mnt/nanobot`
-- PVC 内部目录结构必须包含：
-  - `routedb/`
-  - `source/`
-  - `common/`
-  - `workspaces/`
-
-如果你直接使用仓库里的 `k8s/base/pv-pvc-nfs.yaml` 或 `k8s/dev-kind/storage-local.yaml`，需要先把它们从旧的多 PV/PVC 结构改成单 PV/PVC 结构后再应用。
+`base.yaml` 同时声明 local 和 NFS 两组候选 PV；三个 PVC 通过标签 selector 只绑定文件顶部选中的后端。
+切换已绑定的 PVC 前，应先按 Kubernetes 存储迁移流程处理旧 PVC/PV 和数据，不能仅修改开关后直接覆盖。
 
 如果使用远程镜像仓库，推荐：
 
@@ -551,34 +350,46 @@ docker push <your-registry>/nanobot-container-up:v1.0.0
 
 ### 7.5 应用资源
 
-创建命名空间和 RBAC：
+应用正式环境基础资源和独立的 MCP 配置：
 
 ```bash
-kubectl apply -f k8s/base/namespace.yaml
-kubectl apply -f k8s/base/rbac.yaml
-kubectl apply -f k8s/base/pv-pvc-nfs.yaml
-kubectl apply -f k8s/base/container-up.yaml
-kubectl apply -f k8s/base/container-up-nodeport.yaml
+kubectl apply -f k8s/base/base.yaml
 kubectl apply -f k8s/base/engineering-scene-mcp.yaml
+kubectl apply -f k8s/minio/minio.yaml
 
 kubectl rollout status deployment/container-up -n nanobot
 kubectl get pods -n nanobot -o wide
 ```
-kubectl apply -f k8s/base/namespace.yaml
-kubectl apply -f k8s/base/rbac.yaml
-kubectl apply -f k8s/base/pv-pvc-hostpath.yaml
-kubectl apply -f k8s/base/container-up.yaml
-kubectl apply -f k8s/base/container-up-nodeport.yaml
-kubectl apply -f k8s/base/engineering-scene-mcp.yaml
-kubectl apply -f k8s/minio/minio.yaml
 
+测试环境使用独立的 `nanobot-test` Namespace 和 `nanobot_node=test`。Namespace 名称不能包含
+下划线，因此不能写成 `nanobot_test`。测试清单包含独立的 RBAC、local PV/PVC、Service 和
+Deployment，可以与正式环境并存；测试 NodePort 为 `30081`：
+
+```bash
+kubectl label node <test-node-name> nanobot_node=test
+kubectl apply -f k8s/base/container-up-test.yaml
+kubectl rollout status deployment/container-up -n nanobot-test
+```
+
+kubectl delete ns nanobot && kubectl delete pv nanobot-data-pv-local nanobot-source-pv-local nanobot-common-pv-local
+kubectl delete ns nanobot-test && kubectl delete pv nanobot-test-data-pv-local nanobot-test-source-pv-local nanobot-test-common-pv-local
 kubectl delete ns nanobot && kubectl delete pv nanobot-data-pv nanobot-source-pv nanobot-common-pv
+kubectl delete ns nanobot && kubectl delete pv minio-pv
+
+测试环境的集群内地址为 `http://container-up.nanobot-test.svc.cluster.local:8080`。动态创建的
+bucket runtime 会自动取得这个地址；web-server 等独立调用方则需要把自己的
+`CONTAINER_UP_BASE_URL` 显式改为该地址。
+
 查看日志：
 
 ```bash
 kubectl logs -n nanobot deploy/container-up -f
 kubectl logs -n nanobot deploy/nanobot-bucket-0 -f
 kubectl logs -n nanobot deploy/engineering-scene-mcp -f
+
+kubectl logs -n nanobot-test deploy/container-up -f
+kubectl logs -n nanobot-test deploy/nanobot-test-bucket-0 -f
+kubectl logs -n nanobot-test deploy/engineering-scene-mcp -f
 ```
 
 web server测试：
@@ -586,7 +397,7 @@ web server测试：
 
 env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound/web-wd -H 'Content-Type: application/json' -d '{"user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
 
-curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
+curl -sS -X POST 'http://192.168.199.166:30080/inbound/web-wd' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
@@ -612,7 +423,7 @@ curl -sS -X POST 'http://192.168.102.189:30080/inbound/web-test' \
 }
 JSON
 
-curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
+curl -sS -X POST 'http://192.168.199.166:30080/inbound/web-wd' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
@@ -625,7 +436,7 @@ curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
 }
 JSON
 
-curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-main' \
+curl -sS -X POST 'http://192.168.199.166:30080/inbound/web-main' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
@@ -638,7 +449,7 @@ curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-main' \
 }
 JSON
 
-curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
+curl -sS -X POST 'http://192.168.199.166:30080/inbound/web-wd' \
   -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {
@@ -646,7 +457,7 @@ curl -sS -X POST 'http://192.168.48.104:30080/inbound/web-wd' \
   "chat_id": "web-chat-2",
   "content": "提交人孙宸，提交时间2026/05/20，分析图片中的安全风险",
   "attachments": [
-    "http://192.168.48.104:9000/attachments/2026/05/19/3eeed76636d54c9c9e0252c6517e5cd0/tmp_c8c38602127542f09ea8336e65661a10.jpg","http://192.168.48.104:9000/attachments/2026/05/20/a835cde7fcf943ea9922023770ab0242/tmp_f79d82c30e97bfc19447817a3adc76b3.jpg"
+    "http://192.168.199.166:9000/attachments/2026/05/19/3eeed76636d54c9c9e0252c6517e5cd0/tmp_c8c38602127542f09ea8336e65661a10.jpg","http://192.168.199.166:9000/attachments/2026/05/20/a835cde7fcf943ea9922023770ab0242/tmp_f79d82c30e97bfc19447817a3adc76b3.jpg"
   ],
   "metadata": {},
   "raw": {}
@@ -662,7 +473,7 @@ curl -sS -X POST 'http://127.0.0.1:8090/inbound/web-wd' \
   "chat_id": "web-chat-2",
   "content": "提交人孙宸，提交时间2026/05/20，分析视频中的安全风险",
   "attachments": [
-    "http://192.168.48.104:9000/attachments/2026/05/28/4b134cb715764ba7b64f63063d67e7e1/1.mp4"
+    "http://192.168.199.166:9000/attachments/2026/05/28/4b134cb715764ba7b64f63063d67e7e1/1.mp4"
   ],
   "metadata": {},
   "raw": {}
