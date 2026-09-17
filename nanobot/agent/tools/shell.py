@@ -131,7 +131,7 @@ class ExecTool(Tool):
         return "exec"
 
     _MAX_TIMEOUT = 600
-    _MAX_OUTPUT = 10_000
+    _MAX_OUTPUT = 16_000
 
     # Kernel device files safe as stdio redirect targets (#3599).
     _BENIGN_DEVICE_PATHS: frozenset[str] = frozenset({

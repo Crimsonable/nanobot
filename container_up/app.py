@@ -31,7 +31,9 @@ from container_up.settings import (
     BUCKET_MAX_INSTANCES_PER_BUCKET,
     BUCKET_IDLE_SWEEP_INTERVAL_SECONDS,
     BUCKET_WORKSPACE_ROOT,
+    SYNC_REPLY_TIMEOUT_SECONDS,
 )
+from container_up.sync_reply import REQUEST_ID_KEY, SyncReplyBroker, SyncReplyMiddleware
 from container_up.uvicorn_logging import build_uvicorn_log_config
 from container_up.workspace_manager import WorkspaceManager
 
@@ -302,6 +304,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="container-up", version="0.3.0", lifespan=lifespan)
+sync_reply_broker = SyncReplyBroker()
+app.add_middleware(SyncReplyMiddleware, broker=sync_reply_broker)
 
 
 @app.get("/health/live")
@@ -353,6 +357,52 @@ async def inbound(frontend_id: str, payload: InboundRequest) -> dict[str, Any]:
         "bucket_id": binding["bucket_id"],
         "instance_id": binding["instance_id"],
     }
+
+
+@app.post("/inbound-sync/{frontend_id}")
+async def inbound_sync(frontend_id: str, payload: InboundRequest) -> dict[str, Any]:
+    """Submit an inbound message and return its final outbound reply in this response."""
+    request_id, pending = sync_reply_broker.register(
+        frontend_id=frontend_id,
+        user_id=payload.user_id,
+        chat_id=payload.chat_id,
+    )
+    metadata = dict(payload.metadata)
+    metadata[REQUEST_ID_KEY] = request_id
+    try:
+        try:
+            binding = await _route_message(
+                frontend_id=frontend_id,
+                user_id=payload.user_id,
+                chat_id=payload.chat_id,
+                content=payload.content,
+                attachments=normalize_attachments(payload.content, payload.attachments),
+                metadata=metadata,
+                raw=payload.raw,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.shield(pending.future), timeout=SYNC_REPLY_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="timed out waiting for AI reply") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        return {
+            "status": "completed",
+            "frontend_id": frontend_id,
+            "user_id": payload.user_id,
+            "chat_id": payload.chat_id,
+            "bucket_id": binding["bucket_id"],
+            "instance_id": binding["instance_id"],
+            **reply,
+        }
+    finally:
+        sync_reply_broker.finish(request_id)
 
 
 @app.post("/api/message")

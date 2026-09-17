@@ -1,40 +1,29 @@
-# Web Frontend HTTP API
+# Web 前端对接 API
 
-本文描述 Web 前端对接 `container_up` 时的 HTTP 交互约定，分为两部分：
+Base：`http://192.168.199.174:30080`
 
-- 前端调用 `container_up` 的入站接口：`POST /inbound/{frontend_id}`
-- 前端自行实现的消息回调接口：用于接收 `container_up` 推送的回复消息
+前端只需对接两个接口：发送用户消息、接收 AI 回复回调。
 
-不涉及内部实现。
+## 1. 发送消息
 
-## 1. 接口说明
+`POST http://192.168.199.174:30080/inbound/{frontend_id}`
 
-### 1.1 `POST http://192.168.48.104/inbound/{frontend_id}`
+前端提交用户消息。接口返回成功只代表消息已被后端接收，AI 回复不在此响应返回，会通过接口 2 回调给前端。
 
-用途：
-前端直接向 `container_up` 提交用户消息。
-
-接口提供方：
-`container_up` 后端。
-
-请求头：
-
-```text
-Content-Type: application/json
-```
+请求头：`Content-Type: application/json`
 
 路径参数：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `frontend_id` | `string` | 是 | frontend 标识，当前固定使用 `web-main` |
+| `frontend_id` | `string` | 是 | frontend 标识，固定使用 `web-wd` |
 
 请求体：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `user_id` | `string` | 是 | 用户唯一标识，优先使用工号/电话号码等具有实际含义的id |
-| `chat_id` | `string` | 是 | 会话唯一标识，用于前端控制后端上下文切换 |
+| `user_id` | `string` | 是 | 用户唯一标识，二滩测试固定使用ettest |
+| `chat_id` | `string` | 是 | 会话唯一标识，用于区分不同会话上下文 |
 | `content` | `string` | 是 | 用户输入文本 |
 | `attachments` | `array` | 否 | 附件列表，默认 `[]` |
 | `metadata` | `object` | 否 | 业务扩展字段，默认 `{}` |
@@ -53,7 +42,7 @@ Content-Type: application/json
 }
 ```
 
-成功响应示例：
+成功响应（HTTP 200）：
 
 ```json
 {
@@ -65,8 +54,6 @@ Content-Type: application/json
 }
 ```
 
-成功响应字段：
-
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `status` | `string` | 固定为 `accepted` |
@@ -75,7 +62,7 @@ Content-Type: application/json
 | `bucket_id` | `string` | 后端处理实例所在 bucket |
 | `instance_id` | `string` | 后端处理实例 ID |
 
-失败响应示例：
+失败响应：
 
 ```json
 {
@@ -83,39 +70,21 @@ Content-Type: application/json
 }
 ```
 
-说明：
+## 2. 接收 AI 回复（回调）
 
-- `POST /inbound` 成功只表示消息已被后端接收。
-- 回复不会直接出现在 `POST /inbound` 的响应里。
-- 回复会由 `container_up` 主动回调到前端提供的消息接收接口。
+前端需提供一个内网可访问的 HTTP 接口，后端会向该地址发起 `POST` 请求推送 AI 回复。回调接口开发完成后联系后端进行配置
 
-### 1.2 前端消息回调接口
+`POST {前端提供的回调地址}`
 
-用途：
-前端提供一个可被 `container_up` 访问的 HTTP 接口，用于接收 AI 回复消息。
-
-接口提供方：
-前端。
-
-说明：
-
-- `container_up` 会按配置中的回调地址向该接口发起 `POST` 请求。
-- 回调地址要内网可访问。
-- 本文只定义 `container_up` 发起回调时的请求字段和前端应返回的响应约定。
-
-请求头：
-
-```text
-Content-Type: application/json
-```
+请求头：`Content-Type: application/json`
 
 请求体：
 
-| 字段 | 类型 | 必有 | 说明 |
+| 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `frontend_id` | `string` | 是 | frontend 标识，以前后端实际约定为准 |
-| `user_id` | `string` | 是 | 用户唯一标识，与inbound请求中的id一致 |
-| `chat_id` | `string` | 是 | 会话唯一标识，与inbound请求中的id一致 |
+| `frontend_id` | `string` | 是 | frontend 标识，固定为web-wd |
+| `user_id` | `string` | 是 | 用户唯一标识，与发送消息时一致，二滩测试应为ettest |
+| `chat_id` | `string` | 是 | 会话唯一标识，与发送消息时一致 |
 | `content` | `string` | 是 | AI 回复文本；纯附件回复时可能为空字符串 |
 | `attachments` | `array` | 是 | 回复附件列表，默认 `[]` |
 | `metadata` | `object` | 是 | 透传业务字段和扩展字段，默认 `{}` |
@@ -158,7 +127,7 @@ Content-Type: application/json
 }
 ```
 
-前端收到回调后的成功响应建议：
+前端需返回（HTTP 200）：
 
 ```json
 {
@@ -166,16 +135,9 @@ Content-Type: application/json
 }
 ```
 
-要求：
+## 3. 字段约定
 
-- HTTP 状态码返回 `200`
-- 返回体建议为 `{"status":"accepted"}`
-
-## 2. attachments 字段约定
-
-`attachments` 建议上传可访问的对象url链接。
-
-字符串格式：
+`attachments`：数组，元素为成都院内网可访问的对象 URL 链接，可上传至minio服务获取内网链接，参考（4、文件上传），例如：
 
 ```json
 [
@@ -183,9 +145,7 @@ Content-Type: application/json
 ]
 ```
 
-## 3. metadata 字段约定
-
-`metadata` 没有固定强制 schema，建议前端只放业务自定义字段，例如：
+`metadata`：无固定 schema，前端放业务自定义字段即可，后端回调时可能保留并补充额外字段，请对未知字段保持兼容。
 
 ```json
 {
@@ -195,48 +155,15 @@ Content-Type: application/json
 }
 ```
 
-后端回调时，`metadata` 可能会保留这些字段，并补充额外字段。前端后端应对未知字段保持兼容。
+## 4. 文件上传（MinIO）
 
-## 4. 最小联调样例
-
-入站请求：
-
-```bash
-curl -sS -X POST http://192.168.48.104:30080/inbound/web-main \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "user_id":"web-demo-1",
-    "chat_id":"web-chat-1",
-    "content":"hello from web frontend",
-    "attachments":[],
-    "metadata":{},
-    "raw":{}
-  }'
-```
-
-出站接收成功响应：
+附件上传到 MinIO 后以 URL 形式放入 `attachments`：
 
 ```json
 {
-  "status": "accepted"
+  "endpoint": "http://192.168.199.167:9000",
+  "access_key": "<MINIO_ACCESS_KEY>",
+  "secret_key": "<MINIO_SECRET_KEY>",
+  "bucket": "attachments"
 }
 ```
-
-## 5. minio配置
-```bash
-{
-    "endpoint": "http://192.168.48.104:9000",
-    "access_key": "minio_admin",
-    "secret_key": "minio_password",
-    "bucket": "attachments"
-}
-```
-
-## 6. 其他
-
-- 'frontend_id'以前后端实际约定为准
-- `user_id` 由前端保证稳定，不要同一用户频繁变更
-- `chat_id` 由前端保证唯一，用于区分不同会话
-- 前端提供的消息回调 URL 必须可被 `container_up` 访问
-- 前端回调接口收到消息后应尽快返回 `200
-- 前端回调接口确认后告知后端进行配置
