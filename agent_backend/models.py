@@ -33,6 +33,8 @@ class Identity(StrictModel):
 class Attachment(StrictModel):
     attachment_id: str = Field(default_factory=lambda: uid("att_"))
     url: str = ""
+    path: str = ""
+    requires_auth: bool = False
     filename: str = "attachment.bin"
     content_type: str = "application/octet-stream"
     size: int = Field(default=0, ge=0)
@@ -56,6 +58,8 @@ class Submit(StrictModel):
     content: str = Field(max_length=200_000)
     attachments: list[Attachment] = Field(default_factory=list, max_length=32)
     deadline_at: float
+    session_epoch: str = ""
+    previous_turns: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Usage(StrictModel):

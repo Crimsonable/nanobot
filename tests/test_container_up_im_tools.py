@@ -6,9 +6,8 @@ from typing import Any
 
 import pytest
 
-from container_up import attachment_paths
 from container_up import feishu_im_tool
-from container_up import im_tools
+from container_up import qxt_im_tool as im_tools
 from container_up import qxt_im_tool
 
 
@@ -396,67 +395,9 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qxt_prepare_inbound_event_downloads_content_url_into_instance_workspace(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = FakeSession(
-        [
-            FakeResponse(
-                status=200,
-                text="file-bytes",
-                headers={"Content-Disposition": 'attachment; filename="report.pdf"'},
-            )
-        ]
-    )
-    parser = im_tools.QxtIMParser()
-
-    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
-    monkeypatch.setattr(attachment_paths, "HOST_WORKSPACE_ROOT", tmp_path)
-    monkeypatch.setattr(attachment_paths, "CHILD_WORKSPACE_TARGET", "/app/nanobot_workspaces")
-    monkeypatch.setattr(
-        "container_up.attachments.ATTACHMENT_URL_PREFIX",
-        "https://files.example.com/",
-    )
-    prepared = await parser.prepare_inbound_event(
-        {
-            "event_type": "im_message_receive",
-            "event": {
-                "chat_id": "conv-1",
-                "usr_id": "user-1",
-                "content": "https://files.example.com/report.pdf",
-                "attachments": [],
-                "metadata": {
-                    "provider": "qxt",
-                    "message_id": "msg-1",
-                },
-            },
-        }
-    )
-
-    event = prepared["event"]
-    attachments = event["attachments"]
-    assert "org_id" not in event
-    assert event["metadata"]["attachments_materialized"] is True
-    assert len(attachments) == 1
-    local_path = Path(attachments[0])
-    assert local_path.is_absolute()
-    assert str(local_path).startswith("/app/nanobot_workspaces/default/user-1/")
-    assert session.calls[0]["method"] == "GET"
-    assert session.calls[0]["url"] == "https://files.example.com/report.pdf"
-
-    host_workspace = attachment_paths.host_instance_workspace_path(
-        "user-1",
-        frontend_id="default",
-    )
-    host_file = (
-        tmp_path
-        / host_workspace.relative_to(tmp_path)
-        / "cache"
-        / "attachments"
-        / "qxt"
-        / attachment_paths.safe_instance_name("conv-1")
-        / local_path.name
-    )
-    assert host_file.is_file()
-    assert host_file.read_bytes() == b"file-bytes"
+async def test_qxt_prepare_preserves_attachment_references_without_download():
+    parser = qxt_im_tool.QxtIMParser()
+    payload = {"event_type": "im_message_receive", "event": {
+        "usr_id": "alice", "attachments": [{"url": "https://files.example/report.pdf"},
+                                            {"path": "/shared/report.pdf"}]}}
+    assert await parser.prepare_inbound_event(payload) is payload

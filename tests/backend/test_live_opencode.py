@@ -14,11 +14,10 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from websockets.asyncio.client import connect
 
 from agent_backend.config import ControlConfig, RuntimeConfig
-from agent_backend.transfers import file_hash
 from agent_backend.wire import Peer
 from bucket_runtime.runtime import Runtime
 from bucket_runtime.sandbox_executor import SandboxExecutor
@@ -94,41 +93,38 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     }}}))
     runtime_config = RuntimeConfig.model_validate({
         "bucket_id": "bucket-0", "control_url": f"ws://127.0.0.1:{cu_port}/internal/buckets/ws",
-        "credential_file": str(token), "state_root": str(tmp_path / "runtime"),
+        "state_root": str(tmp_path / "runtime"),
         "workspace_root": str(tmp_path / "workspaces"), "rpc_port": rpc_port, "health_port": port(),
-        "opencode": {"binary": str(binary), "sha256": file_hash(binary), "port": oc_port,
+        "opencode": {"binary": str(binary), "port": oc_port,
             "context_root": str(tmp_path / "context"), "config_file": str(model_config),
             "plugin_file": str(plugin), "dependency_dir": str(plugin.parent.parent)},
         "profiles": {"default": {"model": "test/test", "public_roots": [str(public)]}},
         "limits": {"request_seconds": 90},
     })
     control_config = ControlConfig.model_validate({
-        "download_hosts": ["127.0.0.1"], "download_private_cidrs": ["127.0.0.1/32"],
-        "state_root": str(tmp_path / "control"), "bucket_credentials": {"bucket-0": str(token)},
+        "state_root": str(tmp_path / "control"), "bucket_ids": ["bucket-0"],
         "frontends": {"web": {"provider": "web", "profile_id": "default",
                               "credential_file": str(token), "api_key_file": str(token)}},
-        "storage": {"endpoint": "http://127.0.0.1:1", "bucket": "test",
-                    "access_key_file": str(token), "secret_key_file": str(token)},
         "limits": {"request_seconds": 90},
     })
     app = create_app(control_config, Channels())
-    control = app.state.service
     uploaded = []
 
     async def upload(identity, upload_id, path, attachment):
         uploaded.append(path.read_bytes())
         result = attachment.model_copy(update={"url": "https://files.invalid/" + upload_id,
                                                "object_key": upload_id, "storage": "minio"})
-        control.db.put("artifact", upload_id, {"owner": identity.key, "attachment": result.model_dump()})
+        runtime.db.put("artifact", upload_id, {"owner": identity.key, "attachment": result.model_dump()})
         return result
 
-    control.artifacts.upload = upload
     model = FastAPI()
     model_calls = []
+    input_downloads = []
 
     @model.get("/input.txt")
     async def input_file():
-        return Response(b"inbound attachment", media_type="text/plain")
+        input_downloads.append(True)
+        raise AssertionError("CU/runtime must not pre-download attachment references")
 
     @model.post("/v1/chat/completions")
     async def completion(request: Request):
@@ -142,6 +138,14 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
             if any("Long task" in str(m.get("content")) for m in body["messages"]):
                 args = {"command": "sleep 30", "description": "Long task"}
         elif len(tool_messages) == 1:
+            name = "read"
+            args = {"filePath": "output/report.txt"}
+        elif len(tool_messages) == 2:
+            assert "generated report" in str(tool_messages[-1]["content"]), tool_messages[-1]
+            name = "read"
+            args = {"filePath": str(public / "SKILL.md")}
+        elif len(tool_messages) == 3:
+            assert "public skill" in str(tool_messages[-1]["content"]), tool_messages[-1]
             name = "publish_attachment"
             args = {"files": [{"path": "output/report.txt", "filename": "report.txt"}]}
         else:
@@ -169,6 +173,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     supervisor = Supervisor(runtime_config)
     executor = SandboxExecutor(runtime_config.sandbox, runtime_config.limits.output_bytes)
     runtime = Runtime(runtime_config, supervisor.client, executor)
+    runtime.artifacts.upload = upload
     peer_task = event_task = None
     async with running(model, model_port), running(app, cu_port), running(rpc_app(runtime, supervisor.rpc_token), rpc_port):
         try:
@@ -181,7 +186,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
             assert initialized.status_code == 200, initialized.text
             assert runtime.plugin_ready
             async with connect(runtime_config.control_url, proxy=None, additional_headers={
-                "Authorization": "Bearer " + token.read_text(), "X-Bucket-ID": "bucket-0"}) as socket_:
+                "X-Bucket-ID": "bucket-0"}) as socket_:
                 runtime.peer = Peer(socket_, runtime.db, "bucket-0", runtime.on_command, runtime.rpc)
                 peer_task = asyncio.create_task(runtime.peer.run())
                 event_task = asyncio.create_task(runtime.events())
@@ -198,10 +203,12 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
                     assert result["attachments"][0]["filename"] == "report.txt"
                     assert result["usage"]["output_tokens"] > 0
                     assert uploaded == [b"generated report"]
+                    assert not input_downloads
                     alice_row = runtime.db.get("run", "req-test")
                     from agent_backend.models import Submit
                     alice_workspace = runtime.workspace(Submit.model_validate(alice_row["submit"]))
-                    assert next((alice_workspace / "inbox").iterdir()).read_bytes() == b"inbound attachment"
+                    assert not (alice_workspace / "inbox").exists()
+                    assert any(f"http://127.0.0.1:{model_port}/input.txt" in str(call["messages"]) for call in model_calls)
                     again = await client.post("/inbound-sync/web", json=payload)
                     assert again.json()["request_id"] == result["request_id"]
                     assert len(uploaded) == 1

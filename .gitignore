@@ -11,13 +11,6 @@
 docs/superpowers/
 docs/plans/
 
-# webui (monorepo frontend)
-webui/node_modules/
-webui/dist/
-webui/coverage/
-webui/.vite/
-*.tsbuildinfo
-
 # Python bytecode & caches
 *.pyc
 *.pyo
@@ -31,8 +24,6 @@ __pycache__/
 venv/
 .pytest_cache/
 botpy.log
-.venv_bridge_test
-nano.*.save
 container_up_runtime/
 .DS_Store
 uv.lock
@@ -96,7 +87,6 @@ Desktop.ini
 *.swp
 *.swo
 *~
-nano.*.save
 
 # Environment & secrets (keep examples tracked if needed)
 .env.*
@@ -110,5 +100,4 @@ temp/
 *.tmp
 exp/
 .opencode-reference/
-.runtime-test/
 vendor/

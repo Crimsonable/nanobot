@@ -7,7 +7,7 @@ import signal
 import sys
 from pathlib import Path
 
-from agent_backend.config import SandboxConfig
+from agent_backend.config import SandboxConfig, UserSandbox
 
 
 def contained(path: str, root: Path, *, directory: bool = False) -> Path:
@@ -38,18 +38,32 @@ class SandboxExecutor:
         self.config, self.output_limit = config, output_limit
         self.processes: dict[str, set[asyncio.subprocess.Process]] = {}
 
-    def argv(self, workspace: Path, public: list[Path], cwd: Path, command: str) -> list[str]:
+    def argv(self, workspace: Path, public: list[Path], cwd: Path, command: str, *,
+             sandbox: UserSandbox | None = None, workspace_access: str = "read_write",
+             private_files: list[Path] = ()) -> list[str]:
+        sandbox = sandbox or UserSandbox()
+        if not sandbox.enabled:
+            return [self.config.shell, "-c", command]
         if sys.platform != "linux" or not self.config.binary.is_file():
             raise RuntimeError("Linux bubblewrap is required; unsandboxed execution is forbidden")
         args = [str(self.config.binary), "--unshare-all", "--die-with-parent", "--new-session",
                 "--cap-drop", "ALL", "--clearenv", "--proc", "/proc", "--dev", "/dev",
                 "--tmpfs", "/tmp", "--dir", "/home/agent"]
+        if sandbox.network:
+            args.append("--share-net")
+            if Path("/etc/resolv.conf").exists():
+                args.extend(["--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf"])
         for root in [*self.config.readonly_roots, *public]:
             if root.exists():
                 args.extend(["--ro-bind", str(root), str(root)])
             elif root in public:
                 raise RuntimeError("configured public directory is missing")
-        args.extend(["--bind", str(workspace), str(workspace), "--chdir", str(cwd),
+        if workspace_access != "none":
+            args.extend(["--bind" if workspace_access == "read_write" else "--ro-bind", str(workspace), str(workspace)])
+        for path in private_files:
+            if any(path.resolve().is_relative_to(root.resolve()) for root in [*self.config.readonly_roots, *public]):
+                args.extend(["--ro-bind", "/dev/null", str(path.resolve())])
+        args.extend(["--chdir", str(cwd),
                      "--setenv", "HOME", "/home/agent", "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
                      "--setenv", "LANG", "C.UTF-8", "--setenv", "TMPDIR", "/tmp",
                      "--setenv", "PLAYWRIGHT_BROWSERS_PATH", "/opt/toolchain/browsers",
@@ -71,10 +85,25 @@ class SandboxExecutor:
             await process.wait()
 
     async def execute(self, request_id: str, workspace: Path, public: list[Path],
-                      command: str, workdir: str | None = None, timeout: float = 120) -> dict:
-        cwd = contained(workdir or str(workspace), workspace, directory=True)
+                      command: str, workdir: str | None = None, timeout: float = 120, *,
+                      sandbox: UserSandbox | None = None, workspace_access: str = "read_write",
+                      private_files: list[Path] = ()) -> dict:
+        sandbox = sandbox or UserSandbox()
+        if workdir:
+            candidate = Path(workdir)
+            if not candidate.is_absolute():
+                candidate = workspace / candidate
+            roots = [*public, *([workspace] if workspace_access != "none" else [])]
+            root = next((root for root in roots if candidate.resolve().is_relative_to(root)), None)
+            if root is None:
+                raise PermissionError("working directory outside user permission scope")
+            cwd = contained(str(candidate), root, directory=True)
+        else:
+            cwd = workspace if workspace_access != "none" else Path("/")
         process = await asyncio.create_subprocess_exec(
-            *self.argv(workspace, public, cwd, command), stdin=asyncio.subprocess.DEVNULL,
+            *self.argv(workspace, public, cwd, command, sandbox=sandbox, workspace_access=workspace_access,
+                       private_files=private_files),
+            cwd=str(cwd) if not sandbox.enabled else None, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             env={"PATH": "/usr/bin:/bin"}, start_new_session=True, close_fds=True)
         self.processes.setdefault(request_id, set()).add(process)

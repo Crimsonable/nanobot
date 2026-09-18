@@ -18,10 +18,6 @@ from aiohttp import ClientError
 from Crypto.Cipher import AES
 from loguru import logger
 
-from container_up.attachments import (
-    attachment_from_content_url,
-    persist_attachment_bytes,
-)
 from container_up.http_state import get_dispatch_session
 
 _AES_BLOCK_SIZE = 16
@@ -104,40 +100,7 @@ class QxtIMParser:
         return self.user_info_url
 
     async def prepare_inbound_event(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if str(payload.get("event_type") or "") != "im_message_receive":
-            return payload
-
-        event = dict(payload.get("event") or {})
-        metadata = dict(event.get("metadata") or {})
-        if str(metadata.get("provider") or "") != "qxt":
-            return payload
-
-        usr_id = str(event.get("usr_id") or "")
-
-        chat_id = str(event.get("chat_id") or "")
-        content = str(event.get("content") or "")
-        attachments = list(event.get("attachments") or [])
-
-        materialized, downloaded = await self._materialize_inbound_attachments(
-            usr_id=usr_id,
-            chat_id=chat_id,
-            content=content,
-            metadata=metadata,
-            attachments=attachments,
-        )
-        updated_event = dict(event)
-        updated_event["chat_id"] = chat_id
-        updated_event["usr_id"] = usr_id
-        if materialized != attachments:
-            updated_event["attachments"] = materialized
-        updated_metadata = dict(metadata)
-        if downloaded:
-            updated_metadata["attachments_materialized"] = True
-        updated_event["metadata"] = updated_metadata
-        return {
-            **payload,
-            "event": updated_event,
-        }
+        return payload
 
     @staticmethod
     def _sha1(text: str) -> str:
@@ -341,79 +304,7 @@ class QxtIMParser:
             },
         )
 
-    async def _materialize_inbound_attachments(
-        self,
-        *,
-        usr_id: str,
-        chat_id: str,
-        content: str,
-        metadata: dict[str, Any],
-        attachments: list[Any],
-    ) -> tuple[list[Any], bool]:
-        normalized = list(attachments)
-        auto_attachment = attachment_from_content_url(content, self.attachment_url_prefix)
-        if auto_attachment and not any(
-            (
-                isinstance(item, dict)
-                and str(item.get("url") or "").strip() == auto_attachment["url"]
-            )
-            or str(item or "").strip() == auto_attachment["url"]
-            for item in normalized
-        ):
-            normalized.append(auto_attachment)
 
-        if not normalized:
-            return normalized, False
-
-        attachment_group = (
-            chat_id or str(metadata.get("message_id") or "") or usr_id
-        )
-        local_paths: list[Any] = []
-        changed = False
-        for attachment in normalized:
-            local_path = await self._download_inbound_attachment(
-                usr_id=usr_id,
-                attachment_group=attachment_group,
-                attachment=attachment,
-            )
-            if local_path is None:
-                local_paths.append(attachment)
-                continue
-            local_paths.append(local_path)
-            changed = True
-
-        return (local_paths if changed else normalized), changed
-
-    async def _download_inbound_attachment(
-        self,
-        *,
-        usr_id: str,
-        attachment_group: str,
-        attachment: Any,
-    ) -> str | None:
-        filename_override: str | None = None
-        if isinstance(attachment, dict):
-            url = str(attachment.get("url") or "").strip()
-            filename_override = str(attachment.get("filename") or "").strip() or None
-        else:
-            url = str(attachment or "").strip()
-
-        if not url.startswith(("http://", "https://")):
-            return None
-
-        data, filename, _ = await self._download_attachment_bytes(
-            url, filename_override
-        )
-        if not data:
-            return None
-        return persist_attachment_bytes(
-            user_id=usr_id,
-            data=data,
-            filename=filename,
-            provider="qxt",
-            attachment_group=attachment_group,
-            frontend_id=self.frontend_id,
-        )
 
     async def _download_attachment_bytes(
         self,

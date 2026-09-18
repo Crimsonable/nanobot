@@ -1,46 +1,16 @@
-from __future__ import annotations
-
-from pathlib import Path
-
-from container_up import attachments
-from container_up import attachment_paths
+from container_up.attachments import attachment_from_content_url
+from container_up.feishu_im_tool import FeishuIMParser
 
 
-def test_persist_attachment_bytes_returns_absolute_local_path(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(attachment_paths, "HOST_WORKSPACE_ROOT", tmp_path)
-    monkeypatch.setattr(attachment_paths, "CHILD_WORKSPACE_TARGET", "/app/nanobot_workspaces")
+def test_reference_from_content_url():
+    assert attachment_from_content_url("https://files.example/report.pdf", "https://files.example/") == {
+        "url": "https://files.example/report.pdf", "source": "content_url"}
 
-    saved = attachments.persist_attachment_bytes(
-        user_id="user-1",
-        data=b"hello",
-        filename="demo file.txt",
-        provider="feishu",
-        attachment_group="conv-1",
-        frontend_id="feishu-main",
-    )
 
-    path = Path(saved)
-    assert path.is_absolute()
-    assert str(path).startswith("/app/nanobot_workspaces/feishu-main/user-1/")
-    assert "feishu" in saved
-    assert "cache/attachments" in saved
-
-    host_workspace = attachment_paths.host_instance_workspace_path(
-        "user-1",
-        frontend_id="feishu-main",
-    )
-    host_file = (
-        tmp_path
-        / host_workspace.relative_to(tmp_path)
-        / "cache"
-        / "attachments"
-        / "feishu"
-        / attachment_paths.safe_instance_name("conv-1")
-        / path.name
-    )
-    assert host_file.is_file()
-    assert host_file.read_bytes() == b"hello"
-    assert "feishu" in saved
+def test_feishu_private_resource_remains_reference():
+    parser = FeishuIMParser(frontend_config={"app_id": "test", "app_secret": "test"})
+    ref = parser._resource_reference(user_id="alice", attachment_group="chat", message_id="message",
+        file_key="file", resource_type="file", fallback_filename="report.pdf")
+    assert ref["url"].endswith("/messages/message/resources/file?type=file")
+    assert ref["filename"] == "report.pdf"
+    assert ref["requires_auth"] is True

@@ -9,12 +9,10 @@ build/
 .env
 .assets
 node_modules/
-bridge/dist/
 workspace/
 *.tar
 .venv/
 .opencode-reference/
-.runtime-test/
 tests/
 !vendor/plugin/node_modules/
 !vendor/plugin/node_modules/**

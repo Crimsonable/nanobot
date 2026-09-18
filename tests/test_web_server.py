@@ -33,7 +33,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
             captured["json"] = json
             return _FakeResponse()
 
-    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up.nanobot:8080")
+    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
 
     with TestClient(app) as client:
@@ -52,7 +52,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "instance_id": "u-1"}
-    assert captured["url"] == "http://container-up.nanobot:8080/inbound/web-main"
+    assert captured["url"] == "http://container-up:8000/inbound/web-main"
     assert captured["json"] == {
         "user_id": "u-1",
         "chat_id": "chat-1",
@@ -64,7 +64,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
 
 
 def test_web_server_inbound_propagates_http_error(monkeypatch) -> None:
-    request = httpx.Request("POST", "http://container-up.nanobot:8080/inbound/web-main")
+    request = httpx.Request("POST", "http://container-up:8000/inbound/web-main")
     response = httpx.Response(503, request=request, text="backend unavailable")
 
     class _FakeAsyncClient:
@@ -80,7 +80,7 @@ def test_web_server_inbound_propagates_http_error(monkeypatch) -> None:
         async def post(self, url: str, json: dict[str, object]):
             raise httpx.HTTPStatusError("failed", request=request, response=response)
 
-    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up.nanobot:8080")
+    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
 
     with TestClient(app) as client:
@@ -122,7 +122,7 @@ def test_web_server_create_instances_for_test(monkeypatch) -> None:
             captured_posts.append({"url": url, "json": json})
             return _FakeResponse({"status": "accepted", "instance_id": json["user_id"]})
 
-    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up.nanobot:8080")
+    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
 
     with TestClient(app) as client:
@@ -142,7 +142,7 @@ def test_web_server_create_instances_for_test(monkeypatch) -> None:
     assert len(body["responses"]) == 3
     assert len(captured_posts) == 3
     assert {item["url"] for item in captured_posts} == {
-        "http://container-up.nanobot:8080/inbound/web-main"
+        "http://container-up:8000/inbound/web-main"
     }
 
     expected_user_ids = [item["user_id"] for item in body["requests"]]
@@ -195,7 +195,7 @@ def test_web_server_create_instances_for_test_partial_failure(monkeypatch) -> No
                 )
             return _FakeResponse({"status": "accepted", "instance_id": user_id})
 
-    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up.nanobot:8080")
+    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
 
     with TestClient(app) as client:

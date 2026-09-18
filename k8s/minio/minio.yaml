@@ -56,7 +56,7 @@ spec:
         app: minio
     spec:
       nodeSelector:
-        nanobot.io/minio-node: "true"
+        opencode-sv.io/minio-node: "true"
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       containers:

@@ -8,7 +8,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from websockets.asyncio.client import connect
 
-from agent_backend.config import RuntimeConfig, secret
+from agent_backend.config import RuntimeConfig
 from agent_backend.wire import Peer
 from bucket_runtime.runtime import Runtime
 from bucket_runtime.sandbox_executor import SandboxExecutor
@@ -38,6 +38,7 @@ def rpc_app(runtime: Runtime, token: str) -> FastAPI:
     async def authorize(request: Request):
         body = await request.json()
         try:
+            await runtime.bind_tool_session(body["session_id"])
             return runtime.authorize(body["session_id"], body["call_id"], body["tool"], body["args"])
         except (PermissionError, ValueError) as exc:
             raise HTTPException(403, str(exc)) from exc
@@ -90,7 +91,6 @@ async def serve(config: RuntimeConfig) -> None:
         while not runtime.draining:
             try:
                 async with connect(config.control_url, additional_headers={
-                    "Authorization": "Bearer " + secret(config.credential_file),
                     "X-Bucket-ID": config.bucket_id}, max_size=1024 * 1024,
                     ping_interval=20, ping_timeout=20, proxy=None) as socket:
                     peer = Peer(socket, runtime.db, config.bucket_id, runtime.on_command, runtime.rpc)
@@ -111,7 +111,10 @@ async def serve(config: RuntimeConfig) -> None:
             if any(t.done() for t in tasks):
                 raise RuntimeError("runtime listener failed")
             await asyncio.sleep(0.05)
-        await executor.probe(config.state_root / "sandbox-probe")
+        if (runtime.permissions.defaults.sandbox.enabled or any(
+                runtime.permissions.for_user(u.frontend_id, u.user_id).sandbox.enabled
+                for u in runtime.permissions.users)):
+            await executor.probe(config.state_root / "sandbox-probe")
         await supervisor.start()
         # Force trusted instance initialization and therefore plugin loading before readiness.
         response = await supervisor.client.http.get("/config")

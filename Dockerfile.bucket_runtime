@@ -24,4 +24,4 @@ RUN mkdir -p /opt/runtime-context /opt/public /data /run/secrets \
     && useradd --uid 10001 --create-home agent && chown agent:agent /data
 USER 10001:10001
 EXPOSE 8090
-CMD ["python", "-m", "agent_backend", "runtime", "--config", "/etc/agent/bucket-runtime.yaml"]
+CMD ["python", "-m", "agent_backend", "runtime", "--config", "/mnt/common/frontend.json"]

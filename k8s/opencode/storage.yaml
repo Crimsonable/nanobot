@@ -1,0 +1,222 @@
+# Original data/source/common server paths are retained to reuse existing files.
+# Change storage_backend below to nfs before FIRST binding; set NFS server/exports as needed.
+# SQLite/OpenCode state stays on the dedicated local PV even when user data uses NFS.
+apiVersion: v1
+kind: List
+metadata:
+  annotations:
+    opencode.io/storage-backend: &storage_backend local
+items:
+- apiVersion: v1
+  kind: Namespace
+  metadata:
+    name: opencode-sv
+- apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: opencode-data-pv-local
+    labels:
+      opencode.io/storage-backend: local
+      opencode.io/volume: data
+  spec:
+    storageClassName: ''
+    capacity:
+      storage: 1Ti
+    accessModes:
+    - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    hostPath:
+      path: /data/nanobot_backend_k8s/data
+      type: Directory
+    nodeAffinity:
+      required:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: opencode-runtime
+            operator: In
+            values:
+            - 'true'
+- apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: opencode-source-pv-local
+    labels:
+      opencode.io/storage-backend: local
+      opencode.io/volume: source
+  spec:
+    storageClassName: ''
+    capacity:
+      storage: 20Gi
+    accessModes:
+    - ReadOnlyMany
+    persistentVolumeReclaimPolicy: Retain
+    hostPath:
+      path: /data/nanobot_backend_k8s/source
+      type: Directory
+    nodeAffinity:
+      required:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: opencode-runtime
+            operator: In
+            values:
+            - 'true'
+- apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: opencode-common-pv-local
+    labels:
+      opencode.io/storage-backend: local
+      opencode.io/volume: common
+  spec:
+    storageClassName: ''
+    capacity:
+      storage: 20Gi
+    accessModes:
+    - ReadOnlyMany
+    persistentVolumeReclaimPolicy: Retain
+    hostPath:
+      path: /data/nanobot_backend_k8s/common
+      type: Directory
+    nodeAffinity:
+      required:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: opencode-runtime
+            operator: In
+            values:
+            - 'true'
+- apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: opencode-data-pv-nfs
+    labels:
+      opencode.io/storage-backend: nfs
+      opencode.io/volume: data
+  spec:
+    storageClassName: ''
+    capacity:
+      storage: 1Ti
+    accessModes:
+    - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    nfs:
+      server: 192.168.48.104
+      path: /data/nanobot_backend_k8s/data
+- apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: opencode-source-pv-nfs
+    labels:
+      opencode.io/storage-backend: nfs
+      opencode.io/volume: source
+  spec:
+    storageClassName: ''
+    capacity:
+      storage: 20Gi
+    accessModes:
+    - ReadOnlyMany
+    persistentVolumeReclaimPolicy: Retain
+    nfs:
+      server: 192.168.48.104
+      path: /data/nanobot_backend_k8s/source
+- apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: opencode-common-pv-nfs
+    labels:
+      opencode.io/storage-backend: nfs
+      opencode.io/volume: common
+  spec:
+    storageClassName: ''
+    capacity:
+      storage: 20Gi
+    accessModes:
+    - ReadOnlyMany
+    persistentVolumeReclaimPolicy: Retain
+    nfs:
+      server: 192.168.48.104
+      path: /data/nanobot_backend_k8s/common
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: opencode-data-pvc
+    namespace: opencode-sv
+  spec:
+    storageClassName: ''
+    accessModes:
+    - ReadWriteMany
+    resources:
+      requests:
+        storage: 1Ti
+    selector:
+      matchLabels:
+        opencode.io/storage-backend: *storage_backend
+        opencode.io/volume: data
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: opencode-source-pvc
+    namespace: opencode-sv
+  spec:
+    storageClassName: ''
+    accessModes:
+    - ReadOnlyMany
+    resources:
+      requests:
+        storage: 20Gi
+    selector:
+      matchLabels:
+        opencode.io/storage-backend: *storage_backend
+        opencode.io/volume: source
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: opencode-common-pvc
+    namespace: opencode-sv
+  spec:
+    storageClassName: ''
+    accessModes:
+    - ReadOnlyMany
+    resources:
+      requests:
+        storage: 20Gi
+    selector:
+      matchLabels:
+        opencode.io/storage-backend: *storage_backend
+        opencode.io/volume: common
+- apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: opencode-state-pv-local
+  spec:
+    storageClassName: ''
+    capacity:
+      storage: 30Gi
+    accessModes:
+    - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    hostPath:
+      path: /data/opencode_backend_k8s/state
+      type: Directory
+    nodeAffinity:
+      required:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: opencode-runtime
+            operator: In
+            values:
+            - 'true'
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: opencode-state-pvc
+    namespace: opencode-sv
+  spec:
+    storageClassName: ''
+    accessModes:
+    - ReadWriteMany
+    volumeName: opencode-state-pv-local
+    resources:
+      requests:
+        storage: 30Gi

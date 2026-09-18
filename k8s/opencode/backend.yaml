@@ -1,135 +1,160 @@
-# Create agent-config, agent-secrets and public-skills separately; never commit credentials.
-# One control replica: its SQLite database has one writer.
+# Copy frontend.json to the common volume before starting CU.
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: ServiceAccount
 metadata:
-  name: agent-control-data
-spec:
-  accessModes: [ReadWriteOnce]
+  name: container-up
+  namespace: opencode-sv
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: container-up-buckets
+  namespace: opencode-sv
+rules:
+- apiGroups:
+  - apps
   resources:
-    requests:
-      storage: 10Gi
+  - deployments
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - deployments/scale
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: container-up-buckets
+  namespace: opencode-sv
+subjects:
+- kind: ServiceAccount
+  name: container-up
+  namespace: opencode-sv
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: container-up-buckets
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: container-up
+  namespace: opencode-sv
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
-    matchLabels: {app: container-up}
+    matchLabels:
+      app: container-up
   template:
     metadata:
-      labels: {app: container-up}
+      labels:
+        app: container-up
     spec:
-      automountServiceAccountToken: false
-      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
       containers:
-        - name: control
-          image: agent-container-up:opencode-1.18.31
-          imagePullPolicy: IfNotPresent
-          ports: [{containerPort: 8000}]
-          readinessProbe:
-            httpGet: {path: /health/ready, port: 8000}
-          livenessProbe:
-            httpGet: {path: /health/live, port: 8000}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
-          volumeMounts:
-            - {name: config, mountPath: /etc/agent, readOnly: true}
-            - {name: secrets, mountPath: /run/secrets, readOnly: true}
-            - {name: data, mountPath: /data}
-            - {name: tmp, mountPath: /tmp}
-      volumes:
+      - name: control
+        args:
+        - python
+        - -m
+        - agent_backend
+        - control
+        - --config
+        - /mnt/common/frontend.json
+        image: agent-container-up:opencode-1.18.31
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8000
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
         - name: config
-          configMap: {name: agent-config}
+          mountPath: /etc/agent
+          readOnly: true
         - name: secrets
-          secret: {secretName: agent-control-secrets}
+          mountPath: /run/secrets
+          readOnly: true
         - name: data
-          persistentVolumeClaim: {claimName: agent-control-data}
+          mountPath: /data
         - name: tmp
-          emptyDir: {sizeLimit: 1Gi}
+          mountPath: /tmp
+        - name: workspace
+          mountPath: /mnt/env
+          readOnly: false
+        - name: source
+          mountPath: /mnt/source
+          readOnly: true
+        - name: common
+          mountPath: /mnt/common
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: agent-config
+      - name: secrets
+        secret:
+          secretName: agent-control-secrets
+      - name: data
+        persistentVolumeClaim:
+          claimName: opencode-state-pvc
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: opencode-data-pvc
+          readOnly: false
+      - name: source
+        persistentVolumeClaim:
+          claimName: opencode-source-pvc
+          readOnly: true
+      - name: common
+        persistentVolumeClaim:
+          claimName: opencode-common-pvc
+          readOnly: true
+      serviceAccountName: container-up
+      nodeSelector:
+        opencode-runtime: 'true'
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: container-up
+  namespace: opencode-sv
 spec:
-  selector: {app: container-up}
-  ports: [{port: 8000, targetPort: 8000}]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: bucket
-spec:
-  clusterIP: None
-  selector: {app: bucket-runtime}
-  ports: [{port: 8090, targetPort: 8090}]
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: bucket
-spec:
-  serviceName: bucket
-  replicas: 1
   selector:
-    matchLabels: {app: bucket-runtime}
-  template:
-    metadata:
-      labels: {app: bucket-runtime}
-    spec:
-      automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 45
-      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
-      containers:
-        - name: runtime
-          image: agent-bucket-runtime:opencode-1.18.31
-          imagePullPolicy: IfNotPresent
-          ports: [{containerPort: 8090}]
-          resources:
-            requests: {cpu: "1", memory: 1Gi}
-            limits: {cpu: "4", memory: 4Gi}
-          startupProbe:
-            httpGet: {path: /health/ready, port: 8090}
-            failureThreshold: 30
-            periodSeconds: 5
-          readinessProbe:
-            httpGet: {path: /health/ready, port: 8090}
-          livenessProbe:
-            httpGet: {path: /health/live, port: 8090}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
-            # Node policy must permit unprivileged user namespaces. Use a reviewed
-            # local seccomp/AppArmor profile permitting bwrap; do not use privileged mode.
-            seccompProfile: {type: RuntimeDefault}
-          volumeMounts:
-            - {name: config, mountPath: /etc/agent, readOnly: true}
-            - {name: secrets, mountPath: /run/secrets, readOnly: true}
-            - {name: data, mountPath: /data}
-            - {name: public, mountPath: /opt/public, readOnly: true}
-            - {name: tmp, mountPath: /tmp}
-      volumes:
-        - name: config
-          configMap: {name: agent-config}
-        - name: secrets
-          secret: {secretName: agent-bucket-0-secrets}
-        - name: public
-          persistentVolumeClaim: {claimName: public-skills}
-        - name: tmp
-          emptyDir: {sizeLimit: 1Gi}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: [ReadWriteOnce]
-        resources:
-          requests:
-            storage: 30Gi
+    app: container-up
+  ports:
+  - port: 8000
+    targetPort: 8000
+    nodePort: 30080
+  type: NodePort

@@ -25,9 +25,7 @@ from agent_backend.models import (
     digest,
     uid,
 )
-from agent_backend.transfers import Transfers, file_hash, send_file
 from agent_backend.wire import Peer
-from container_up.artifact_service import ArtifactService
 from container_up.channel_service import ChannelService
 
 log = logging.getLogger(__name__)
@@ -64,13 +62,15 @@ class ControlService:
     def __init__(self, config: ControlConfig, channels: ChannelService | None = None):
         self.config = config
         self.db = Journal(config.state_root / "control.sqlite", config.limits.outbox_messages)
-        self.artifacts = ArtifactService(config, self.db)
-        self.transfers = Transfers(config.state_root / "transfers", self.db,
-                                   config.limits.file_bytes, config.limits.spool_bytes)
         self.channels = channels or ChannelService(config)
         self.peers: dict[str, Peer] = {}
         self.sockets: dict[str, WebSocket] = {}
         self.delivery_task: asyncio.Task | None = None
+        self.user_locks: dict[str, asyncio.Lock] = {}
+        self.pool = None
+        if config.bucket_pool:
+            from container_up.bucket_scheduler import BucketScheduler
+            self.pool = BucketScheduler(self)
 
     def request(self, bucket_id: str, request_id: str) -> dict:
         row = self.db.get("request", request_id)
@@ -88,27 +88,30 @@ class ControlService:
         result = []
         for value in values:
             raw = {"url": value} if isinstance(value, str) else value
-            url = str(raw.get("url") or raw.get("path") or "")
-            filename = raw.get("filename") or Path(urlparse(url).path).name or "attachment.bin"
-            item = Attachment(url=url, filename=filename,
-                content_type=raw.get("content_type") or mimetypes.guess_type(filename)[0]
+            reference = str(raw.get("url") or raw.get("path") or "")
+            if not reference:
+                raise ValueError("attachment requires a URL or file path")
+            is_url = bool(urlparse(reference).scheme) and not (len(reference) > 1 and reference[1] == ":")
+            filename = raw.get("filename") or Path(urlparse(reference).path.replace("\\", "/")).name or "attachment.bin"
+            item = Attachment(url=reference if is_url else "", path="" if is_url else reference,
+                filename=filename, requires_auth=bool(raw.get("requires_auth", False)), content_type=raw.get("content_type") or mimetypes.guess_type(filename)[0]
                 or "application/octet-stream")
-            if urlparse(url).scheme not in {"http", "https"}:
-                cache = self.config.state_root.resolve() / "channel-cache" / digest(
-                    [identity.frontend_id, identity.user_id])
-                path = Path(url).resolve(strict=True)
-                if not trusted_channel or not path.is_relative_to(cache) or not path.is_file():
-                    raise ValueError("untrusted local attachment")
-                size = path.stat().st_size
-                if size > self.config.limits.file_bytes:
-                    raise ValueError("attachment exceeds limit")
-                item = item.model_copy(update={"size": size, "sha256": file_hash(path)})
-                item = await self.artifacts.upload(identity, item.attachment_id, path, item)
             result.append(item)
         return result
 
     async def submit(self, frontend_id: str, inbound: Inbound, sync: bool = False,
                      trusted_channel: bool = False) -> dict:
+        if not self.pool:
+            return await self._submit(frontend_id, inbound, sync, trusted_channel)
+        identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
+        async with self.user_locks.setdefault(identity.key, asyncio.Lock()):
+            if inbound.request_id and self.db.get("request", inbound.request_id):
+                return await self._submit(frontend_id, inbound, sync, trusted_channel)
+            async with self.pool.assignment(identity):
+                return await self._submit(frontend_id, inbound, sync, trusted_channel)
+
+    async def _submit(self, frontend_id: str, inbound: Inbound, sync: bool = False,
+                      trusted_channel: bool = False) -> dict:
         frontend = self.config.frontends[frontend_id]
         identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
         request_id = inbound.request_id or uid("req_")
@@ -139,6 +142,20 @@ class ControlService:
         submit = Submit(request_id=request_id, conversation_id=conversation_id,
                         identity=identity, profile_id=frontend.profile_id, content=inbound.content,
                         attachments=attachments, deadline_at=time.time() + self.config.limits.request_seconds)
+        if self.pool:
+            submit.session_epoch = binding["generation"]
+            history = [r for r in self.db.records("request") if r.get("result")
+                       and r["submit"]["conversation_id"] == conversation_id
+                       and r["submit"]["identity"] == identity.model_dump()]
+            submit.previous_turns = [{"user": r["submit"]["content"],
+                                      "input_attachments": r["submit"].get("attachments", []),
+                                      "assistant": r["result"]["content"],
+                                      "attachments": r["result"].get("attachments", [])}
+                                     for r in history[-32:]]
+            # Keep the metadata envelope bounded; full results remain queryable in CU's database.
+            import json
+            while submit.previous_turns and len(json.dumps(submit.previous_turns).encode()) > 128_000:
+                submit.previous_turns.pop(0)
         record = {"request_id": request_id, "hash": fingerprint, "bucket_id": binding["bucket_id"],
                   "chat_id": inbound.chat_id, "metadata": inbound.metadata, "sync": sync,
                   "submit": submit.model_dump(mode="json"), "status": "queued", "delivery": "pending"}
@@ -163,20 +180,17 @@ class ControlService:
             result = Result.model_validate(event.payload)
             if result.request_id != event.request_id or event.type != "request." + result.status:
                 raise ValueError("terminal identity mismatch")
-            identity = Identity.model_validate(row["submit"]["identity"])
             for item in result.attachments:
-                stored = self.db.get("artifact", item.attachment_id)
-                if not stored or stored["owner"] != identity.key:
-                    raise PermissionError("unregistered output attachment")
-                canonical = Attachment.model_validate(stored["attachment"])
-                if item.sha256 != canonical.sha256 or item.object_key != canonical.object_key:
-                    raise PermissionError("output attachment mismatch")
+                if urlparse(item.url).scheme not in {"http", "https"}:
+                    raise ValueError("published attachment must contain an object URL")
             if row.get("result"):
                 if row["result"] != result.model_dump(mode="json"):
                     raise ValueError("conflicting terminal result")
                 return
             self.db.put("request", event.request_id, {**row, "status": result.status,
                         "result": result.model_dump(mode="json")})
+            if self.pool:
+                self.pool.touch(bucket_id)
         elif event.type in {"request.accepted", "request.started", "request.recovering"}:
             if not row.get("result"):
                 self.db.put("request", event.request_id, {**row, "status": event.type.split(".")[1]})
@@ -186,58 +200,11 @@ class ControlService:
         elif event.type != "tool.progress":
             raise ValueError("unsupported bucket event")
 
-    async def rpc(self, bucket_id: str, method: str, args: dict, data: bytes | None) -> dict:
-        if method == "input.fetch":
-            row = self.request(bucket_id, args["request_id"])
-            submit = Submit.model_validate(row["submit"])
-            attachment = next((a for a in submit.attachments if a.attachment_id == args["attachment_id"]), None)
-            if attachment is None:
-                raise PermissionError("unknown inbound attachment")
-            attachment, path = await self.artifacts.download(submit.identity, attachment)
-            result = await send_file(self.peers[bucket_id], path, attachment, submit.request_id,
-                                      attachment.attachment_id, prefix="input")
-            path.unlink(missing_ok=True)
-            return result
-        if method == "attachment.begin":
-            row = self.request(bucket_id, args["request_id"])
-            if row.get("result"):
-                raise ValueError("request already finished")
-            if args["transfer_id"] != args["attachment"]["attachment_id"]:
-                raise ValueError("artifact ID must equal transfer ID")
-            existing = self.db.get("artifact", args["transfer_id"])
-            if existing:
-                transfer = self.transfers.record(bucket_id, args["transfer_id"])
-                if transfer["request_id"] != args["request_id"] or transfer["attachment"] != args["attachment"]:
-                    raise ValueError("transfer mismatch")
-                return {"result": existing["attachment"]}
-            return self.transfers.begin(bucket_id, args)
-        if method == "attachment.chunk":
-            transfer = self.transfers.record(bucket_id, args["transfer_id"])
-            if self.request(bucket_id, transfer["request_id"]).get("result"):
-                raise ValueError("request already finished")
-            return self.transfers.chunk(bucket_id, args, data)
-        if method == "attachment.commit":
-            transfer_id = args["transfer_id"]
-            lock = self.transfers.locks.setdefault(transfer_id, asyncio.Lock())
-            async with lock:
-                transfer = self.transfers.record(bucket_id, transfer_id)
-                row = self.request(bucket_id, transfer["request_id"])
-                existing = self.db.get("artifact", transfer_id)
-                if existing:
-                    return existing["attachment"]
-                transfer, path = self.transfers.verify(bucket_id, transfer_id)
-                result = await self.artifacts.upload(Identity.model_validate(row["submit"]["identity"]),
-                    transfer_id, path, Attachment.model_validate(transfer["attachment"]))
-                self.transfers.release(bucket_id, transfer_id)
-                return result.model_dump(mode="json")
-        raise ValueError("unsupported runtime RPC")
+    async def rpc(self, bucket_id: str, method: str, args: dict, data: bytes | None):
+        self.request(bucket_id, args.get("request_id", ""))
+        raise ValueError("file transfer RPC is not supported; pass attachment references")
 
     async def dispatch_channel(self, frontend_id: str, payload: dict) -> None:
-        parser = self.channels.parsers[frontend_id]
-        # QXT URLs go through ArtifactService's address/size guards during input.fetch.
-        # Its legacy preparation helper downloads arbitrary URLs before those guards.
-        if self.config.frontends[frontend_id].provider != "qxt" and hasattr(parser, "prepare_inbound_event"):
-            payload = await parser.prepare_inbound_event(payload)
         event = payload["event"]
         await self.submit(frontend_id, Inbound(user_id=event["usr_id"],
             chat_id=event.get("chat_id") or "default", content=event.get("content") or "",
@@ -261,9 +228,6 @@ class ControlService:
                     continue
                 self.db.put("request", row["request_id"], {**row, "delivery": "sending"})
                 try:
-                    for item in result.attachments:
-                        if item.object_key:
-                            item.url = await asyncio.to_thread(self.artifacts.url, item.object_key)
                     await self.channels.deliver(row, result)
                     status = "sent"
                 except Exception:
@@ -281,9 +245,13 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     async def lifespan(app: FastAPI):
         await service.channels.start(service.dispatch_channel)
         service.delivery_task = asyncio.create_task(service.deliveries())
+        if service.pool:
+            service.pool.task = asyncio.create_task(service.pool.run())
         try:
             yield
         finally:
+            if service.pool:
+                await service.pool.stop()
             service.delivery_task.cancel()
             await asyncio.gather(service.delivery_task, return_exceptions=True)
             for socket in list(service.sockets.values()):
@@ -315,9 +283,11 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     @app.websocket("/internal/buckets/ws")
     async def bucket_socket(socket: WebSocket):
         bucket_id = socket.headers.get("x-bucket-id", "")
-        credential = config.bucket_credentials.get(bucket_id)
-        if not credential or not secrets.compare_digest(socket.headers.get("authorization", ""),
-                                                        "Bearer " + secret(credential)):
+        registered = bucket_id in config.bucket_ids
+        if service.pool:
+            bucket = service.db.get("bucket", bucket_id)
+            registered = bool(bucket and bucket["status"] in {"creating", "running"})
+        if not registered:
             await socket.close(code=1008)
             return
         await socket.accept()
@@ -350,14 +320,6 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     async def response(row: dict) -> dict:
         identity = row["submit"]["identity"]
         result = dict(row.get("result") or {})
-        if result.get("attachments"):
-            attachments = []
-            for item in result["attachments"]:
-                item = dict(item)
-                if item.get("object_key"):
-                    item["url"] = await asyncio.to_thread(service.artifacts.url, item["object_key"])
-                attachments.append(item)
-            result["attachments"] = attachments
         return {"request_id": row["request_id"], "status": row["status"], **identity,
                 "chat_id": row["chat_id"], "bucket_id": row["bucket_id"],
                 "instance_id": Identity.model_validate(identity).key,
@@ -434,42 +396,14 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
 
     @app.post("/internal/attachments/upload")
     async def upload_attachment(request: Request):
-        content_type = request.headers.get("content-type", "")
-        if content_type.startswith("application/json"):
-            body = await request.json()
-            service.authenticate(body["frontend_id"], request.headers.get("authorization"))
-            url = body.get("attachment_url") or body.get("url") or ""
-            parsed = urlparse(url)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                raise HTTPException(400, "attachment_url must be HTTP(S)")
-            name = Path(parsed.path).name or "attachment.bin"
-            return Attachment(url=url, filename=name, content_type=mimetypes.guess_type(name)[0]
-                              or "application/octet-stream").model_dump(mode="json")
-        if not content_type.startswith("multipart/form-data"):
-            raise HTTPException(400, "expected multipart file or JSON attachment_url")
-        form = await request.form(max_files=1, max_fields=4)
-        frontend_id = str(form.get("frontend_id") or "")
-        service.authenticate(frontend_id, request.headers.get("authorization"))
-        identity = Identity(frontend_id=frontend_id, user_id=str(form.get("user_id") or ""))
-        upload = form.get("file")
-        if not hasattr(upload, "read"):
-            raise HTTPException(400, "file is required")
-        attachment_id = uid("att_")
-        path = service.artifacts.root / attachment_id
-        size = 0
-        try:
-            with path.open("wb") as target:
-                while chunk := await upload.read(256 * 1024):
-                    size += len(chunk)
-                    if size > config.limits.file_bytes:
-                        raise HTTPException(413, "file too large")
-                    target.write(chunk)
-            attachment = Attachment(attachment_id=attachment_id, filename=upload.filename or "attachment.bin",
-                content_type=upload.content_type or "application/octet-stream", size=size, sha256=file_hash(path))
-            result = await service.artifacts.upload(identity, attachment_id, path, attachment)
-            return result.model_dump(mode="json")
-        finally:
-            path.unlink(missing_ok=True)
-            await upload.close()
+        if not request.headers.get("content-type", "").startswith("application/json"):
+            raise HTTPException(400, "send a JSON attachment URL or path; file uploads are handled by publish_attachment")
+        body = await request.json()
+        service.authenticate(body["frontend_id"], request.headers.get("authorization"))
+        reference = {"url": body.get("attachment_url") or body.get("url"), "path": body.get("path"),
+                     "filename": body.get("filename"), "content_type": body.get("content_type")}
+        items = await service.normalize(Identity(frontend_id=body["frontend_id"],
+            user_id=str(body.get("user_id") or "reference")), [reference], False)
+        return items[0].model_dump(mode="json")
 
     return app

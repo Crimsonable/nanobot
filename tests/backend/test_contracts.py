@@ -1,12 +1,10 @@
 import asyncio
-import hashlib
 
 import pytest
 from pydantic import ValidationError
 
 from agent_backend.journal import Journal
 from agent_backend.models import Attachment, Envelope, Identity
-from agent_backend.transfers import Transfers
 from agent_backend.wire import Peer
 from bucket_runtime.opencode_client import final_message
 from bucket_runtime.sandbox_executor import contained
@@ -40,29 +38,6 @@ def test_journal_atomic_terminal_and_outbox(tmp_path):
     assert db.pending("bucket")
     db.ack("bucket", first.seq, first.event_id)
     assert not db.pending("bucket")
-    db.close()
-
-
-def test_transfers_resume_hash_owner_and_quota(tmp_path):
-    db = Journal(tmp_path / "state.db")
-    transfers = Transfers(tmp_path / "spool", db, 10, 10)
-    attachment = Attachment(filename="x", size=6, sha256=hashlib.sha256(b"abcdef").hexdigest())
-    args = {"transfer_id": "id", "request_id": "req", "attachment": attachment.model_dump()}
-    assert transfers.begin("a", args) == {"offset": 0}
-    transfers.chunk("a", {"transfer_id": "id", "offset": 0}, b"abc")
-    assert transfers.begin("a", args) == {"offset": 3}
-    with pytest.raises(ValueError):
-        transfers.begin("b", args)
-    with pytest.raises(PermissionError):
-        transfers.chunk("b", {"transfer_id": "id", "offset": 3}, b"def")
-    with pytest.raises(ValueError):
-        transfers.verify("a", "id")
-    with pytest.raises(RuntimeError):
-        transfers.begin("a", {**args, "transfer_id": "second"})
-    transfers.chunk("a", {"transfer_id": "id", "offset": 3}, b"def")
-    assert transfers.verify("a", "id")[1].read_bytes() == b"abcdef"
-    transfers.release("a", "id")
-    assert not transfers.path("id").exists()
     db.close()
 
 

@@ -26,10 +26,12 @@ test("hook replaces commands and publication tickets using trusted runtime ident
     await hooks["tool.execute.before"]({ tool: "publish_attachment", sessionID: "session-a", callID: "call-b" }, publish)
     assert.equal(publish.args._runtime_ticket, "trusted-ticket")
     assert.equal(calls[2].body.args._runtime_ticket, undefined)
-    const permission = { status: "allow" }
-    await hooks["permission.ask"]({}, permission)
-    assert.equal(permission.status, "deny")
-    await assert.rejects(() => hooks["command.execute.before"](), /disabled/)
+    const native = { args: { filePath: "/workspace/file.txt" } }
+    await hooks["tool.execute.before"]({ tool: "read", sessionID: "session-a", callID: "call-c" }, native)
+    assert.deepEqual(native.args, { filePath: "/workspace/file.txt" })
+    assert.equal(calls.length, 4)
+    assert.equal(hooks["permission.ask"], undefined)
+    assert.equal(hooks["command.execute.before"], undefined)
   } finally {
     globalThis.fetch = savedFetch
     for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key]

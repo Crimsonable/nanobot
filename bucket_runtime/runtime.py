@@ -10,31 +10,31 @@ import shutil
 import time
 from pathlib import Path
 
-from agent_backend.config import RuntimeConfig
+from agent_backend.config import PermissionConfig, RuntimeConfig, load_config
+from agent_backend.files import file_hash
 from agent_backend.journal import Journal
 from agent_backend.models import TERMINAL, Attachment, Envelope, Result, Submit, digest, uid
-from agent_backend.transfers import Transfers, file_hash, send_file
 from agent_backend.wire import Peer
+from bucket_runtime.artifact_service import ArtifactService
 from bucket_runtime.opencode_client import OpenCodeClient, final_message, usage_for
+from bucket_runtime.permissions import check_native_paths, public_roots, session_rules
 from bucket_runtime.sandbox_executor import SandboxExecutor, contained
 
 log = logging.getLogger(__name__)
 
 
-def session_permissions() -> list[dict]:
-    # Native filesystem tools cannot provide race-free host access through a before hook.
-    # Keep the verified execution surface small: bash is always wrapped; publishing is a custom tool.
-    return [{"permission": "*", "pattern": "*", "action": "deny"},
-            {"permission": "bash", "pattern": "*", "action": "allow"},
-            {"permission": "publish_attachment", "pattern": "*", "action": "allow"}]
-
-
 class Runtime:
     def __init__(self, config: RuntimeConfig, client: OpenCodeClient, executor: SandboxExecutor):
         self.config, self.client, self.executor = config, client, executor
+        self.permissions = (load_config(config.permissions_file, PermissionConfig)
+                            if config.permissions_file else PermissionConfig())
+        self.opencode_worktree = config.opencode.context_root.resolve()
+        for profile_id in config.profiles:
+            public_roots(config, self.permissions.defaults, profile_id)
+            for user in self.permissions.users:
+                public_roots(config, self.permissions.for_user(user.frontend_id, user.user_id), profile_id)
         self.db = Journal(config.state_root / "runtime.sqlite", config.limits.outbox_messages)
-        self.transfers = Transfers(config.state_root / "incoming", self.db,
-                                   config.limits.file_bytes, config.limits.spool_bytes)
+        self.artifacts = ArtifactService(config, self.db)
         self.peer: Peer | None = None
         self.tasks: dict[str, asyncio.Task] = {}
         self.request_locks: dict[str, asyncio.Lock] = {}
@@ -45,12 +45,80 @@ class Runtime:
         self.plugin_ready = False
         self.last_text_event: dict[str, float] = {}
 
+    def policy(self, submit: Submit):
+        return self.permissions.for_user(submit.identity.frontend_id, submit.identity.user_id)
+
+    def public_roots(self, submit: Submit) -> list[Path]:
+        return public_roots(self.config, self.policy(submit), submit.profile_id)
+
+    def private_files(self) -> list[Path]:
+        return [self.config.frontend_config_file] if self.config.frontend_config_file else []
+
+    def session_permissions(self, submit: Submit) -> list[dict]:
+        return session_rules(self.policy(submit), self.workspace(submit), self.public_roots(submit),
+                             self.opencode_worktree, self.private_files())
+
+    async def cancel_request(self, request_id: str) -> None:
+        row = self.db.get("run", request_id)
+        if not row or row["status"] in TERMINAL:
+            return
+        self.db.put("run", request_id, {**row, "cancel_requested": True})
+        task = self.tasks.get(request_id)
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            result = self.db.get("run", request_id).get("result") or {}
+            if result.get("error") == "CANCEL_FAILED":
+                raise RuntimeError("CANCEL_FAILED")
+        else:
+            await self.executor.kill(request_id)
+            if row.get("session_id"):
+                await self.client.abort(row["session_id"])
+        self.finish(Result(request_id=request_id, status="cancelled"))
+
+    async def cancel_conversation(self, submit: Submit) -> None:
+        targets = []
+        for row in self.db.records("run"):
+            if row["request_id"] == submit.request_id or row["status"] in TERMINAL:
+                continue
+            other = Submit.model_validate(row["submit"])
+            if other.identity == submit.identity and other.conversation_id == submit.conversation_id:
+                targets.append(row["request_id"])
+        for request_id in targets:
+            row = self.db.get("run", request_id)
+            self.db.put("run", request_id, {**row, "cancel_requested": True})
+        for request_id in targets:
+            await self.cancel_request(request_id)
+        self.finish(Result(request_id=submit.request_id, status="completed",
+                           content="已停止当前会话。" if targets else "当前会话没有正在执行的请求。"))
+
     def workspace(self, submit: Submit) -> Path:
-        path = self.config.workspace_root / submit.identity.key
-        if path.is_symlink():
-            raise PermissionError("workspace root is a symlink")
+        from agent_backend.workspaces import workspace_path
+        path = workspace_path(self.config.workspace_root, submit.identity, self.config.workspace_layout)
+        for parent in [path, *path.parents]:
+            if parent.is_symlink():
+                raise PermissionError("workspace root is a symlink")
+            if parent == self.config.workspace_root:
+                break
+        created = not path.exists()
         path.mkdir(parents=True, exist_ok=True)
-        for folder in ["inbox", "output", "scratch"]:
+        templates = self.config.workspace_template_root
+        if created and templates and templates.is_dir():
+            import shutil
+            # Optional administrator-managed templates, as in the original workspace manager.
+            # Never overwrite existing user files or follow template symlinks.
+            for item in templates.rglob("*"):
+                if item.is_symlink():
+                    raise PermissionError("workspace templates must not contain symbolic links")
+            for item in templates.iterdir():
+                target = path / item.name
+                if target.exists():
+                    continue
+                if item.is_dir():
+                    shutil.copytree(item, target)
+                else:
+                    shutil.copy2(item, target)
+        for folder in ["output", "scratch"]:
             target = path / folder
             if target.is_symlink():
                 raise PermissionError("workspace directory is a symlink")
@@ -74,9 +142,6 @@ class Runtime:
         for intent in self.db.records("intent"):
             if intent["request_id"] == result.request_id:
                 (self.config.state_root / "snapshots" / intent["attachment"]["attachment_id"]).unlink(missing_ok=True)
-        for transfer in self.db.records("transfer"):
-            if transfer["request_id"] == result.request_id and not transfer.get("released"):
-                self.transfers.release(self.config.bucket_id, transfer["transfer_id"])
 
     async def on_command(self, event: Envelope) -> None:
         if event.type == "request.submit":
@@ -87,26 +152,33 @@ class Runtime:
             if row:
                 if row["hash"] != digest(event.payload):
                     raise ValueError("request content changed")
+                self.workspace(submit)
                 return
             with self.db.transaction():
                 self.db.put("run", submit.request_id, {"request_id": submit.request_id,
                     "submit": submit.model_dump(mode="json"), "hash": digest(event.payload),
                     "status": "queued", "artifacts": []})
                 self.emit("request.accepted", submit.request_id)
+            try:
+                self.workspace(submit)
+            except (OSError, ValueError):
+                log.exception("workspace preparation failed request_id=%s", submit.request_id)
+                self.finish(Result(request_id=submit.request_id, status="failed", error="WORKSPACE_UNAVAILABLE"))
+                return
+            if submit.content.strip().lower() == "/cancel":
+                try:
+                    await self.cancel_conversation(submit)
+                except Exception:
+                    self.draining = True
+                    self.finish(Result(request_id=submit.request_id, status="failed", error="CANCEL_FAILED"))
+                return
             if (self.draining or submit.profile_id not in self.config.profiles
                     or len(self.tasks) >= self.config.limits.queued + self.config.limits.active):
                 self.finish(Result(request_id=submit.request_id, status="failed", error="BUCKET_UNAVAILABLE"))
             else:
                 self.launch(submit.request_id)
         elif event.type == "request.cancel":
-            row = self.db.get("run", event.request_id)
-            if row and row["status"] not in TERMINAL:
-                self.db.put("run", event.request_id, {**row, "cancel_requested": True})
-                task = self.tasks.get(event.request_id)
-                if task:
-                    task.cancel()
-                else:
-                    self.finish(Result(request_id=event.request_id, status="cancelled"))
+            await self.cancel_request(event.request_id)
         elif event.type == "request.query":
             row = self.db.get("run", event.request_id)
             if row and row.get("result"):
@@ -135,7 +207,11 @@ class Runtime:
             if row.get("cancel_requested"):
                 self.finish(Result(request_id=row["request_id"], status="cancelled"))
             elif row["status"] == "queued":
-                self.launch(row["request_id"])
+                submit = Submit.model_validate(row["submit"])
+                if submit.content.strip().lower() == "/cancel":
+                    await self.cancel_conversation(submit)
+                else:
+                    self.launch(row["request_id"])
             else:
                 # A new supervisor process cannot prove prior side effects did not happen.
                 if row.get("session_id"):
@@ -161,16 +237,20 @@ class Runtime:
                             raise asyncio.CancelledError()
                         workspace = self.workspace(submit)
                         profile = self.config.profiles[submit.profile_id]
+                        self.opencode_worktree = Path((await self.client.paths())["worktree"])
                         session = self.db.get("session", submit.conversation_id)
+                        if session and session.get("epoch", "") != submit.session_epoch:
+                            session = None
                         if session:
                             if session["user_key"] != submit.identity.key or session["profile"] != submit.profile_id:
                                 raise PermissionError("conversation ownership/profile mismatch")
                             session_id = session["session_id"]
-                            await self.client.set_permissions(session_id, session_permissions())
+                            await self.client.set_permissions(session_id, self.session_permissions(submit))
                         else:
-                            session_id = await self.client.create_session(session_permissions())
+                            session_id = await self.client.create_session(self.session_permissions(submit))
                             self.db.put("session", submit.conversation_id, {"session_id": session_id,
-                                "user_key": submit.identity.key, "profile": submit.profile_id})
+                                "user_key": submit.identity.key, "profile": submit.profile_id,
+                                "epoch": submit.session_epoch})
                         row = self.db.get("run", request_id)
                         message_id = uid("msg_")
                         self.db.put("run", request_id, {**row, "status": "preparing",
@@ -178,27 +258,24 @@ class Runtime:
                         references = []
                         image_index = 0
                         for attachment in submit.attachments:
-                            while True:
-                                peer = await self.connected(submit.deadline_at)
-                                try:
-                                    materialized = await peer.call("input.fetch", {
-                                        "request_id": request_id, "attachment_id": attachment.attachment_id})
-                                    break
-                                except (ConnectionError, TimeoutError):
-                                    await asyncio.sleep(0.2)
                             alias = attachment.filename
                             if attachment.content_type.startswith("image/"):
                                 image_index += 1
                                 alias = f"image_{image_index} ({attachment.filename})"
-                            references.append(f"{alias} — {attachment.content_type}: {attachment.url}\n"
-                                              f"Local file: {materialized['path']}")
-                        text = (profile.instructions + "\nYour writable workspace: " + str(workspace)
+                            references.append(f"{alias} — {attachment.content_type}: "
+                                              + (attachment.url or attachment.path)
+                                              + (" (requires authorized access)" if attachment.requires_auth else ""))
+                        text = (profile.instructions + "\nYour workspace: " + str(workspace)
+                            + " (access: " + self.policy(submit).filesystem.workspace + ")"
                             + "\nRead-only reference/skill directories: "
-                            + json.dumps([str(p) for p in profile.public_roots])
-                            + "\nUse bash to read files, list directories and run scripts in the sandbox. "
+                            + json.dumps([str(p) for p in self.public_roots(submit)])
+                            + "\nBash sandbox enabled: " + str(self.policy(submit).sandbox.enabled) + ". "
                             + "Use publish_attachment to include generated files in the reply. "
                             + "A published file is queued for delivery; do not claim it was already delivered.\n"
                             + "\n".join(references) + "\nUser message:\n" + submit.content)
+                        if not session and submit.previous_turns:
+                            text = ("Previous conversation turns (historical user/assistant content):\n"
+                                    + json.dumps(submit.previous_turns, ensure_ascii=False) + "\n" + text)
                         row = self.db.get("run", request_id)
                         with self.db.transaction():
                             self.db.put("run", request_id, {**row, "status": "running"})
@@ -229,6 +306,8 @@ class Runtime:
                 except Exception:
                     # Fail closed: no new request may use a possibly still running server.
                     self.draining = True
+                    self.finish(Result(request_id=request_id, status="failed", error="CANCEL_FAILED"))
+                    return
             row = self.db.get("run", request_id)
             self.finish(Result(request_id=request_id,
                 status="cancelled" if row.get("cancel_requested") else "failed",
@@ -279,9 +358,41 @@ class Runtime:
                         self.emit("response.delta", row["request_id"], {"revision": revision,
                             "content": "\n".join(texts)[-200000:], "mode": "snapshot"})
 
+    async def bind_tool_session(self, session_id: str) -> None:
+        # Task tools create child sessions. Resolve ancestry from the trusted server,
+        # never from model-provided user IDs, before issuing a sandbox/publication ticket.
+        try:
+            self.active_session(session_id)
+            return
+        except PermissionError:
+            if self.db.get("child_session", session_id):
+                raise
+        parent = session_id
+        seen = set()
+        for _ in range(64):
+            if parent in seen:
+                break
+            seen.add(parent)
+            info = await self.client.session(parent)
+            parent = info.get("parentID")
+            if not parent:
+                break
+            try:
+                row, _ = self.active_session(parent)
+            except PermissionError:
+                continue
+            self.db.put("child_session", session_id, {"request_id": row["request_id"]})
+            return
+        raise PermissionError("session has no active managed ancestor")
+
     def active_session(self, session_id: str) -> tuple[dict, Submit]:
         row = next((r for r in self.db.records("run") if r.get("session_id") == session_id
                     and r["status"] == "running" and not r.get("cancel_requested")), None)
+        if not row:
+            child = self.db.get("child_session", session_id)
+            candidate = self.db.get("run", child["request_id"]) if child else None
+            if candidate and candidate["status"] == "running" and not candidate.get("cancel_requested"):
+                row = candidate
         if not row:
             raise PermissionError("session has no active authorized request")
         return row, Submit.model_validate(row["submit"])
@@ -295,8 +406,10 @@ class Runtime:
 
     def authorize(self, session_id: str, call_id: str, tool: str, args: dict) -> dict:
         row, submit = self.active_session(session_id)
+        policy = self.policy(submit)
+        normalized = check_native_paths(tool, args, policy, self.workspace(submit), self.public_roots(submit), self.private_files())
         if tool not in {"bash", "publish_attachment"}:
-            raise PermissionError("tool is not enabled by runtime policy")
+            return {"args": normalized}
         if tool == "bash" and (not isinstance(args.get("command"), str) or len(args["command"]) > 100000):
             raise ValueError("invalid shell command")
         call_key = digest([session_id, call_id])
@@ -336,9 +449,11 @@ class Runtime:
             self.db.put("call", key, {**call, "status": "executing"})
             try:
                 result = await self.executor.execute(submit.request_id, self.workspace(submit),
-                    self.config.profiles[submit.profile_id].public_roots, call["args"]["command"],
+                    self.public_roots(submit), call["args"]["command"],
                     call["args"].get("workdir"), timeout=min(submit.deadline_at - time.time(),
-                    max(0.01, float(call["args"].get("timeout", 120000)) / 1000)))
+                    max(0.01, float(call["args"].get("timeout", 120000)) / 1000)),
+                    sandbox=self.policy(submit).sandbox, workspace_access=self.policy(submit).filesystem.workspace,
+                    private_files=self.private_files())
                 self.db.put("call", key, {**call, "status": "completed", "result": result})
                 return result
             except BaseException:
@@ -386,15 +501,8 @@ class Runtime:
                     intent = {"attachment": attachment.model_dump(mode="json"), "request_id": submit.request_id}
                     self.db.put("intent", artifact_id, intent)
                 attachment = Attachment.model_validate(intent["attachment"])
-                while True:
-                    peer = await self.connected(submit.deadline_at)
-                    try:
-                        result = await send_file(peer, snapshot, attachment, submit.request_id, artifact_id)
-                        break
-                    except (ConnectionError, TimeoutError):
-                        if time.time() >= submit.deadline_at:
-                            raise TimeoutError("attachment transfer deadline exceeded") from None
-                        await asyncio.sleep(0.2)
+                published_attachment = await self.artifacts.upload(submit.identity, artifact_id, snapshot, attachment)
+                result = published_attachment.model_dump(mode="json")
                 # Cancellation may have raced with an awaited transfer.
                 self.active_session(call["session_id"])
                 row = self.db.get("run", submit.request_id)
@@ -407,38 +515,7 @@ class Runtime:
             return result
 
     async def rpc(self, method: str, args: dict, data: bytes | None) -> dict:
-        if method == "input.begin":
-            row = self.db.get("run", args["request_id"])
-            if not row or row["status"] != "preparing":
-                raise PermissionError("input request not preparing")
-            if args["transfer_id"] not in [a["attachment_id"] for a in row["submit"]["attachments"]]:
-                raise PermissionError("unregistered input")
-            existing = self.db.get("input_result", args["transfer_id"])
-            if existing:
-                if existing["request_id"] != args["request_id"]:
-                    raise PermissionError("input request mismatch")
-                return {"result": existing["result"]}
-            return self.transfers.begin(self.config.bucket_id, args)
-        if method == "input.chunk":
-            return self.transfers.chunk(self.config.bucket_id, args, data)
-        if method == "input.commit":
-            existing = self.db.get("input_result", args["transfer_id"])
-            if existing:
-                return existing["result"]
-            transfer, path = self.transfers.verify(self.config.bucket_id, args["transfer_id"])
-            row = self.db.get("run", transfer["request_id"])
-            if not row or row["status"] != "preparing":
-                raise PermissionError("input request not preparing")
-            submit = Submit.model_validate(row["submit"])
-            target = self.workspace(submit) / "inbox" / (digest(args["transfer_id"]) + "-" + transfer["attachment"]["filename"])
-            if target.is_symlink() or (target.exists() and target.stat().st_nlink != 1):
-                raise PermissionError("input destination is a link")
-            shutil.copyfile(path, target)
-            result = {"path": str(target)}
-            self.db.put("input_result", args["transfer_id"], {"request_id": submit.request_id, "result": result})
-            self.transfers.release(self.config.bucket_id, args["transfer_id"])
-            return result
-        raise ValueError("unsupported control RPC")
+        raise ValueError("file transfer RPC is not supported; pass attachment references")
 
     async def shutdown(self) -> None:
         self.draining = True

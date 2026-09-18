@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 from agent_backend.config import RuntimeConfig
-from agent_backend.transfers import file_hash
 from bucket_runtime.opencode_client import OpenCodeClient
 
 
@@ -24,28 +23,18 @@ class Supervisor:
     async def start(self) -> None:
         config = self.config
         oc = config.opencode
-        if file_hash(oc.binary) != oc.sha256:
-            raise RuntimeError("OpenCode binary SHA256 mismatch")
         oc.context_root.mkdir(parents=True, exist_ok=True)
-        if any(oc.context_root.iterdir()):
-            raise RuntimeError("OpenCode context_root must be an empty trusted directory")
         if not oc.plugin_file.is_file():
             raise RuntimeError("bundled runtime plugin missing")
         raw = json.loads(oc.config_file.read_text(encoding="utf-8"))
-        # Providers/models are trusted operator configuration. Plugins and permissions are owned here.
-        if set(raw) - {"provider", "model", "small_model", "enabled_providers", "disabled_providers"}:
-            raise ValueError("OpenCode config may contain provider/model fields only")
-        for provider in raw.get("provider", {}).values():
-            if provider.get("npm") not in {None, "@ai-sdk/openai-compatible", "@ai-sdk/openai", "@ai-sdk/anthropic"}:
-                raise ValueError("provider requires an unbundled SDK; offline runtime installation is forbidden")
-        raw.update({"plugin": [oc.plugin_file.resolve().as_uri()], "permission": {"*": "deny"},
-                    "mcp": {}, "lsp": False, "formatter": False, "autoupdate": False,
-                    "share": "disabled", "snapshot": False,
-                    "compaction": {"auto": False, "prune": False}})
+        plugin = oc.plugin_file.resolve().as_uri()
+        plugins = raw.setdefault("plugin", [])
+        if plugin not in plugins:
+            plugins.append(plugin)
         home = config.state_root / "opencode-home"
         home.mkdir(parents=True, exist_ok=True)
         # v1.18.31 checks the global config's package lock even for a bundled local plugin.
-        # Seed the exact build-time dependencies so initialization never invokes npm download.
+        # Seed bundled plugin dependencies; other configured plugins use OpenCode loading.
         global_config = home / "config" / "opencode"
         global_config.mkdir(parents=True, exist_ok=True)
         for name in ["package.json", "package-lock.json"]:
@@ -61,12 +50,6 @@ class Supervisor:
                     "XDG_DATA_HOME": str(home / "data"), "XDG_CACHE_HOME": str(home / "cache"),
                     "XDG_STATE_HOME": str(home / "state"), "OPENCODE_CONFIG_CONTENT": json.dumps(raw),
                     "OPENCODE_SERVER_PASSWORD": self.password, "OPENCODE_SERVER_USERNAME": "opencode",
-                    "OPENCODE_DISABLE_PROJECT_CONFIG": "true", "OPENCODE_DISABLE_AUTOUPDATE": "true",
-                    "OPENCODE_DISABLE_MODELS_FETCH": "true", "OPENCODE_DISABLE_AUTOCOMPACT": "true",
-                    "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER": "true",
-                    "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true", "OPENCODE_DISABLE_EXTERNAL_SKILLS": "true",
-                    "OPENCODE_DISABLE_CLAUDE_CODE": "true", "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
-                    "OPENCODE_DISABLE_EMBEDDED_WEB_UI": "true",
                     "BUCKET_RPC_URL": f"http://127.0.0.1:{config.rpc_port}",
                     "BUCKET_RPC_TOKEN": self.rpc_token,
                     "BUCKET_EXEC_PYTHON": sys.executable,

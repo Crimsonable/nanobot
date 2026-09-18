@@ -1,291 +1,114 @@
+"""Kubernetes workload lifecycle. All runtime traffic still uses the CU WebSocket."""
 from __future__ import annotations
 
 import asyncio
-import json
-import shlex
-import subprocess
-import time
-from typing import Any
+import ssl
 
 import httpx
 
-from container_up.settings import (
-    BUCKET_CONTAINER_PORT,
-    BUCKET_COMMON_ROOT,
-    BUCKET_MOUNT_PVC,
-    BUCKET_MOUNT_ROOT,
-    BUCKET_NAMESPACE,
-    BUCKET_CREATE_COMMAND_TEMPLATE,
-    BUCKET_IMAGE_PULL_POLICY,
-    BUCKET_INSTANCE_EVICT_INTERVAL_SECONDS,
-    BUCKET_INSTANCE_IDLE_TTL_SECONDS,
-    BUCKET_INSTANCE_STOP_GRACE_SECONDS,
-    BUCKET_KUBECTL_BIN,
-    BUCKET_MAX_INSTANCES_PER_BUCKET,
-    NANOBOT_NODE,
-    BUCKET_NANOBOT_PORT_END,
-    BUCKET_NANOBOT_PORT_START,
-    BUCKET_RUNTIME_IMAGE,
-    BUCKET_SERVICE_PORT,
-    BUCKET_READY_TIMEOUT,
-    BUCKET_REQUEST_TIMEOUT,
-    BUCKET_SKIP_HEALTHCHECK,
-    SOURCE_PVC,
-    SOURCE_ROOT,
-)
+from agent_backend.config import ControlConfig
 
 
 class BucketManager:
-    def __init__(self) -> None:
-        self._ensure_locks: dict[str, asyncio.Lock] = {}
-        self._ensured_buckets: set[str] = set()
+    def __init__(self, config: ControlConfig):
+        self.config = config
+        self.pool = config.bucket_pool
 
-    async def ensure_bucket_exists(self, bucket: dict[str, Any]) -> None:
-        bucket_id = str(bucket["bucket_id"])
-        lock = self._ensure_locks.setdefault(bucket_id, asyncio.Lock())
-        async with lock:
-            if BUCKET_CREATE_COMMAND_TEMPLATE:
-                if bucket_id in self._ensured_buckets:
-                    return
-                command = BUCKET_CREATE_COMMAND_TEMPLATE.format(
-                    bucket_id=bucket_id,
-                    bucket_name=str(bucket["bucket_name"]),
-                    namespace=str(bucket["namespace"]),
-                    service_host=str(bucket["service_host"] or ""),
-                    service_port=str(bucket["service_port"] or ""),
-                )
-                await asyncio.to_thread(_run_command, command)
+    async def request(self, method: str, path: str, **kwargs):
+        # Read the projected token on every call so Kubernetes token rotation works.
+        context = ssl.create_default_context(cafile=str(self.pool.ca_file))
+        async with httpx.AsyncClient(base_url=self.pool.api_url, verify=context, timeout=30,
+                                     trust_env=False) as client:
+            response = await client.request(method, path, headers={
+                "Authorization": "Bearer " + self.pool.token_file.read_text().strip()}, **kwargs)
+        if response.status_code not in {404, 409}:
+            response.raise_for_status()
+        return response
+
+    def deployment(self, bucket_id: str) -> dict:
+        pool, runtime = self.pool, self.config.runtime_template
+        labels = {"app": "opencode-bucket", "bucket-id": bucket_id}
+        container = {
+            "name": "runtime", "image": pool.image, "imagePullPolicy": pool.image_pull_policy,
+            "args": ["python", "-m", "agent_backend", "runtime", "--config",
+                     "/mnt/common/frontend.json", "--bucket-id", bucket_id],
+            "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
+                                "capabilities": {"drop": ["ALL"]}},
+            "resources": {"requests": {"cpu": "1", "memory": "1Gi"},
+                          "limits": {"cpu": "4", "memory": "4Gi"}},
+            "volumeMounts": [
+                {"name": "data", "mountPath": "/data"},
+                {"name": "workspace", "mountPath": "/mnt/env"},
+                {"name": "source", "mountPath": "/mnt/source", "readOnly": True},
+                {"name": "common", "mountPath": "/mnt/common", "readOnly": True},
+                {"name": "config", "mountPath": "/etc/agent", "readOnly": True},
+                {"name": "secrets", "mountPath": "/run/secrets", "readOnly": True},
+                {"name": "tmp", "mountPath": "/tmp"}],
+            "startupProbe": {"httpGet": {"path": "/health/ready", "port": runtime.health_port},
+                             "failureThreshold": max(30, pool.ready_timeout_seconds // 5), "periodSeconds": 5},
+            "readinessProbe": {"httpGet": {"path": "/health/ready", "port": runtime.health_port}},
+            "livenessProbe": {"httpGet": {"path": "/health/live", "port": runtime.health_port}},
+        }
+        return {"apiVersion": "apps/v1", "kind": "Deployment",
+                "metadata": {"name": bucket_id, "namespace": pool.namespace, "labels": labels},
+                "spec": {"replicas": 1, "strategy": {"type": "Recreate"},
+                         "selector": {"matchLabels": labels}, "template": {
+                             "metadata": {"labels": labels}, "spec": {
+                                 "automountServiceAccountToken": False,
+                                 "nodeSelector": pool.node_selector,
+                                 "terminationGracePeriodSeconds": 45,
+                                 "securityContext": {"runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001},
+                                 "containers": [container], "volumes": [
+                                     {"name": "data", "persistentVolumeClaim": {"claimName": pool.state_pvc}},
+                                     {"name": "workspace", "persistentVolumeClaim": {"claimName": pool.data_pvc}},
+                                     {"name": "source", "persistentVolumeClaim": {"claimName": pool.source_pvc, "readOnly": True}},
+                                     {"name": "common", "persistentVolumeClaim": {"claimName": pool.common_pvc, "readOnly": True}},
+                                     {"name": "config", "configMap": {"name": pool.config_map}},
+                                     {"name": "secrets", "secret": {"secretName": pool.runtime_secret}},
+                                     {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}},
+                                 ]}}}}
+
+    async def ensure(self, bucket_id: str) -> None:
+        collection = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments"
+        response = await self.request("GET", collection + "/" + bucket_id)
+        if response.status_code == 404:
+            response = await self.request("POST", collection, json=self.deployment(bucket_id))
+            if response.status_code != 409:
+                response.raise_for_status()
             else:
-                await asyncio.to_thread(self._apply_bucket_resources, bucket)
-            self._ensured_buckets.add(bucket_id)
+                response = await self.request("GET", collection + "/" + bucket_id)
+        response.raise_for_status()
+        current = response.json()
+        if current.get("metadata", {}).get("labels", {}).get("bucket-id") != bucket_id:
+            raise RuntimeError("existing Deployment is not owned by this bucket")
+        desired = self.deployment(bucket_id)
+        desired["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
+        response = await self.request("PUT", collection + "/" + bucket_id, json=desired)
+        response.raise_for_status()
+        await self.scale(bucket_id, 1)
 
-    async def wait_bucket_ready(self, bucket: dict[str, Any], timeout: float = BUCKET_READY_TIMEOUT) -> None:
-        if BUCKET_SKIP_HEALTHCHECK:
+    async def scale(self, bucket_id: str, replicas: int) -> None:
+        path = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments/{bucket_id}/scale"
+        response = await self.request("GET", path)
+        if response.status_code == 404 and replicas == 0:
             return
-
-        deadline = time.monotonic() + timeout
-        url = f"{str(bucket['service_host']).rstrip('/')}/health/ready"
-        async with httpx.AsyncClient(timeout=BUCKET_REQUEST_TIMEOUT) as client:
-            while time.monotonic() < deadline:
-                try:
-                    response = await client.get(url)
-                    if response.status_code < 400:
+        response.raise_for_status()
+        scale = response.json()
+        scale["spec"]["replicas"] = replicas
+        response = await self.request("PUT", path, json=scale)
+        response.raise_for_status()
+        if replicas == 0:
+            # Do not reuse its ID/state directory while the old writer is still terminating.
+            async with asyncio.timeout(self.pool.ready_timeout_seconds):
+                while True:
+                    response = await self.request("GET", path.removesuffix("/scale"))
+                    if response.status_code == 404:
                         return
-                except Exception:
-                    pass
-                await asyncio.sleep(1)
-        raise RuntimeError(f"bucket did not become ready: {bucket['bucket_id']}")
-
-    def get_bucket_url(self, bucket: dict[str, Any]) -> str:
-        return str(bucket["service_host"]).rstrip("/")
-
-    async def scale_bucket_to_zero(self, bucket: dict[str, Any]) -> None:
-        if BUCKET_CREATE_COMMAND_TEMPLATE:
-            return
-        await asyncio.to_thread(self._scale_deployment, bucket, 0)
-
-    def _apply_bucket_resources(self, bucket: dict[str, Any]) -> None:
-        service_manifest = self._build_service_manifest(bucket)
-        deployment_manifest = self._build_deployment_manifest(bucket)
-        _kubectl_apply(service_manifest)
-        _kubectl_apply(deployment_manifest)
-
-    def _scale_deployment(self, bucket: dict[str, Any], replicas: int) -> None:
-        subprocess.run(
-            [
-                BUCKET_KUBECTL_BIN,
-                "-n",
-                str(bucket["namespace"]),
-                "scale",
-                f"deployment/{bucket['bucket_name']}",
-                f"--replicas={replicas}",
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-    @staticmethod
-    def _build_service_manifest(bucket: dict[str, Any]) -> dict[str, Any]:
-        bucket_id = str(bucket["bucket_id"])
-        bucket_name = str(bucket["bucket_name"])
-        return {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": bucket_name,
-                "namespace": str(bucket["namespace"]),
-                "labels": {
-                    "app": "nanobot-bucket",
-                    "bucket-id": bucket_id,
-                },
-            },
-            "spec": {
-                "selector": {
-                    "app": "nanobot-bucket",
-                    "bucket-id": bucket_id,
-                },
-                "ports": [
-                    {
-                        "name": "http",
-                        "port": BUCKET_SERVICE_PORT,
-                        "targetPort": BUCKET_CONTAINER_PORT,
-                    }
-                ],
-            },
-        }
-
-    @staticmethod
-    def _build_deployment_manifest(bucket: dict[str, Any]) -> dict[str, Any]:
-        bucket_id = str(bucket["bucket_id"])
-        bucket_name = str(bucket["bucket_name"])
-        env = [
-            {"name": "BUCKET_RUNTIME_PORT", "value": str(BUCKET_CONTAINER_PORT)},
-            {"name": "BUCKET_ID", "value": bucket_id},
-            {"name": "BUCKET_MOUNT_ROOT", "value": str(BUCKET_MOUNT_ROOT)},
-            {"name": "BUCKET_MOUNT_PVC", "value": BUCKET_MOUNT_PVC},
-            {"name": "BUCKET_COMMON_ROOT", "value": str(BUCKET_COMMON_ROOT)},
-            {"name": "SOURCE_ROOT", "value": str(SOURCE_ROOT)},
-            {"name": "SOURCE_PVC", "value": SOURCE_PVC},
-            {
-                "name": "CONTAINER_UP_BASE_URL",
-                "value": f"http://container-up.{BUCKET_NAMESPACE}:{BUCKET_SERVICE_PORT}",
-            },
-            {"name": "INSTANCE_IDLE_TTL_SECONDS", "value": str(BUCKET_INSTANCE_IDLE_TTL_SECONDS)},
-            {
-                "name": "INSTANCE_STOP_GRACE_SECONDS",
-                "value": str(BUCKET_INSTANCE_STOP_GRACE_SECONDS),
-            },
-            {
-                "name": "INSTANCE_EVICT_INTERVAL_SECONDS",
-                "value": str(BUCKET_INSTANCE_EVICT_INTERVAL_SECONDS),
-            },
-            {"name": "MAX_PROCESSES_PER_BUCKET", "value": str(BUCKET_MAX_INSTANCES_PER_BUCKET)},
-            {"name": "NANOBOT_PORT_START", "value": str(BUCKET_NANOBOT_PORT_START)},
-            {"name": "NANOBOT_PORT_END", "value": str(BUCKET_NANOBOT_PORT_END)},
-        ]
-        pod_spec: dict[str, Any] = {
-            "containers": [
-                {
-                    "name": "bucket-runtime",
-                    "image": BUCKET_RUNTIME_IMAGE,
-                    "imagePullPolicy": BUCKET_IMAGE_PULL_POLICY,
-                    "securityContext": {
-                        "privileged": True,
-                    },
-                    "ports": [{"containerPort": BUCKET_CONTAINER_PORT}],
-                    "env": env,
-                    "volumeMounts": [
-                        {
-                            "name": "bucket-mount-root",
-                            "mountPath": str(BUCKET_MOUNT_ROOT),
-                        },
-                        {
-                            "name": "source-root",
-                            "mountPath": str(SOURCE_ROOT),
-                            "readOnly": True,
-                        },
-                        {
-                            "name": "common-root",
-                            "mountPath": str(BUCKET_COMMON_ROOT),
-                            "readOnly": True,
-                        },
-                        {
-                            "name": "host-localtime",
-                            "mountPath": "/etc/localtime",
-                            "readOnly": True,
-                        },
-                        {
-                            "name": "host-timezone",
-                            "mountPath": "/etc/timezone",
-                            "readOnly": True,
-                        },
-                    ],
-                    "readinessProbe": {
-                        "httpGet": {
-                            "path": "/health/ready",
-                            "port": BUCKET_CONTAINER_PORT,
-                        },
-                        "initialDelaySeconds": 5,
-                        "periodSeconds": 5,
-                    },
-                    "livenessProbe": {
-                        "httpGet": {
-                            "path": "/health/live",
-                            "port": BUCKET_CONTAINER_PORT,
-                        },
-                        "initialDelaySeconds": 20,
-                        "periodSeconds": 10,
-                    },
-                }
-            ],
-            "volumes": [
-                {
-                    "name": "bucket-mount-root",
-                    "persistentVolumeClaim": {"claimName": BUCKET_MOUNT_PVC},
-                },
-                {
-                    "name": "source-root",
-                    "persistentVolumeClaim": {"claimName": SOURCE_PVC},
-                },
-                {
-                    "name": "common-root",
-                    "persistentVolumeClaim": {"claimName": "nanobot-common-pvc"},
-                },
-                {
-                    "name": "host-localtime",
-                    "hostPath": {"path": "/etc/localtime"},
-                },
-                {
-                    "name": "host-timezone",
-                    "hostPath": {"path": "/etc/timezone"},
-                },
-            ],
-        }
-        if NANOBOT_NODE:
-            pod_spec["nodeSelector"] = {"nanobot_node": NANOBOT_NODE}
-
-        return {
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": bucket_name,
-                "namespace": str(bucket["namespace"]),
-                "labels": {
-                    "app": "nanobot-bucket",
-                    "bucket-id": bucket_id,
-                },
-            },
-            "spec": {
-                "replicas": 1,
-                "selector": {
-                    "matchLabels": {
-                        "app": "nanobot-bucket",
-                        "bucket-id": bucket_id,
-                    }
-                },
-                "template": {
-                    "metadata": {
-                        "labels": {
-                            "app": "nanobot-bucket",
-                            "bucket-id": bucket_id,
-                        }
-                    },
-                    "spec": pod_spec,
-                },
-            },
-        }
-
-
-def _run_command(command: str) -> None:
-    subprocess.run(shlex.split(command), check=True)
-
-
-def _kubectl_apply(manifest: dict[str, Any]) -> None:
-    subprocess.run(
-        [BUCKET_KUBECTL_BIN, "apply", "-f", "-"],
-        input=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+                    response.raise_for_status()
+                    if response.json().get("status", {}).get("replicas", 0) == 0:
+                        pods = await self.request("GET", f"/api/v1/namespaces/{self.pool.namespace}/pods",
+                                                  params={"labelSelector": f"app=opencode-bucket,bucket-id={bucket_id}"})
+                        pods.raise_for_status()
+                        if not pods.json().get("items"):
+                            return
+                    await asyncio.sleep(0.5)

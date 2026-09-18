@@ -25,7 +25,6 @@ class WebIMParser:
         self.frontend_id = frontend_id
         config = dict(frontend_config or {})
         self.frontend_config = config
-        self.prepared_attachments = bool(config.get("prepared_attachments", False))
         self.send_msg_retry_count = int(
             config.get("send_msg_retry_count") or SEND_MSG_RETRY_COUNT
         )
@@ -61,12 +60,6 @@ class WebIMParser:
         frontend_id = str(metadata.get("frontend_id") or self.frontend_id).strip() or self.frontend_id
         user_id = str(metadata.get("usr_id") or "").strip()
         attachments = list(payload.get("attachments") or [])
-        if not self.prepared_attachments:
-            from container_up.outbound_attachment_store import prepare_outbound_attachments
-            attachments = await prepare_outbound_attachments(
-                attachments, frontend_id=frontend_id, user_id=user_id,
-                frontend_config=self.frontend_config,
-            )
         outbound_payload = {
             "frontend_id": frontend_id,
             "user_id": user_id,

@@ -24,7 +24,7 @@ export const BucketRuntimePlugin: Plugin = async () => {
   await rpc("/plugin/ready", { version: "1" })
   return {
     "tool.execute.before": async (input, output) => {
-      // Do not expose arbitrary tool execution even if another agent/config enables it.
+      // Runtime applies this user's configured session scope to native file tools.
       const args = structuredClone(output.args)
       delete args._runtime_ticket
       const authorized = await rpc("/authorize", {
@@ -37,15 +37,13 @@ export const BucketRuntimePlugin: Plugin = async () => {
         output.args.timeout = 650_000
       } else if (input.tool === "publish_attachment") {
         output.args._runtime_ticket = authorized.ticket
-      } else {
-        throw new Error("Tool is not supported by the runtime")
+      } else if (authorized.args) {
+        Object.assign(output.args, authorized.args)
       }
     },
-    "permission.ask": async (_input, output) => { output.status = "deny" },
-    "command.execute.before": async () => { throw new Error("Direct commands are disabled") },
     tool: {
       publish_attachment: tool({
-        description: "Upload generated files from your workspace and include them in this reply. " +
+        description: "Upload generated files from your workspace directly to MinIO, return their object URLs, and include them in this reply. " +
           "Success means queued for delivery, not already delivered to the recipient.",
         args: {
           files: tool.schema.array(tool.schema.object({

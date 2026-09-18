@@ -1,356 +1,159 @@
+"""Database-backed bucket pool, adapted from the original reservation/release mechanism.
+
+Capacity counts distinct users, but only whole buckets have a lifecycle.
+"""
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass
-from typing import Any
+import logging
+import time
+from contextlib import asynccontextmanager
+from uuid import uuid4
 
-import httpx
-from loguru import logger
-
-from container_up.binding_repository import BindingRepository
-from container_up.binding_repository import build_instance_id
-from container_up.bucket_client import BucketClient
+from agent_backend.models import Identity
+from agent_backend.workspaces import workspace_path
 from container_up.bucket_manager import BucketManager
-from container_up.workspace_manager import WorkspaceManager
 
-_BUCKET_CAPACITY_ERROR = "bucket has reached max process capacity"
-
-
-@dataclass(frozen=True)
-class UserInstanceRuntime:
-    user_id: str
-    workspace_path: str
-    bucket_id: str
-    bucket_url: str
-    instance_id: str
-    frontend_id: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+log = logging.getLogger(__name__)
 
 
 class BucketScheduler:
-    def __init__(
-        self,
-        *,
-        repo: BindingRepository,
-        workspace_manager: WorkspaceManager,
-        bucket_manager: BucketManager,
-        bucket_client: BucketClient,
-    ) -> None:
-        self._repo = repo
-        self._workspace_manager = workspace_manager
-        self._bucket_manager = bucket_manager
-        self._bucket_client = bucket_client
-        self._user_locks: dict[str, asyncio.Lock] = {}
-        self._pending_user_touches: set[str] = set()
-        self._touch_tasks: set[asyncio.Task[None]] = set()
+    def __init__(self, service, manager=None):
+        self.service, self.db = service, service.db
+        self.config = service.config.bucket_pool
+        self.manager = manager or BucketManager(service.config)
+        self.lock = asyncio.Lock()
+        self.start_locks: dict[str, asyncio.Lock] = {}
+        self.pins: dict[str, int] = {}
+        self.task = None
 
-    async def get_or_create_user_instance(
-        self,
-        *,
-        user_id: str,
-        frontend_id: str | None,
-    ) -> UserInstanceRuntime:
-        if not frontend_id:
-            raise RuntimeError("frontend_id is required to allocate a workspace")
-        user_key = f"{frontend_id}:{user_id}"
-        lock = self._user_locks.setdefault(user_key, asyncio.Lock())
-        async with lock:
-            workspace = self._workspace_manager.get_or_create_workspace(frontend_id, user_id)
-            existing = self._repo.get_user_instance(frontend_id, user_id)
-            if existing is not None and existing.get("status") == "online" and existing.get("bucket_id"):
-                runtime = await self._get_live_runtime(existing)
-                if runtime is not None:
-                    self._schedule_touch_user_activity(frontend_id, user_id)
-                    return runtime
+    def connected(self, bucket_id: str) -> bool:
+        peer = self.service.peers.get(bucket_id)
+        return bool(peer and not peer.closed)
 
-            for attempt in range(3):
-                user, bucket, created = self._repo.reserve_user_instance(
-                    frontend_id=frontend_id,
-                    user_id=user_id,
-                    workspace_path=str(workspace),
-                )
-                self._assert_binding_consistency(
-                    user,
-                    frontend_id=frontend_id,
-                    user_id=user_id,
-                    workspace_path=str(workspace),
-                )
-                if not created:
-                    self._schedule_touch_user_activity(frontend_id, user_id)
-                    return self._runtime_from_records(user, bucket)
+    def bindings(self, bucket_id: str) -> list[dict]:
+        return [b for b in self.db.records("binding") if b.get("bucket_id") == bucket_id]
 
-                runtime = self._runtime_from_records(user, bucket)
-                try:
-                    await self._bucket_manager.ensure_bucket_exists(bucket)
-                    await self._bucket_manager.wait_bucket_ready(bucket)
-                    await self._bucket_client.create_user_instance(
-                        runtime.bucket_url,
-                        {
-                            "frontend_id": frontend_id,
-                            "user_id": user_id,
-                            "instance_id": runtime.instance_id,
-                            "workspace_path": runtime.workspace_path,
-                        },
-                    )
-                except Exception as exc:
-                    self._repo.rollback_user_instance_reservation(
-                        frontend_id,
-                        user_id,
-                        runtime.bucket_id,
-                    )
-                    if self._is_bucket_capacity_error(exc) and attempt < 2:
-                        logger.warning(
-                            "bucket reported capacity exhaustion despite scheduler reservation; "
-                            "marking bucket full and retrying frontend_id={} user_id={} bucket_id={}",
-                            frontend_id,
-                            user_id,
-                            runtime.bucket_id,
-                        )
-                        self._mark_bucket_full(runtime.bucket_id)
-                        continue
-                    raise
+    def busy(self, bucket_id: str) -> bool:
+        return bool(self.pins.get(bucket_id) or any(
+            r["bucket_id"] == bucket_id and not r.get("result") for r in self.db.records("request")))
 
-                user = self._repo.mark_user_instance_online(frontend_id, user_id)
-                self._assert_binding_consistency(
-                    user,
-                    frontend_id=frontend_id,
-                    user_id=user_id,
-                    workspace_path=str(workspace),
-                )
-                bucket = self._repo.get_bucket(runtime.bucket_id)
+    def touch(self, bucket_id: str):
+        bucket = self.db.get("bucket", bucket_id)
+        if bucket:
+            self.db.put("bucket", bucket_id, {**bucket, "last_active_at": time.time()})
+
+    def reserve(self, identity: Identity) -> dict:
+        """Called under lock; mapping and capacity reservation commit together."""
+        with self.db.transaction():
+            existing = self.db.get("binding", identity.key)
+            if existing and existing.get("bucket_id"):
+                bucket = self.db.get("bucket", existing["bucket_id"])
+                if bucket and bucket["status"] in {"creating", "running"}:
+                    self.touch(bucket["bucket_id"])
+                    return existing
+                if self.busy(existing["bucket_id"]):
+                    raise RuntimeError("previous bucket still has unfinished requests")
+            runtime = self.service.config.runtime_template
+            workspace = str(workspace_path(runtime.workspace_root, identity, runtime.workspace_layout))
+            # The original sanitizer can collide. Never grant two identities the same directory.
+            owner = self.db.get("workspace_owner", workspace)
+            if owner and owner["user_key"] != identity.key:
+                raise ValueError("workspace path collides with another user")
+            self.db.put("workspace_owner", workspace, {"user_key": identity.key})
+            candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
+                          and len(self.bindings(b["bucket_id"])) < self.config.max_users_per_bucket]
+            if candidates:
+                bucket = min(candidates, key=lambda b: (not self.connected(b["bucket_id"]),
+                                                        len(self.bindings(b["bucket_id"]))))
+            else:
+                # Reuse an empty, scaled-down workload before allocating another one.
+                bucket = next((b for b in self.db.records("bucket") if b["status"] == "idle"), None)
                 if bucket is None:
-                    raise RuntimeError(f"bucket disappeared after online transition: {runtime.bucket_id}")
-                return self._runtime_from_records(user, bucket)
+                    bucket_id = self.config.name_prefix + "-" + uuid4().hex[:12]
+                    bucket = {"bucket_id": bucket_id, "created_at": time.time()}
+                bucket = {**bucket, "status": "creating"}
+            bucket_id = bucket["bucket_id"]
+            self.db.put("bucket", bucket_id, {**bucket, "last_active_at": time.time()})
+            binding = {"bucket_id": bucket_id, "user_key": identity.key, "identity": identity.model_dump(),
+                       "workspace_path": workspace, "generation": uuid4().hex, "status": "assigned"}
+            self.db.put("binding", identity.key, binding)
+            return binding
 
-            raise RuntimeError(
-                f"failed to allocate runtime after retrying bucket capacity for {frontend_id}/{user_id}"
-            )
+    async def ready(self, bucket_id: str):
+        async with self.start_locks.setdefault(bucket_id, asyncio.Lock()):
+            if not self.connected(bucket_id):
+                async with asyncio.timeout(self.config.ready_timeout_seconds):
+                    await self.manager.ensure(bucket_id)
+                    while not self.connected(bucket_id):
+                        await asyncio.sleep(0.1)
+            bucket = self.db.get("bucket", bucket_id)
+            self.db.put("bucket", bucket_id, {**bucket, "status": "running"})
 
-    async def route_inbound(
-        self,
-        *,
-        frontend_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> UserInstanceRuntime:
-        runtime = await self.get_or_create_user_instance(
-            user_id=user_id,
-            frontend_id=frontend_id,
-        )
-        packet = dict(payload)
-        packet["frontend_id"] = frontend_id
-        packet["user_id"] = user_id
-        packet["instance_id"] = runtime.instance_id
-        await self._bucket_client.forward_inbound(runtime.bucket_url, packet)
-        self._schedule_touch_user_activity(frontend_id, user_id)
-        return runtime
-
-    async def route_cancel(
-        self,
-        *,
-        frontend_id: str,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> UserInstanceRuntime | None:
-        user = self._repo.get_user_instance(frontend_id, user_id)
-        if user is None or user.get("status") != "online" or not user.get("bucket_id"):
-            return None
-        bucket = self._repo.get_bucket(str(user["bucket_id"]))
-        if bucket is None:
-            return None
-        runtime = self._runtime_from_records(user, bucket)
-        packet = dict(payload)
-        packet["frontend_id"] = frontend_id
-        packet["user_id"] = user_id
-        packet["instance_id"] = runtime.instance_id
-        await self._bucket_client.forward_cancel(runtime.bucket_url, packet)
-        self._schedule_touch_user_activity(frontend_id, user_id)
-        return runtime
-
-    def _schedule_touch_user_activity(self, frontend_id: str, user_id: str) -> None:
-        user_key = f"{frontend_id}:{user_id}"
-        if user_key in self._pending_user_touches:
-            return
-        self._pending_user_touches.add(user_key)
-        task = asyncio.create_task(self._run_touch_user_activity(user_key, frontend_id, user_id))
-        self._touch_tasks.add(task)
-        task.add_done_callback(self._on_touch_task_done)
-
-    async def _run_touch_user_activity(
-        self,
-        user_key: str,
-        frontend_id: str,
-        user_id: str,
-    ) -> None:
+    @asynccontextmanager
+    async def assignment(self, identity: Identity):
+        async with self.lock:
+            binding = self.reserve(identity)
+            bucket_id = binding["bucket_id"]
+            self.pins[bucket_id] = self.pins.get(bucket_id, 0) + 1
         try:
-            await asyncio.to_thread(self._repo.touch_user_activity, frontend_id, user_id)
+            await self.ready(bucket_id)
+            yield binding
+        except BaseException:
+            # Keep durable mappings for accepted work; release failed pre-dispatch reservations.
+            async with self.lock:
+                outstanding = any(r["submit"]["identity"] == identity.model_dump() and not r.get("result")
+                                  for r in self.db.records("request"))
+                current = self.db.get("binding", identity.key)
+                if not outstanding and current and current.get("generation") == binding["generation"]:
+                    self.db.put("binding", identity.key, {**current, "bucket_id": None, "status": "released"})
+            raise
         finally:
-            self._pending_user_touches.discard(user_key)
+            self.pins[bucket_id] -= 1
+            self.touch(bucket_id)
 
-    def _on_touch_task_done(self, task: asyncio.Task[None]) -> None:
-        self._touch_tasks.discard(task)
-        try:
-            task.result()
-        except Exception as exc:  # pragma: no cover
-            logger.warning("touch_user_activity background task failed: {}", exc)
+    async def sweep(self):
+        ttl = self.service.config.instance_idle_ttl_seconds
+        for bucket in self.db.records("bucket"):
+            bucket_id = bucket["bucket_id"]
+            async with self.lock:
+                bucket = self.db.get("bucket", bucket_id)
+                if bucket["status"] == "idle" or self.busy(bucket_id):
+                    continue
+                if bucket["status"] != "draining":
+                    if ttl == 0 or time.time() - bucket["last_active_at"] < ttl:
+                        continue
+                    if self.db.pending(bucket_id):
+                        continue  # Never discard an unacknowledged command.
+                    self.db.put("bucket", bucket_id, {**bucket, "status": "draining"})
+            # Draining is durable and excludes allocations while Kubernetes shuts down.
+            # Other buckets must remain schedulable during a slow scale operation.
+            await self.manager.scale(bucket_id, 0)
+            socket = self.service.sockets.get(bucket_id)
+            if socket:
+                await socket.close(code=1012)
+            async with self.lock:
+                self.service.peers.pop(bucket_id, None)
+                self.service.sockets.pop(bucket_id, None)
+                with self.db.transaction():
+                    for binding in self.bindings(bucket_id):
+                        self.db.put("binding", binding["user_key"],
+                                    {**binding, "bucket_id": None, "status": "released"})
+                    self.db.put("bucket", bucket_id, {**bucket, "status": "idle"})
 
-    async def shutdown(self) -> None:
-        if not self._touch_tasks:
-            return
-        tasks = list(self._touch_tasks)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        self._touch_tasks.clear()
-        self._pending_user_touches.clear()
-
-    async def release_user_instance(self, frontend_id: str, user_id: str) -> dict[str, Any] | None:
-        user = self._repo.get_user_instance(frontend_id, user_id)
-        if user is None or user.get("status") != "online" or not user.get("bucket_id"):
-            return user
-        bucket = self._repo.get_bucket(str(user["bucket_id"]))
-        if bucket is not None and user.get("instance_id"):
+    async def run(self):
+        while True:
             try:
-                await self._bucket_client.destroy_user_instance(
-                    str(bucket["service_host"]),
-                    str(user["instance_id"]),
-                )
-            finally:
-                return self._repo.release_user_instance(
-                    frontend_id,
-                    user_id,
-                    bucket_id=str(user["bucket_id"]),
-                    instance_id=str(user["instance_id"]),
-                )
-        return self._repo.release_user_instance(frontend_id, user_id)
+                # Recover accepted work after a CU restart or missing workload. Do not reassign it.
+                for bucket in self.db.records("bucket"):
+                    if bucket["status"] in {"creating", "running"} and self.busy(bucket["bucket_id"]):
+                        await self.ready(bucket["bucket_id"])
+                await self.sweep()
+            except Exception:
+                log.exception("bucket pool reconciliation failed; will retry")
+            await asyncio.sleep(self.config.sweep_interval_seconds)
 
-    def sync_runtime_release(
-        self,
-        *,
-        user_id: str,
-        frontend_id: str | None,
-        bucket_id: str | None,
-        instance_id: str | None,
-    ) -> dict[str, Any] | None:
-        if frontend_id:
-            return self._repo.release_user_instance(
-                frontend_id,
-                user_id,
-                bucket_id=bucket_id,
-                instance_id=instance_id,
-            )
-        if instance_id:
-            user = self._repo.get_user_instance_by_instance_id(instance_id)
-            if user is not None:
-                return self._repo.release_user_instance(
-                    str(user["frontend_id"]),
-                    str(user["user_id"]),
-                    bucket_id=bucket_id,
-                    instance_id=instance_id,
-                )
-        matches = self._repo.list_for_user(user_id)
-        if len(matches) != 1:
-            return None
-        return self._repo.release_user_instance(
-            str(matches[0]["frontend_id"]),
-            user_id,
-            bucket_id=bucket_id,
-            instance_id=instance_id,
-        )
-
-    @staticmethod
-    def _runtime_from_records(user: dict[str, Any], bucket: dict[str, Any]) -> UserInstanceRuntime:
-        return UserInstanceRuntime(
-            user_id=str(user["user_id"]),
-            workspace_path=str(user["workspace_path"]),
-            bucket_id=str(bucket["bucket_id"]),
-            bucket_url=str(bucket["service_host"]).rstrip("/"),
-            instance_id=str(user.get("instance_id") or "")
-            or build_instance_id(str(user.get("frontend_id") or ""), str(user["user_id"])),
-            frontend_id=str(user.get("frontend_id") or "") or None,
-        )
-
-    @staticmethod
-    def _assert_binding_consistency(
-        user: dict[str, Any],
-        *,
-        frontend_id: str,
-        user_id: str,
-        workspace_path: str,
-    ) -> None:
-        actual_frontend = str(user.get("frontend_id") or "")
-        actual_user = str(user.get("user_id") or "")
-        actual_workspace = str(user.get("workspace_path") or "")
-        actual_instance_id = str(user.get("instance_id") or "")
-        expected_instance_id = build_instance_id(frontend_id, user_id)
-        if actual_frontend != frontend_id:
-            raise RuntimeError(
-                f"binding frontend_id mismatch: expected {frontend_id}, got {actual_frontend}"
-            )
-        if actual_user != user_id:
-            raise RuntimeError(
-                f"binding user_id mismatch: expected {user_id}, got {actual_user}"
-            )
-        if actual_workspace != workspace_path:
-            raise RuntimeError(
-                "binding workspace_path mismatch: "
-                f"expected {workspace_path}, got {actual_workspace}"
-            )
-        if actual_instance_id and actual_instance_id != expected_instance_id:
-            raise RuntimeError(
-                "binding instance_id mismatch: "
-                f"expected {expected_instance_id}, got {actual_instance_id}"
-            )
-
-    @staticmethod
-    def _is_bucket_capacity_error(exc: Exception) -> bool:
-        return _BUCKET_CAPACITY_ERROR in str(exc)
-
-    def _mark_bucket_full(self, bucket_id: str) -> None:
-        touch_bucket = getattr(self._repo, "touch_bucket", None)
-        if callable(touch_bucket):
-            touch_bucket(bucket_id, status="full")
-
-    async def _get_live_runtime(self, user: dict[str, Any]) -> UserInstanceRuntime | None:
-        bucket_id = str(user.get("bucket_id") or "")
-        if not bucket_id:
-            return None
-        bucket = self._repo.get_bucket(bucket_id)
-        if bucket is None:
-            self._repo.release_user_instance(
-                str(user["frontend_id"]),
-                str(user["user_id"]),
-                bucket_id=bucket_id,
-                instance_id=str(user.get("instance_id") or "") or None,
-            )
-            return None
-
-        runtime = self._runtime_from_records(user, bucket)
-        try:
-            await self._bucket_client.get_user_instance(runtime.bucket_url, runtime.instance_id)
-            return runtime
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "stale runtime binding for user_id={} bucket_id={} instance_id={} status={}; recreating",
-                runtime.user_id,
-                runtime.bucket_id,
-                runtime.instance_id,
-                exc.response.status_code,
-            )
-        except httpx.RequestError:
-            logger.warning(
-                "bucket probe failed for user_id={} bucket_id={} instance_id={}; recreating",
-                runtime.user_id,
-                runtime.bucket_id,
-                runtime.instance_id,
-            )
-
-        self._repo.release_user_instance(
-            runtime.frontend_id or "",
-            runtime.user_id,
-            bucket_id=runtime.bucket_id,
-            instance_id=runtime.instance_id,
-        )
-        return None
+    async def stop(self):
+        if self.task:
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)

@@ -1,0 +1,41 @@
+{
+  "provider": {
+    "intranet": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Internal model endpoint",
+      "options": {
+        "baseURL": "http://model-service:8000/v1",
+        "apiKey": "{file:/run/secrets/opencode-api-key}"
+      },
+      "models": {
+        "your-model": {
+          "name": "Internal model",
+          "limit": {
+            "context": 32768,
+            "output": 8192
+          }
+        }
+      }
+    }
+  },
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "*": "allow"
+  },
+  "autoupdate": true,
+  "share": "manual",
+  "snapshot": true,
+  "compaction": {
+    "auto": true,
+    "prune": true
+  },
+  "mcp": {},
+  "lsp": {},
+  "formatter": {},
+  "skills": {
+    "paths": [
+      "/mnt/common/skills",
+      "/opt/public/skills"
+    ]
+  }
+}

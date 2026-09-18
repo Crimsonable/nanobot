@@ -11,8 +11,8 @@
       "127.0.0.1:*",
       "engineering-scene-mcp",
       "engineering-scene-mcp:*",
-      "engineering-scene-mcp.nanobot.svc.cluster.local",
-      "engineering-scene-mcp.nanobot.svc.cluster.local:*",
+      "engineering-scene-mcp.opencode-sv.svc.cluster.local",
+      "engineering-scene-mcp.opencode-sv.svc.cluster.local:*",
       "192.168.48.104",
       "192.168.48.104:*"
     ],

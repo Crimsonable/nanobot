@@ -11,4 +11,4 @@ COPY container_up /opt/app/container_up
 RUN useradd --uid 10001 --create-home agent && mkdir /data && chown agent:agent /data
 USER 10001:10001
 EXPOSE 8000
-CMD ["python", "-m", "agent_backend", "control", "--config", "/etc/agent/container-up.yaml"]
+CMD ["python", "-m", "agent_backend", "control", "--config", "/mnt/common/frontend.json"]

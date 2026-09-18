@@ -25,8 +25,6 @@ class OpenCodeClient:
         response = await self.http.get("/global/health")
         response.raise_for_status()
         data = response.json()
-        if data.get("version") != self.config.version:
-            raise RuntimeError("OpenCode version mismatch")
         return bool(data.get("healthy"))
 
     async def create_session(self, permissions: list[dict]) -> str:
@@ -53,6 +51,16 @@ class OpenCodeClient:
 
     async def messages(self, session_id: str) -> list[dict]:
         response = await self.http.get(f"/session/{session_id}/message")
+        response.raise_for_status()
+        return response.json()
+
+    async def paths(self) -> dict:
+        response = await self.http.get("/path")
+        response.raise_for_status()
+        return response.json()
+
+    async def session(self, session_id: str) -> dict:
+        response = await self.http.get(f"/session/{session_id}")
         response.raise_for_status()
         return response.json()
 

@@ -1,1 +1,1 @@
-"""Bucket runtime for managing per-user nanobot processes in Kubernetes."""
+"""Managed OpenCode server, per-user permissions, tools and event adapter."""

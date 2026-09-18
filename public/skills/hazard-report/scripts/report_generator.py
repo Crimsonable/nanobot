@@ -414,7 +414,7 @@ class ReportGenerator:
             if not isinstance(photo_url, str) or not Path(photo_url).is_file():
                 errors.append(
                     f"image_url_map['{photo_name}'] 必须是系统实际传入的本地图片路径，"
-                    "且必须是 runtime 预取到 inbox 的本地文件"
+                    "且必须是当前工具可访问的本地文件；URL 资源请先按需获取到工作目录"
                 )
 
         list_fields = [

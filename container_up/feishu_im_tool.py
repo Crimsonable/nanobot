@@ -15,7 +15,6 @@ from uuid import uuid4
 import httpx
 from loguru import logger
 
-from container_up.attachments import persist_attachment_bytes
 FEISHU_APP_ID = ""
 FEISHU_APP_SECRET = ""
 
@@ -671,7 +670,7 @@ class FeishuIMParser:
         user_id: str,
         attachment_group: str,
         message: Any,
-    ) -> tuple[list[str], str]:
+    ) -> tuple[list[dict[str, Any]], str]:
         message_type = str(getattr(message, "message_type", "") or "")
         raw_content = str(getattr(message, "content", "") or "")
         message_id = str(getattr(message, "message_id", "") or "")
@@ -680,14 +679,14 @@ class FeishuIMParser:
         except json.JSONDecodeError:
             content_json = {}
 
-        attachments: list[str] = []
+        attachments: list[dict[str, Any]] = []
         content = ""
         if message_type == "text":
             content = str(content_json.get("text") or "")
         elif message_type == "post":
             content, image_keys = _extract_post_content(content_json)
             for image_key in image_keys:
-                local_path = self._download_resource_to_local(
+                reference = self._resource_reference(
                     user_id=user_id,
                     attachment_group=attachment_group,
                     message_id=message_id,
@@ -695,10 +694,10 @@ class FeishuIMParser:
                     resource_type="image",
                     fallback_filename=f"{image_key[:16]}.jpg",
                 )
-                if local_path:
-                    attachments.append(local_path)
+                if reference:
+                    attachments.append(reference)
         elif message_type == "image":
-            local_path = self._download_resource_to_local(
+            reference = self._resource_reference(
                 user_id=user_id,
                 attachment_group=attachment_group,
                 message_id=message_id,
@@ -706,11 +705,11 @@ class FeishuIMParser:
                 resource_type="image",
                 fallback_filename="image.jpg",
             )
-            if local_path:
-                attachments.append(local_path)
+            if reference:
+                attachments.append(reference)
         elif message_type in {"file", "audio", "media"}:
             fallback_name = str(content_json.get("file_name") or f"{message_type}.bin")
-            local_path = self._download_resource_to_local(
+            reference = self._resource_reference(
                 user_id=user_id,
                 attachment_group=attachment_group,
                 message_id=message_id,
@@ -718,8 +717,8 @@ class FeishuIMParser:
                 resource_type=message_type,
                 fallback_filename=fallback_name,
             )
-            if local_path:
-                attachments.append(local_path)
+            if reference:
+                attachments.append(reference)
         elif message_type in {
             "share_chat",
             "share_user",
@@ -734,78 +733,16 @@ class FeishuIMParser:
 
         return attachments, content
 
-    def _download_resource_to_local(
-        self,
-        *,
-        user_id: str,
-        attachment_group: str,
-        message_id: str,
-        file_key: str,
-        resource_type: str,
-        fallback_filename: str,
-    ) -> str | None:
+    def _resource_reference(self, *, user_id: str, attachment_group: str,
+                            message_id: str, file_key: str, resource_type: str,
+                            fallback_filename: str) -> dict | None:
+        from urllib.parse import quote
         if not message_id or not file_key:
             return None
-        data, filename = self._download_message_resource_sync(
-            message_id=message_id,
-            file_key=file_key,
-            resource_type=resource_type,
-        )
-        if not data:
-            return None
-        return persist_attachment_bytes(
-            user_id=user_id,
-            data=data,
-            filename=filename or fallback_filename,
-            provider="feishu",
-            attachment_group=attachment_group,
-            frontend_id=self.frontend_id,
-        )
-
-    def _download_message_resource_sync(
-        self,
-        *,
-        message_id: str,
-        file_key: str,
-        resource_type: str,
-    ) -> tuple[bytes | None, str | None]:
-        from lark_oapi.api.im.v1 import GetMessageResourceRequest
-
-        client = self._get_api_client()
-        request_type = "image" if resource_type == "image" else "file"
-        request = (
-            GetMessageResourceRequest.builder()
-            .message_id(message_id)
-            .file_key(file_key)
-            .type(request_type)
-            .build()
-        )
-        response = client.im.v1.message_resource.get(request)
-        if not response.success():
-            logger.error(
-                "feishu resource download failed code={} msg={} message_id={} file_key={}",
-                response.code,
-                response.msg,
-                message_id,
-                file_key,
-            )
-            return None, None
-
-        file_data = (
-            response.file.read() if hasattr(response.file, "read") else response.file
-        )
-        return bytes(file_data or b""), response.file_name
-
-    """def _get_api_client(self) -> Any:
-        if self._api_client is not None:
-            return self._api_client
-
-        from lark_oapi.client import Client
-
-        self._api_client = (
-            Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
-        )
-        return self._api_client"""
+        return {"url": "https://open.feishu.cn/open-apis/im/v1/messages/"
+                + quote(message_id, safe="") + "/resources/" + quote(file_key, safe="")
+                + "?type=" + ("image" if resource_type == "image" else "file"),
+                "filename": fallback_filename, "requires_auth": True}
 
     def _get_api_client(self) -> Any:
         client = getattr(self._api_client_local, "client", None)

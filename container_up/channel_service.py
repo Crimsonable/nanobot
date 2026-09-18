@@ -16,13 +16,11 @@ class ChannelService:
     async def start(self, dispatch: Callable[[str, dict], Awaitable[None]]) -> None:
         import asyncio
 
-        from container_up.attachments import set_attachment_cache
         from container_up.http_state import init_dispatch_session
-        set_attachment_cache(self.config.state_root / "channel-cache")
         init_dispatch_session()
         for frontend_id, frontend in self.config.frontends.items():
-            raw = json.loads(frontend.credential_file.read_text(encoding="utf-8"))
-            raw["prepared_attachments"] = True
+            raw = (json.loads(frontend.credential_file.read_text(encoding="utf-8"))
+                   if frontend.credential_file else dict(frontend.channel_config))
             raw["attachment_url_prefix"] = frontend.attachment_url_prefix
             # Delivery ambiguity is handled by the durable control service; avoid hidden retries.
             raw["send_msg_retry_count"] = 1
@@ -52,9 +50,15 @@ class ChannelService:
                     "usr_id": identity["user_id"], "request_id": result.request_id}
         if result.usage:
             metadata["usage"] = result.usage.model_dump()
+        content = result.content
+        attachments = [a.model_dump(mode="json") for a in result.attachments]
+        if self.config.frontends[identity["frontend_id"]].provider != "web":
+            links = "\n".join(f"{a.filename}: {a.url}" for a in result.attachments)
+            content = "\n\n".join(part for part in [content, links] if part)
+            attachments = []  # Deliver object URLs without downloading/re-uploading channel files.
         await self.parsers[identity["frontend_id"]].post_message_with_retry(payload={
-            "chat_id": record["chat_id"], "content": result.content,
-            "attachments": [a.model_dump(mode="json") for a in result.attachments],
+            "chat_id": record["chat_id"], "content": content,
+            "attachments": attachments,
             "metadata": metadata,
         })
 
