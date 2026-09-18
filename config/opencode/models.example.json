@@ -1,0 +1,12 @@
+{
+  "provider": {
+    "intranet": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Internal model endpoint",
+      "options": { "baseURL": "http://model-service:8000/v1", "apiKey": "REPLACE_IN_SECRET_FILE" },
+      "models": {
+        "your-model": { "name": "Internal model", "limit": { "context": 32768, "output": 8192 } }
+      }
+    }
+  }
+}

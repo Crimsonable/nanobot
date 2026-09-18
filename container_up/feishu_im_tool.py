@@ -16,7 +16,8 @@ import httpx
 from loguru import logger
 
 from container_up.attachments import persist_attachment_bytes
-from container_up.settings import FEISHU_APP_ID, FEISHU_APP_SECRET
+FEISHU_APP_ID = ""
+FEISHU_APP_SECRET = ""
 
 DispatchCallback = Callable[[dict[str, Any]], Awaitable[None]]
 

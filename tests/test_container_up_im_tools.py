@@ -97,8 +97,8 @@ async def test_post_message_with_attachment_uploads_then_sends_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    attachment = tmp_path / "report.txt"
-    attachment.write_text("hello", encoding="utf-8")
+    # container_up stores runtime files first; QXT receives a downloadable URL.
+    attachment = "https://storage.example.com/report.txt"
     session = FakeSession(
         [
             FakeResponse(status=200, text='{"ok":true}'),
@@ -111,6 +111,10 @@ async def test_post_message_with_attachment_uploads_then_sends_file(
 
     monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
     monkeypatch.setattr(parser, "get_access_token", lambda: "token-1")
+    async def download(url, filename):
+        assert url == attachment
+        return b"hello", "report.txt", "text/plain"
+    monkeypatch.setattr(parser, "_download_attachment_bytes", download)
 
     result = await parser.post_message_with_retry(
         payload={
@@ -261,8 +265,7 @@ async def test_post_message_skips_empty_text_and_sends_attachments_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    attachment = tmp_path / "image.png"
-    attachment.write_bytes(b"png")
+    attachment = "https://storage.example.com/image.png"
     session = FakeSession(
         [
             FakeResponse(status=200, text='{"media_id":"mid-2"}', json_data={"media_id": "mid-2"}),
@@ -274,6 +277,10 @@ async def test_post_message_skips_empty_text_and_sends_attachments_only(
 
     monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
     monkeypatch.setattr(parser, "get_access_token", lambda: "token-2")
+    async def download(url, filename):
+        assert url == attachment
+        return b"png", "image.png", "image/png"
+    monkeypatch.setattr(parser, "_download_attachment_bytes", download)
 
     result = await parser.post_message_with_retry(
         payload={

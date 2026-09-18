@@ -1,0 +1,11 @@
+{
+  "name": "bucket-runtime-opencode-plugin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.mjs",
+    "test": "node --test test.mjs"
+  },
+  "dependencies": { "@opencode-ai/plugin": "1.18.31" },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

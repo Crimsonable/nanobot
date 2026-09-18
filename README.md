@@ -1,5 +1,7 @@
 ![cover-v5-optimized](./images/GitHub_README.png)
 
+> 本分支的 bucket 后端已迁移到 OpenCode server。新服务启动、配置、附件链路和迁移步骤见 [OpenCode 后端实现说明](docs/OPENCODE_BACKEND_IMPLEMENTATION.md)。下面保留原 nanobot 项目说明，适用于旧后端。
+
 <div align="center">
   <p>
     <a href="https://nanobot.wiki/docs/latest/getting-started/nanobot-overview">English</a> |

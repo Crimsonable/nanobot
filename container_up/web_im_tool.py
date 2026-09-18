@@ -7,8 +7,8 @@ from typing import Any
 from aiohttp import ClientError
 
 from container_up.http_state import get_dispatch_session
-from container_up.outbound_attachment_store import prepare_outbound_attachments
-from container_up.settings import SEND_MSG_RETRY_BACKOFF, SEND_MSG_RETRY_COUNT
+SEND_MSG_RETRY_BACKOFF = 1.0
+SEND_MSG_RETRY_COUNT = 3
 
 
 class WebIMParser:
@@ -25,6 +25,7 @@ class WebIMParser:
         self.frontend_id = frontend_id
         config = dict(frontend_config or {})
         self.frontend_config = config
+        self.prepared_attachments = bool(config.get("prepared_attachments", False))
         self.send_msg_retry_count = int(
             config.get("send_msg_retry_count") or SEND_MSG_RETRY_COUNT
         )
@@ -59,17 +60,19 @@ class WebIMParser:
         metadata = dict(payload.get("metadata") or {})
         frontend_id = str(metadata.get("frontend_id") or self.frontend_id).strip() or self.frontend_id
         user_id = str(metadata.get("usr_id") or "").strip()
+        attachments = list(payload.get("attachments") or [])
+        if not self.prepared_attachments:
+            from container_up.outbound_attachment_store import prepare_outbound_attachments
+            attachments = await prepare_outbound_attachments(
+                attachments, frontend_id=frontend_id, user_id=user_id,
+                frontend_config=self.frontend_config,
+            )
         outbound_payload = {
             "frontend_id": frontend_id,
             "user_id": user_id,
             "chat_id": str(payload.get("chat_id") or ""),
             "content": str(payload.get("content") or ""),
-            "attachments": await prepare_outbound_attachments(
-                list(payload.get("attachments") or []),
-                frontend_id=frontend_id,
-                user_id=user_id,
-                frontend_config=self.frontend_config,
-            ),
+            "attachments": attachments,
             "metadata": metadata,
         }
 

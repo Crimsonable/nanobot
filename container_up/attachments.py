@@ -6,22 +6,27 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from container_up.attachment_paths import (
-    child_attachment_cache_dir,
-    host_attachment_cache_dir,
-)
-from container_up.settings import ATTACHMENT_URL_PREFIX
+ATTACHMENT_URL_PREFIX = ""
+
+_attachment_cache: Path | None = None
 
 
-def attachment_from_content_url(content: str) -> dict[str, str] | None:
+def set_attachment_cache(root: Path) -> None:
+    """New control service keeps channel files locally; no bucket mount mapping."""
+    global _attachment_cache
+    _attachment_cache = root.resolve()
+
+
+def attachment_from_content_url(content: str, prefix: str | None = None) -> dict[str, str] | None:
     text = content.strip()
     if not text:
         return None
     if any(ch.isspace() for ch in text):
         return None
-    if not ATTACHMENT_URL_PREFIX:
+    prefix = ATTACHMENT_URL_PREFIX if prefix is None else prefix
+    if not prefix:
         return None
-    if not text.startswith(ATTACHMENT_URL_PREFIX):
+    if not text.startswith(prefix):
         return None
 
     parsed = urlparse(text)
@@ -67,6 +72,14 @@ def persist_attachment_bytes(
         raise RuntimeError("empty attachment data")
 
     safe_filename = sanitize_attachment_filename(filename)
+    if _attachment_cache is not None:
+        from agent_backend.models import digest, uid
+        target_dir = _attachment_cache / digest([frontend_id, user_id])
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / (uid() + "-" + safe_filename)
+        target.write_bytes(data)
+        return str(target)
+    from container_up.attachment_paths import child_attachment_cache_dir, host_attachment_cache_dir
     host_dir = host_attachment_cache_dir(
         user_id=user_id,
         attachment_group=attachment_group,

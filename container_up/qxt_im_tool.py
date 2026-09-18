@@ -66,6 +66,7 @@ class QxtIMParser:
     ) -> None:
         self.frontend_id = frontend_id
         config = dict(frontend_config or {})
+        self.attachment_url_prefix = config.get("attachment_url_prefix")
         configured_app_id = app_id or config.get("app_id")
         configured_app_secret = (
             app_secret or config.get("app_secret") or config.get("secret")
@@ -350,7 +351,7 @@ class QxtIMParser:
         attachments: list[Any],
     ) -> tuple[list[Any], bool]:
         normalized = list(attachments)
-        auto_attachment = attachment_from_content_url(content)
+        auto_attachment = attachment_from_content_url(content, self.attachment_url_prefix)
         if auto_attachment and not any(
             (
                 isinstance(item, dict)

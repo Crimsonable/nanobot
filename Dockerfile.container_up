@@ -1,34 +1,14 @@
-FROM python:3.12-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-WORKDIR /runtime
-
-COPY container_up/pyproject.toml ./pyproject.toml
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential curl ca-certificates && \
-    ARCH="$(dpkg --print-architecture)" && \
-    case "${ARCH}" in \
-      amd64) KUBECTL_ARCH=amd64 ;; \
-      arm64) KUBECTL_ARCH=arm64 ;; \
-      *) echo "unsupported architecture: ${ARCH}" && exit 1 ;; \
-    esac && \
-    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.33.1/bin/linux/${KUBECTL_ARCH}/kubectl" && \
-    chmod +x /usr/local/bin/kubectl && \
-    python - <<'PY' > /tmp/requirements.txt
-import tomllib
-from pathlib import Path
-
-data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-deps = list(data["project"]["dependencies"])
-deps.extend(data["project"].get("optional-dependencies", {}).get("api", []))
-print("\n".join(deps))
-PY
-
-RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
-    rm -f /tmp/requirements.txt && \
-    rm -rf /var/lib/apt/lists/*
-
-CMD ["sh", "-lc", "export PYTHONPATH=\"$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}\"; exec python -m container_up.app"]
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /opt/app
+COPY requirements-backend.lock /opt/build/requirements.lock
+COPY vendor/wheels /opt/build/wheels
+RUN pip install --no-index --find-links=/opt/build/wheels --require-hashes -r /opt/build/requirements.lock \
+    && rm -rf /opt/build
+COPY agent_backend /opt/app/agent_backend
+COPY container_up /opt/app/container_up
+RUN useradd --uid 10001 --create-home agent && mkdir /data && chown agent:agent /data
+USER 10001:10001
+EXPOSE 8000
+CMD ["python", "-m", "agent_backend", "control", "--config", "/etc/agent/container-up.yaml"]

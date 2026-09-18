@@ -1,0 +1,5 @@
+{
+  "send_msg_url": "http://your-frontend/internal/agent-reply",
+  "send_msg_retry_count": 1,
+  "send_msg_retry_backoff": 1
+}
