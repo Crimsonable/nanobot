@@ -124,7 +124,7 @@ def create_app(settings: Settings | None = None, service: ExpertService | None =
         name="hazard_analysis_expert",
         description=(
             "隐患识别与分析专家：根据用户问题和图片、视频或文档附件 URL，"
-            "调用用户绑定的 nanobot 分析现场隐患、风险和整改措施。"
+            "调用当前 frontend 下用户的 OpenCode 会话分析现场隐患、风险和整改措施。"
             "user_id 必须是当前用户 ID；复用相同 chat_id 继续多轮对话，"
             "切换 chat_id 开启独立会话。attachments 无附件时可省略。"
         ),

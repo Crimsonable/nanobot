@@ -185,4 +185,4 @@ kubectl apply -f /tmp/opencode-bucket-updates.yaml
 
 Web 代理清单为 k8s/opencode/web-server.yaml；不检查或透传 CU API key。作为异步回调接收器时，把对应 frontend 的 send_msg_url 设为 http://web-server:8000/outbound；同步请求直接访问 CU /inbound-sync/<id>。
 
-工程场景 MCP 使用 k8s/base/engineering-scene-mcp.yaml（8090 / NodePort 30087）；隐患专家 MCP 使用 k8s/base/hazard-expert-mcp.yaml（8082 / NodePort 30088）。源码均挂载统一 source 卷，分别构建其基础镜像。隐患专家配置 MCP_API_KEY、MinIO 及已注册的 CONTAINER_UP_FRONTEND_ID，调用 CU 不需要额外凭据。它是业务入口，不要注册为同一 CU 的模型工具以免递归调用，详见 ../../hazard_expert_mcp/README.md。
+工程场景 MCP 使用 k8s/opencode/engineering-scene-mcp.yaml（8090 / NodePort 30087）；隐患专家 MCP 使用 k8s/opencode/hazard-expert-mcp.yaml（8082 / NodePort 30088）。源码均挂载统一 source 卷，分别构建其基础镜像。隐患专家配置 MCP_API_KEY、MinIO 及已注册的 CONTAINER_UP_FRONTEND_ID，调用 CU 不需要额外凭据。它是业务入口，不要注册为同一 CU 的模型工具以免递归调用，详见 ../../hazard_expert_mcp/README.md。

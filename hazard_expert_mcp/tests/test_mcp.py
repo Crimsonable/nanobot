@@ -26,7 +26,7 @@ def test_deployment_environment_and_production_lifespan(monkeypatch, deployment)
         assert list(compose["services"]) == ["hazard-expert-mcp"]
         env = compose["services"]["hazard-expert-mcp"]["environment"]
     else:
-        manifest = project.parent / "k8s/base/hazard-expert-mcp.yaml"
+        manifest = project.parent / "k8s/opencode/hazard-expert-mcp.yaml"
         resources = list(yaml.safe_load_all(manifest.read_text(encoding="utf-8")))
         service = next(item for item in resources if item["kind"] == "Service")
         workload = next(item for item in resources if item["kind"] == "Deployment")
@@ -164,7 +164,7 @@ def test_auth_health_and_request_limits(settings):
     "headers",
     [
         {"Host": "192.168.1.20:30088"},
-        {"Host": "hazard-expert-mcp.nanobot.svc.cluster.local:8082"},
+        {"Host": "hazard-expert-mcp.opencode-sv.svc.cluster.local:8082"},
         {"Origin": "https://client.example.com"},
         {"Host": "mcp.example.com", "Origin": "https://another-client.example.com"},
     ],

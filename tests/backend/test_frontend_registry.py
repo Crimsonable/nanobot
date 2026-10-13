@@ -217,7 +217,7 @@ def test_bucket_manifest_and_upgrade_use_recorded_frontend(registry):
 
 
 def test_registry_rejects_duplicate_ids_and_global_frontend_credentials(registry):
-    _, config = registry
+    path, config = registry
     raw = config.model_dump()
     assert FrontendsConfig.model_validate(raw).model_dump() == raw
     raw["frontends"][1]["id"] = raw["frontends"][0]["id"]
@@ -227,3 +227,7 @@ def test_registry_rejects_duplicate_ids_and_global_frontend_credentials(registry
     raw["frontends"][0]["api_key_file"] = "/old/web-api-key"
     with pytest.raises(ValueError, match="Extra inputs"):
         FrontendsConfig.model_validate(raw)
+    path.write_text(json.dumps({"id": "web-a", "provider": "web",
+        "runtime": {"profiles": {"reports": {"model": "local/test"}}}}))
+    with pytest.raises(ValueError, match="frontends"):
+        load_frontends(path)

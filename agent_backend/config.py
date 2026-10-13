@@ -280,7 +280,7 @@ class FrontendSettings(StrictModel):
 
 
 class FrontendConfig(FrontendSettings):
-    """A selected frontend plus CU infrastructure settings; also reads legacy input."""
+    """A selected frontend plus CU infrastructure settings."""
 
     control: ControlSettings = Field(default_factory=ControlSettings)
 
@@ -397,10 +397,6 @@ class FrontendsConfig(StrictModel):
 
 def load_frontends(path: Path) -> FrontendsConfig:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    # Keep single-frontend input readable during migration; new deployments use a registry.
-    if "frontends" not in raw:
-        control = raw.pop("control", {})
-        raw = {"control": control, "frontends": [raw]}
     return FrontendsConfig.model_validate(raw)
 
 

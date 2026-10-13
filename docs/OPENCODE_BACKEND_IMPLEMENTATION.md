@@ -62,7 +62,7 @@ MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，支�
 
 ## 配置与部署
 
-配置布局沿用原 nanobot 分支的 frontend 作用域：`common/frontends.json` 是统一入口总表，`frontends` 数组中每项定义一个 frontend，`control` 是 CU/集群的公共基础设施参数。一个 CU 接入多个 frontend，按 frontend 创建独立桶，不同 frontend 的模型、权限或模板不会混用。
+`common/frontends.json` 是统一入口总表，`frontends` 数组中每项定义一个 frontend，`control` 是 CU/集群的公共基础设施参数。一个 CU 接入多个 frontend，按 frontend 创建独立桶，不同 frontend 的模型、权限或模板不会混用。
 
 - `config/opencode/frontends.json`：每项保留 id、provider、send_msg_url、attachment_storage、instance_idle_ttl_seconds、profile_id、channel 和 runtime。runtime.profiles 选择该 frontend 使用的模型及指令；渠道凭据放在自己的 channel 中。
 - `config/opencode/web-yk/config/opencode-server.json`：部署到 common/web-yk/config/，包含仅该 frontend 生效的模型 provider、API key、MCP、LSP、formatter、skills 等原生配置。自动更新关闭，二进制统一从服务器目录更新。
@@ -126,11 +126,11 @@ docker save agent-container-up:opencode-1.18.31 agent-bucket-runtime:opencode-1.
 
 APT、Chromium 和基础镜像获取发生在构建期；离线环境导入完成的镜像。不是在无基础依赖的机器上直接执行联网 Docker 构建。Python 包由带 hash 的 lock 文件和 wheelhouse 安装，插件由 npm lock 构建并包含离线依赖，runtime 不主动安装依赖；管理员额外开启的 OpenCode 自动更新、插件或 LSP 下载功能可能自行访问网络，离线部署需预置所需资源。
 
-## 动态 bucket 池（恢复原有调度机制）
+## 动态 bucket 池
 
-参考迁移前 ae37e6c1 中的 binding_repository、bucket_scheduler、bucket_manager：数据库事务预占名额、复用未满 bucket、按需创建 Deployment、空闲后 scale 到 0。旧实现的每用户进程生命周期不再保留；现在一个 bucket 只有一个 runtime 和一个 OpenCode server，多个用户各自使用 session。
+CU 通过数据库事务预占名额、复用未满 bucket、按需创建 Deployment，空闲后 scale 到 0。一个 bucket 只有一个 runtime 和一个 OpenCode server，多个用户各自使用 session。
 
-1. 全新部署只有 CU（以及 Service/RBAC/Secret 等资源），没有 bucket Pod。
+1. 全新部署只有 CU（以及 Service/RBAC/PVC 等资源），没有 bucket Pod。
 2. CU 在 SQLite 的 bucket/binding 记录中原子预占用户容量。已分配用户复用当前 bucket；新用户优先选择有容量的活跃 bucket，没有则创建或唤醒空 bucket。
 3. max_users_per_bucket 限制整个 bucket 存活期间分配的不同用户数；runtime.limits.active 另行限制同时执行的请求数，两者不是同一个限制。不会按单个用户空闲释放名额。
 4. CU 调用 Kubernetes API 创建 Deployment，runtime 启动唯一的 OpenCode server、完成插件初始化并连接 CU 的 WS 后才派发请求。冷启动失败回滚未接受请求的用户预占。
@@ -141,7 +141,7 @@ K8s 示例：k8s/opencode/backend.yaml。CU 的 ServiceAccount 只授予当前�
 
 frontends.json 的 control.bucket_pool 配置镜像、命名空间、max_users_per_bucket、启动超时、扫描间隔、PVC 名称与节点选择器。两种服务挂载同一份 frontends.json，不生成独立 runtime 配置。配置更改需要重启 CU，并在 bucket 重建时生效。
 
-服务器目录沿用原 k8s/base/base.yaml 的 PV/PVC 机制：data PVC 在 CU 挂载 /mnt/env，在 bucket 仅挂载 workspaces/<frontend_id> 子目录到 /mnt/env/workspaces/<frontend_id>；source PVC → /mnt/source（只读），common PVC 在 CU 挂载 /mnt/common，在 bucket 分别挂载 /mnt/common/<frontend_id>/app、/mnt/common/<frontend_id>/config 和单独的 frontends.json（只读）。物理目录统一为 /data/opencode_backend_k8s/{data,source,common}，默认用户工作目录仍是 /mnt/env/workspaces/<frontend>/<user>，identity_hash 布局为 /mnt/env/workspaces/<frontend>/<identity_hash>。已有部署需先迁移旧目录内容并调整存储绑定；默认路径未变时无需移动用户文件，但仍须更新桶挂载模板。storage.yaml 通过 storage_backend 选择 local 或 NFS；服务 SQLite/OpenCode 状态另用本地 state PVC → /data。每次收到请求和真正开始执行前均检查工作目录，缺失时重建，并补齐 output/scratch；可选模板来自 /mnt/common/<frontend_id>/app/templates，不覆盖已有文件。公共目录同时列入用户默认权限和 bwrap 只读挂载。
+服务器存储由 k8s/opencode/storage.yaml 提供：data PVC 在 CU 挂载 /mnt/env，在 bucket 仅挂载 workspaces/<frontend_id> 子目录到 /mnt/env/workspaces/<frontend_id>；source PVC → /mnt/source（只读），common PVC 在 CU 挂载 /mnt/common，在 bucket 分别挂载 /mnt/common/<frontend_id>/app、/mnt/common/<frontend_id>/config 和单独的 frontends.json（只读）。物理目录统一为 /data/opencode_backend_k8s/{data,source,common}，默认用户工作目录为 /mnt/env/workspaces/<frontend>/<user>，identity_hash 布局为 /mnt/env/workspaces/<frontend>/<identity_hash>。storage.yaml 通过 storage_backend 选择 local 或 NFS；服务 SQLite/OpenCode 状态另用本地 state PVC → /data。每次收到请求和真正开始执行前均检查工作目录，缺失时重建，并补齐 output/scratch；可选模板来自 /mnt/common/<frontend_id>/app/templates，不覆盖已有文件。公共目录同时列入用户默认权限和 bwrap 只读挂载。
 
 完整部署步骤、节点权限、配置文件、NodePort 与 local/NFS 切换见 [Kubernetes 部署说明](../k8s/opencode/README.md)。
 
@@ -161,15 +161,13 @@ kubectl apply -f k8s/opencode/backend.yaml
 
 现有 bwrap 节点要求不变：允许非特权 user namespace，并配置兼容的 seccomp/AppArmor 策略。附件仅传引用；publish_attachment 继续在 bucket 内上传 MinIO，CU 不下载文件。
 
-## 2026-10-13：同步 k8s-merge-nanobot
-
-已合入截至 1bf28c7c 的三个提交，按 OpenCode 架构适配：
+## 渠道与业务服务
 
 - QXT 支持 group_chat_at_bot，保留群 ID 为可信回复目标；新增 media_id 复用与可选 channel.attachment_delivery=media。默认仍发送 MinIO 链接，同步回复始终返回 URL。详见 ATTACHMENT_UPLOAD_API.md。
 - 新增 hazard_expert_mcp，业务客户端可上传 Base64 附件到 MinIO，再调用分析工具请求 CU /inbound-sync。部署已改用 opencode-sv、opencode-source-pvc、opencode-runtime=true 和 CU 8000 端口。它不是应注册给同一 OpenCode 的模型工具，否则可能递归请求自身。
-- 订阅失败记录 frontend/chat 上下文并传播错误；取消不被吞掉。旧进程启动日志修复涉及已删除的每用户 process_manager，不恢复该实现；新 Supervisor 使用继承的 stdout/stderr，runtime serve 在 finally 停止子进程。
+- 订阅失败记录 frontend/chat 上下文并传播错误；取消不被吞掉。Supervisor 使用继承的 stdout/stderr，runtime serve 在 finally 停止 OpenCode 子进程。
 - Web 代理过滤旧 raw 字段，适配严格的新入站 schema；入站 key 已取消，代理不再传递 Authorization。同步 API 文档已更新。
-- 旧 nanobot message、multipart 附件和 bridge 实现仍退役。对应本地文件发布使用 runtime publish_attachment；兼容附件接口支持 JSON 引用和 QXT outbound URL。
+- 本地文件由 runtime publish_attachment 发布；附件引用接口支持 JSON 引用和 QXT outbound URL。业务客户端可通过 hazard_expert_mcp 上传 Base64 文件到 MinIO。
 
 代码主链路齐备，但并非零配置生产部署：示例模型、渠道、MinIO、密钥必须替换；飞书私有附件没有自动授权下载器，图片引用不会自动转为模型视觉输入；CU/bucket WS 仅校验登记 ID、没有通信认证，部署清单未提供 NetworkPolicy；共享 OpenCode 的原生/MCP I/O 也不等同于每用户 OS 隔离。生产部署前仍需验证真实渠道、模型、对象存储与集群节点能力。
 

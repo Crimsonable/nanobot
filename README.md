@@ -12,6 +12,7 @@
 - `opencode_plugin`：工具调用 hook 和附件发布工具。
 - `public`：公共技能与报告脚本。
 - `engineering_scene_mcp`：可选的工程场景分析服务。
+- `hazard_expert_mcp`：供业务客户端上传附件、调用 OpenCode 隐患分析的入口。
 
 ## 配置
 
@@ -33,7 +34,7 @@ python -m agent_backend control --config config/opencode/frontends.json
 
 发布镜像、离线资源、权限开关、附件链路、HTTP 接口与部署细节见 [运行说明](docs/OPENCODE_BACKEND_IMPLEMENTATION.md)。
 
-部署文件和完整步骤见 [Kubernetes 部署说明](k8s/opencode/README.md)，包含原服务器目录的 PV/PVC、local/NFS 选择及每请求工作目录重建。
+部署清单统一放在 `k8s/opencode/`，MinIO 清单放在 `k8s/minio/`。完整步骤见 [Kubernetes 部署说明](k8s/opencode/README.md)，包含 PV/PVC、local/NFS 选择及每请求工作目录重建。
 
 全部业务源码与 opencode_plugin 统一放入服务器 source 目录，只读挂载到 /mnt/source。OpenCode 二进制单独放入服务器 opencode/opencode，所有桶只读使用同一份文件。更新 Python 源码、构建后的插件或 OpenCode 二进制后重启服务即可，无需重新构建镜像；Python/系统依赖变化才需要更新基础运行镜像。
 

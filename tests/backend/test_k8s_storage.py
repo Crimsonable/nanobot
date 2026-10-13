@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_all_services_use_one_source_mount_and_shared_opencode_binary():
     config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
     workloads = []
-    for path in ["k8s/opencode/backend.yaml", "k8s/base/engineering-scene-mcp.yaml", "k8s/base/hazard-expert-mcp.yaml", "k8s/opencode/web-server.yaml"]:
+    for path in ["k8s/opencode/backend.yaml", "k8s/opencode/engineering-scene-mcp.yaml", "k8s/opencode/hazard-expert-mcp.yaml", "k8s/opencode/web-server.yaml"]:
         workloads.extend(d for d in yaml.safe_load_all((ROOT / path).read_text(encoding="utf-8")) if d["kind"] == "Deployment")
     runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
     workloads.append(runtime)

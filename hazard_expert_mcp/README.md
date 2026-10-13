@@ -1,5 +1,3 @@
-> OpenCode 分支部署说明：使用 `k8s/base/hazard-expert-mcp.yaml`，命名空间 opencode-sv，节点标签 opencode-runtime=true，源码卷 opencode-source-pvc。先把本目录复制到服务器 source/hazard_expert_mcp，再构建独立 MCP 镜像。CU 地址为 http://container-up.opencode-sv.svc.cluster.local:8000，frontend ID 必须匹配 common/frontends.json 中的注册项（示例 web-yk），调用 CU 不需要 API key。MinIO 桶与密钥按实际配置填写。此 MCP 是供业务客户端调用的入口，内部 analyze 工具回调 CU；不要把它注册为同一 CU 的 OpenCode 模型工具，以免递归调用自身。下文旧端口/ID示例须按这些值调整。
-
 # 隐患识别与分析 MCP 服务
 
 独立运行的 Streamable HTTP MCP 服务，地址为 `/mcp`，只注册两个工具：
@@ -9,17 +7,17 @@
 | `upload_attachment`（上传附件至 MinIO） | 接收文件内容的 Base64，上传 MinIO，返回预签名下载 URL |
 | `hazard_analysis_expert`（隐患识别与分析专家） | 将当前用户 ID、会话 ID、问题及附件 URL 转发给 container-up 的 `inbound-sync`，等待最终回答 |
 
-只增加调用入口。专家能力由所选 frontend 对应的 nanobot 配置、提示词及技能提供。
+专家能力由当前 frontend 的 OpenCode 模型、提示词及技能提供：模型/provider 配置位于 `common/<frontend_id>/config/opencode-server.json`，用户权限位于同目录的 `user-permissions.yaml`，业务资料和技能位于 `app/`。本服务是业务客户端的入口，内部分析工具调用 CU；不要将它注册为同一 CU 的 OpenCode 模型工具，以免递归调用自身。
 上传直接使用 MinIO S3 API，无需依赖 container-up 上传接口，也不自动创建桶。
 
 ## Docker Compose 部署
 
-修改本目录 **`docker-compose.yml`** 中的配置，所有运行配置均放在此文件，不需要 `.env`、JSON 配置文件或源码挂载：
+修改本目录 **`docker-compose.yml`** 中的配置。本服务的环境变量集中在此文件，源码通过只读挂载加载，镜像只提供 Python 与依赖：
 
-1. 设置 `CONTAINER_UP_BASE_URL` 为已部署的 container-up 地址。
-2. 设置 `CONTAINER_UP_FRONTEND_ID` 为其 `frontends.json` 中已有的 frontend；沿用原 frontend 才能进入该用户原来的工作空间和实例。
+1. 设置 `CONTAINER_UP_BASE_URL` 为已部署的 container-up 地址；示例通过宿主机的 NodePort 30080 访问 Kubernetes CU。本地直接启动 CU 时改用其实际监听端口，默认 8000。
+2. 设置 `CONTAINER_UP_FRONTEND_ID` 为 `common/frontends.json` 中已注册的 frontend，示例为 `web-yk`。会话与工作空间按 frontend 和 user_id 隔离。
 3. 设置 MinIO API 地址、桶名、凭证。桶需存在，凭证需有该桶目标前缀的 `PutObject` 和 `GetObject` 权限。
-4. 设置 `MINIO_DOWNLOAD_ENDPOINT` 为调用方及 nanobot 都可访问的同一 MinIO S3 服务地址。它是 `https://files.example.com` 这样的 origin，不包含桶名、路径前缀、查询参数。生成链接时直接对此地址签名，不能在生成后替换域名。留空则沿用 `MINIO_ENDPOINT`。
+4. 设置 `MINIO_DOWNLOAD_ENDPOINT` 为调用方及 OpenCode 工具都可访问的同一 MinIO S3 服务地址。它是 `https://files.example.com` 这样的 origin，不包含桶名、路径前缀、查询参数。生成链接时直接对此地址签名，不能在生成后替换域名。留空则沿用 `MINIO_ENDPOINT`。
 5. 替换 `MCP_API_KEY`。服务不限制 MCP 请求的 Host 或 Origin，无需配置域名或来源白名单。浏览器跨站调用需要的 CORS 响应头可在网关配置。
 
 ```bash
@@ -31,18 +29,18 @@ docker compose logs -f hazard-expert-mcp
 默认 MCP 地址：`http://localhost:8082/mcp`。健康检查：`http://localhost:8082/healthz`。
 Compose 只启动此 MCP 服务，复用现有 container-up 和 MinIO。
 `host.docker.internal` 示例用于访问 Docker 宿主机发布的端口；如果后端在其他机器，直接填写实际地址。
-服务自带文件和依赖，不需要挂载 nanobot 源码。镜像以非 root 用户运行。
+Compose 将项目源码只读挂载到 `/mnt/source`，镜像以 UID 10001 运行。更新源码后重启服务即可，依赖变化时重建镜像。
 
 ## Kubernetes 部署
 
-使用仓库根目录的 [`k8s/base/hazard-expert-mcp.yaml`](../k8s/base/hazard-expert-mcp.yaml)。
-与 engineering MCP 一样，采用 `nanobot` Namespace、`nanobot_node=prod` 节点选择、`nanobot-source-pvc` 只读源码挂载和 NodePort Service。
+使用仓库根目录的 [`k8s/opencode/hazard-expert-mcp.yaml`](../k8s/opencode/hazard-expert-mcp.yaml)。
+与 engineering MCP 一样，采用 `opencode-sv` Namespace、`opencode-runtime=true` 节点选择、`opencode-source-pvc` 只读源码挂载和 NodePort Service。
 集群部署的全部运行配置位于该 YAML 的 Deployment `env` 中，无需额外 ConfigMap、Secret 或 JSON 配置文件。
 Compose 与 Kubernetes 是两种部署入口，分别编辑各自的环境变量。
 
-1. 确保现有 `k8s/base/base.yaml` 提供的 Namespace 和源码 PVC 已就绪，目标节点具有 `nanobot_node=prod` 标签。
+1. 按 [OpenCode 部署说明](../k8s/opencode/README.md) 准备 `storage.yaml` 中的 Namespace/PVC 和 `backend.yaml` 中的 CU，目标节点具有 `opencode-runtime=true` 标签。
 2. 将本目录同步到源码 PVC 根目录下的 `hazard_expert_mcp/`，使容器中的 `/mnt/source/hazard_expert_mcp/hazard_expert_mcp/app.py` 存在。与 engineering MCP 相同，Kubernetes 从挂载的源码目录启动。源目录和文件需允许镜像的 UID 10001 读取。
-3. 修改清单中的镜像地址、`CONTAINER_UP_FRONTEND_ID`、服务访问凭证和 MinIO 凭证；桶必须已创建。默认后端地址为集群内的 container-up 和 MinIO Service。
+3. 修改清单中的镜像地址、`CONTAINER_UP_FRONTEND_ID`、MCP 服务访问凭证和 MinIO 凭证；存储桶必须已创建。默认后端为 `http://container-up.opencode-sv.svc.cluster.local:8000`，调用 CU 不需要 API key。
 4. 外部客户端需要下载附件时，设置 `MINIO_DOWNLOAD_ENDPOINT` 为双方可访问的 S3 地址。
 
 从仓库根目录构建并部署：
@@ -50,17 +48,17 @@ Compose 与 Kubernetes 是两种部署入口，分别编辑各自的环境变量
 ```bash
 docker build -f hazard_expert_mcp/Dockerfile -t hazard-expert-mcp:1.0.0 hazard_expert_mcp
 # 将镜像推送到集群可访问的仓库并更新 YAML 的 image，或导入目标节点的容器运行时。
-kubectl apply -f k8s/base/hazard-expert-mcp.yaml
-kubectl rollout status deployment/hazard-expert-mcp -n nanobot
-kubectl logs -n nanobot deployment/hazard-expert-mcp -f
+kubectl apply -f k8s/opencode/hazard-expert-mcp.yaml
+kubectl rollout status deployment/hazard-expert-mcp -n opencode-sv
+kubectl logs -n opencode-sv deployment/hazard-expert-mcp -f
 ```
 
-- 集群内 MCP 地址：`http://hazard-expert-mcp.nanobot.svc.cluster.local:8082/mcp`
+- 集群内 MCP 地址：`http://hazard-expert-mcp.opencode-sv.svc.cluster.local:8082/mcp`
 - 集群外 MCP 地址：`http://<节点 IP>:30088/mcp`
 - 探针地址：`/healthz`
 
-只更新挂载源码后，可执行 `kubectl rollout restart deployment/hazard-expert-mcp -n nanobot`；依赖发生变化时需要重建镜像。
-如果部署到现有 `nanobot-test` 环境，需要同步修改清单的 Namespace、节点标签为 `test`、container-up 服务地址中的命名空间，以及另一个未占用的 NodePort。
+只更新挂载源码后，可执行 `kubectl rollout restart deployment/hazard-expert-mcp -n opencode-sv`；依赖发生变化时需要重建镜像。
+部署到其他命名空间时，同步修改 Namespace、PVC、节点选择、container-up 服务地址以及 NodePort。
 
 ## 客户端连接
 
@@ -148,18 +146,18 @@ HTTP MCP 服务无法读取调用方电脑上的路径，因此不接收本地�
 
 ```json
 {
-  "url": "https://files.example.com/nanobot-attachments/hazard-expert/...?X-Amz-Signature=...",
+  "url": "https://files.example.com/attachments/hazard-expert/...?X-Amz-Signature=...",
   "filename": "现场照片.jpg",
   "content_type": "image/jpeg",
   "size_bytes": 123456,
-  "bucket": "nanobot-attachments",
+  "bucket": "attachments",
   "object_key": "hazard-expert/<用户ID哈希>/2026/09/21/<随机ID>-现场照片.jpg",
   "expires_at": "2026-09-22T08:00:00+00:00"
 }
 ```
 
 下载链接默认有效 24 小时（最多 7 天），无需公开桶。到期后持久化对象仍存在；本服务没有额外注册续签或删除工具。上传不会覆盖同名对象。
-历史会话重读附件仍受链接有效期约束，需由 nanobot 保留已下载附件，或重新上传并提供新的链接。
+历史会话重读附件仍受链接有效期约束。CU/runtime 不自动下载或缓存入站附件；需要长期使用时，由 OpenCode 工具按权限保存到该用户工作空间，或重新上传并提供新的链接。
 
 ### 隐患识别与分析
 
@@ -173,7 +171,7 @@ HTTP MCP 服务无法读取调用方电脑上的路径，因此不接收本地�
 ```
 
 `attachments` 是 HTTP(S) URL 字符串数组，最多 20 个，可省略或传 `[]`。也可直接使用已有的可下载 URL。
-URL 会保留完整查询字符串，支持预签名链接；nanobot 所在环境必须能访问这些 URL。
+URL 会保留完整查询字符串，支持预签名链接。读取工具所在环境须能访问这些 URL；Bash 下载需为该用户开启 `sandbox.network`。图片 URL 在 CU 中只作为引用传递，实际视觉分析需在对应 frontend 配置可读取图片的工具或图像分析 MCP。
 
 上游请求精确映射为：
 
@@ -194,14 +192,13 @@ Content-Type: application/json
 工具返回 `status`、`user_id`、`chat_id`、`content`、`attachments`。上游桶 ID、实例 ID 和内部 metadata 不作为专家工具输出。
 后续调用使用同一 `user_id` 和 `chat_id`，例如 `query="第二项隐患应如何整改？"`，即可继续原会话；更换 `chat_id` 则使用另一个会话。
 
-会话保存在后端 nanobot。本服务不把 MCP 连接 ID 当作聊天 ID，也不在重新连接或重启时生成新的 chat_id。
-**后端 `agents.defaults.unifiedSession`（Python 配置字段 `unified_session`）须为 `false`**，否则 nanobot 会合并不同 chat_id；当前默认值为 false。同一会话应在上一轮完成后再发下一轮。
+会话由 OpenCode 后端按 `frontend_id + user_id + chat_id` 管理。MCP 连接 ID 不参与会话标识，重新连接或重启也不会生成新的 chat_id。运行中的 bucket 复用对应 OpenCode session，bucket 回收后由 CU 保存的近期上下文恢复会话。同一用户请求由 runtime 串行执行。
 
 ## 超时和运行约束
 
 - `CONTAINER_UP_TIMEOUT_SECONDS` 默认 720 秒，覆盖上游默认 600 秒同步等待及实例冷启动。MCP 客户端、反向代理的请求/读取超时也需要相应调大。
 - 上游请求不自动重试。超时、断网或 MCP 客户端断开并不保证后端任务被取消；避免自动重复提交造成重复执行。
-- 当前 container-up 的 `SyncReplyBroker` 使用进程内存。请求和对应 outbound 回调必须到达同一 container-up 进程；部署多副本/多 worker 前需处理回复路由或共享关联状态。MCP 本身无状态不能消除这一限制。
+- CU 通过 SQLite 保存请求和结果，bucket 通过 WebSocket 回传结果。当前部署使用单 CU 副本、单 worker，且数据库有单写锁；不能直接扩成多个 CU 副本共用状态目录。
 - `/healthz` 只检查 MCP 进程存活，不保证 container-up 或 MinIO 可用。
 
 ## 本地验证

@@ -69,7 +69,7 @@ spec:
             # 对接仓库 k8s/minio/minio.yaml 中的 S3 Service。
             - name: MINIO_ENDPOINT
               value: "http://minio.minio.svc.cluster.local:9000"
-            # 外部调用时填写调用方和 nanobot 均可访问的 S3 地址，不带桶名。
+            # 外部调用时填写调用方和 OpenCode 工具均可访问的 S3 地址，不带桶名。
             # 留空使用上面的集群地址，下载链接此时仅适用于能解析集群 DNS 的客户端。
             - name: MINIO_DOWNLOAD_ENDPOINT
               value: ""

@@ -8,7 +8,7 @@ CU 入站只传引用，不下载文件、不读取用户工作目录。OpenCode
 
 同步 `/inbound-sync/{frontend_id}` 始终返回可下载 URL。异步 Web 回调带 attachments；QXT/飞书默认发送链接文本。QXT 可在 frontends.json 的对应 frontend 条目中设置 `channel.attachment_delivery: "media"`，由 CU 从发布 URL 下载、上传 QXT，再用 media_id 发往原私聊或群聊。默认值 `links` 保持链接发送。媒体模式需要 CU 能访问 MinIO URL 和 QXT 媒体接口。
 
-## 内部兼容接口
+## 内部附件引用接口
 
 `POST /internal/attachments/upload` 接收 JSON，不需要 API key；frontend_id 必须已经注册。
 
@@ -25,4 +25,4 @@ reference 返回规范化引用。outbound + QXT 仅接受 HTTP(S) URL，下载�
 
 QXT 适配器可直接复用同一 frontend 的 media_id，跨 frontend 引用被拒绝。media_id 不是下载 URL，不能作为 OpenCode 入站附件或 runtime 最终结果提交。
 
-旧 nanobot 的 multipart/message/bridge 链路已退役；本分支不恢复它。业务上传输入文件可使用独立 hazard-expert-mcp 的 upload_attachment 工具上传 MinIO，再提交返回的 URL。
+业务上传输入文件可使用 hazard-expert-mcp 的 upload_attachment 工具上传 MinIO，再提交返回的 URL。CU 的该接口只接受 JSON，不接收文件字节。

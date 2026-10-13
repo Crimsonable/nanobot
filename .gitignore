@@ -23,13 +23,10 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
-botpy.log
-container_up_runtime/
 .DS_Store
 uv.lock
 *.tar
 *.db
-zhicheng-hazard-report/
 */workspaces/
 .mypy_cache/
 .ruff_cache/
