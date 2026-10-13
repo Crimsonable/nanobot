@@ -704,7 +704,6 @@ async def subscribe_frontend(frontend_id: str, sub_form: SubForm) -> dict[str, A
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload is not None:
-        print(payload)
         asyncio.create_task(_dispatch_subscribe_event(payload))
     return response
 
