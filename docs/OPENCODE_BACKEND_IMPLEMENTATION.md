@@ -54,7 +54,7 @@ python -m agent_backend control --config /mnt/common/frontend.json
 
 出站由 OpenCode 主动调用 `publish_attachment(files=[{path, filename?}])`。runtime 验证会话、用户、工具开关、票据、路径和文件大小；仅接受用户工作目录内的普通非链接文件，生成本地快照后直接上传 MinIO，取得对象 URL。幂等记录保存在 bucket 数据库，重复调用不重复上传。存储失败会返回工具错误，不登记成功 URL。
 
-上传成功后，工具返回对象 URL，runtime 将附件元数据加入本轮结果，经 WS 发给 CU。Web 返回正文和 attachments；QXT/飞书将对象 URL 作为文本链接发送，不下载再上传到渠道。工具成功代表对象已上传并加入待回复附件，最终渠道投递状态由 CU 记录。
+上传成功后，工具返回对象 URL，runtime 将附件元数据加入本轮结果，经 WS 发给 CU。Web 返回正文和 attachments；QXT/飞书默认将对象 URL 作为文本链接发送；QXT 可通过 channel.attachment_delivery=media 启用下载并上传渠道媒体。工具成功代表对象已上传并加入待回复附件，最终渠道投递状态由 CU 记录。
 
 MinIO 配置统一位于 frontend.json 的 attachment_storage，支持原有 access_key、secret_key、key_prefix、presign_expiry_seconds 字段。bucket 内的发布工具读取它并上传；CU 仅转发 URL。public_base_url 为空时返回签名 URL，CU 不续签。
 
@@ -159,3 +159,15 @@ kubectl apply -f k8s/opencode/backend.yaml
 ```
 
 现有 bwrap 节点要求不变：允许非特权 user namespace，并配置兼容的 seccomp/AppArmor 策略。附件仅传引用；publish_attachment 继续在 bucket 内上传 MinIO，CU 不下载文件。
+
+## 2026-10-13：同步 k8s-merge-nanobot
+
+已合入截至 1bf28c7c 的三个提交，按 OpenCode 架构适配：
+
+- QXT 支持 group_chat_at_bot，保留群 ID 为可信回复目标；新增 media_id 复用与可选 channel.attachment_delivery=media。默认仍发送 MinIO 链接，同步回复始终返回 URL。详见 ATTACHMENT_UPLOAD_API.md。
+- 新增 hazard_expert_mcp，业务客户端可上传 Base64 附件到 MinIO，再调用分析工具请求 CU /inbound-sync。部署已改用 opencode-sv、opencode-source-pvc、opencode-runtime=true 和 CU 8000 端口。它不是应注册给同一 OpenCode 的模型工具，否则可能递归请求自身。
+- 订阅失败记录 frontend/chat 上下文并传播错误；取消不被吞掉。旧进程启动日志修复涉及已删除的每用户 process_manager，不恢复该实现；新 Supervisor 使用继承的 stdout/stderr，runtime serve 在 finally 停止子进程。
+- Web 代理透传调用者 Authorization，并过滤旧 raw 字段，适配严格的新入站 schema。同步 API 文档已更新。
+- 旧 nanobot message、multipart 附件和 bridge 实现仍退役。对应本地文件发布使用 runtime publish_attachment；兼容附件接口支持 JSON 引用和 QXT outbound URL。
+
+代码主链路齐备，但并非零配置生产部署：示例模型、渠道、MinIO、密钥必须替换；飞书私有附件没有自动授权下载器，图片引用不会自动转为模型视觉输入；CU/bucket WS 仅校验登记 ID、没有通信认证，部署清单未提供 NetworkPolicy；共享 OpenCode 的原生/MCP I/O 也不等同于每用户 OS 隔离。生产部署前仍需验证真实渠道、模型、对象存储与集群节点能力。

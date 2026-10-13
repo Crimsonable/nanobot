@@ -84,3 +84,11 @@ web-api-key 至少 16 字符。CU/runtime WS 不再需要通信密钥。MinIO �
 ## 生命周期
 
 `max_users_per_bucket` 控制 bucket 存活期间分配的不同用户数；没有每用户进程或每用户回收。所有请求结束且闲置达到 `instance_idle_ttl_seconds` 后整桶缩容至零，并释放映射。0 禁用自动回收。Pod 销毁不会删除 PVC、用户文件或服务数据库；下一次请求可以重新分配到其他 bucket。
+
+## 合并新增的隐患专家 MCP
+
+额外复制 `hazard_expert_mcp` 整个目录到服务器 source 下，保留两层同名目录。使用其独立 Dockerfile 构建镜像，然后 apply `k8s/base/hazard-expert-mcp.yaml`。该清单使用相同的源码 PVC 和 opencode-runtime=true 节点，Service 8082 / NodePort 30088。
+
+必须填写 MCP_API_KEY、MinIO 设置，以及与 common/frontend.json 对应的 CONTAINER_UP_FRONTEND_ID 和 CONTAINER_UP_API_KEY。CU 默认地址为 `http://container-up.opencode-sv.svc.cluster.local:8000`。此服务是业务入口，不应注册为同一 CU 模型的 MCP 工具。详见 ../../hazard_expert_mcp/README.md。
+
+可选 web_server 只提供异步入站代理；客户端必须携带 CU 的 Bearer API key，代理会透传。若使用其 /outbound 接收回调，将 frontend.json 的 send_msg_url 设为 `http://web-server:8000/outbound`；同步请求直接访问 CU /inbound-sync/{frontend_id}。
