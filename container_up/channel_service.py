@@ -52,7 +52,10 @@ class ChannelService:
             metadata["usage"] = result.usage.model_dump()
         content = result.content
         attachments = [a.model_dump(mode="json") for a in result.attachments]
-        if self.config.frontends[identity["frontend_id"]].provider != "web":
+        frontend = self.config.frontends[identity["frontend_id"]]
+        qxt_media = (frontend.provider == "qxt" and
+                     frontend.channel_config.get("attachment_delivery", "links") == "media")
+        if frontend.provider != "web" and not qxt_media:
             links = "\n".join(f"{a.filename}: {a.url}" for a in result.attachments)
             content = "\n\n".join(part for part in [content, links] if part)
             attachments = []  # Deliver object URLs without downloading/re-uploading channel files.

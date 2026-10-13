@@ -28,9 +28,10 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
         async def __aexit__(self, exc_type, exc, tb) -> bool:
             return False
 
-        async def post(self, url: str, json: dict[str, object]) -> _FakeResponse:
+        async def post(self, url: str, json: dict[str, object], headers: dict[str, str]) -> _FakeResponse:
             captured["url"] = url
             captured["json"] = json
+            captured["headers"] = headers
             return _FakeResponse()
 
     monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
@@ -39,6 +40,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/inbound",
+            headers={"Authorization": "Bearer test-token"},
             json={
                 "frontend_id": "web-main",
                 "user_id": "u-1",
@@ -59,8 +61,8 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
         "content": "hello",
         "attachments": [],
         "metadata": {"k": "v"},
-        "raw": {"source": "web"},
     }
+    assert captured["headers"] == {"Authorization": "Bearer test-token"}
 
 
 def test_web_server_inbound_propagates_http_error(monkeypatch) -> None:
@@ -77,7 +79,7 @@ def test_web_server_inbound_propagates_http_error(monkeypatch) -> None:
         async def __aexit__(self, exc_type, exc, tb) -> bool:
             return False
 
-        async def post(self, url: str, json: dict[str, object]):
+        async def post(self, url: str, json: dict[str, object], headers: dict[str, str]):
             raise httpx.HTTPStatusError("failed", request=request, response=response)
 
     monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
@@ -118,7 +120,7 @@ def test_web_server_create_instances_for_test(monkeypatch) -> None:
         async def __aexit__(self, exc_type, exc, tb) -> bool:
             return False
 
-        async def post(self, url: str, json: dict[str, object]) -> _FakeResponse:
+        async def post(self, url: str, json: dict[str, object], headers: dict[str, str]) -> _FakeResponse:
             captured_posts.append({"url": url, "json": json})
             return _FakeResponse({"status": "accepted", "instance_id": json["user_id"]})
 
@@ -184,7 +186,7 @@ def test_web_server_create_instances_for_test_partial_failure(monkeypatch) -> No
         async def __aexit__(self, exc_type, exc, tb) -> bool:
             return False
 
-        async def post(self, url: str, json: dict[str, object]):
+        async def post(self, url: str, json: dict[str, object], headers: dict[str, str]):
             captured_posts.append({"url": url, "json": json})
             user_id = str(json["user_id"])
             if user_id.endswith("-2"):

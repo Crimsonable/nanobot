@@ -205,11 +205,17 @@ class ControlService:
         raise ValueError("file transfer RPC is not supported; pass attachment references")
 
     async def dispatch_channel(self, frontend_id: str, payload: dict) -> None:
-        event = payload["event"]
-        await self.submit(frontend_id, Inbound(user_id=event["usr_id"],
-            chat_id=event.get("chat_id") or "default", content=event.get("content") or "",
-            attachments=event.get("attachments") or [], metadata=event.get("metadata") or {}),
-            trusted_channel=True)
+        event = payload.get("event") or {}
+        try:
+            await self.submit(frontend_id, Inbound(user_id=event["usr_id"],
+                chat_id=event.get("chat_id") or "default", content=event.get("content") or "",
+                attachments=event.get("attachments") or [], metadata=event.get("metadata") or {}),
+                trusted_channel=True)
+        except Exception:
+            log.exception("subscribe dispatch failed frontend_id=%s chat_id=%s",
+                          frontend_id, event.get("chat_id"))
+            # The HTTP subscriber must see the failure rather than acknowledging lost input.
+            raise
 
     async def deliveries(self) -> None:
         # A crash after sending but before saving success is ambiguous. Never blindly resend.
@@ -400,10 +406,18 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
             raise HTTPException(400, "send a JSON attachment URL or path; file uploads are handled by publish_attachment")
         body = await request.json()
         service.authenticate(body["frontend_id"], request.headers.get("authorization"))
+        purpose = body.get("purpose") or "reference"
+        if purpose not in {"reference", "outbound"}:
+            raise HTTPException(400, "purpose must be reference or outbound")
         reference = {"url": body.get("attachment_url") or body.get("url"), "path": body.get("path"),
                      "filename": body.get("filename"), "content_type": body.get("content_type")}
         items = await service.normalize(Identity(frontend_id=body["frontend_id"],
             user_id=str(body.get("user_id") or "reference")), [reference], False)
+        if purpose == "outbound" and config.frontends[body["frontend_id"]].provider == "qxt":
+            if urlparse(items[0].url).scheme not in {"http", "https"}:
+                raise HTTPException(400, "QXT media upload requires an http(s) URL")
+            return await service.channels.parsers[body["frontend_id"]].upload_outbound_attachment(
+                attachment=items[0].model_dump(mode="json"))
         return items[0].model_dump(mode="json")
 
     return app

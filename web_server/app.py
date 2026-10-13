@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from web_server.settings import (
@@ -54,11 +54,12 @@ def _resolve_frontend_id(payload_frontend_id: str) -> str:
     raise RuntimeError("frontend_id is required")
 
 
-async def _forward_inbound(frontend_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def _forward_inbound(frontend_id: str, payload: dict[str, Any], authorization: str = "") -> dict[str, Any]:
     target_url = f"{CONTAINER_UP_BASE_URL}/inbound/{frontend_id}"
     try:
         async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-            response = await client.post(target_url, json=payload)
+            response = await client.post(target_url, json=payload,
+                                         headers={"Authorization": authorization})
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as exc:
@@ -81,7 +82,7 @@ def health_ready() -> dict[str, str]:
 
 
 @app.post("/inbound")
-async def inbound(payload: InboundRequest) -> dict[str, Any]:
+async def inbound(payload: InboundRequest, request: Request) -> dict[str, Any]:
     frontend_id = _resolve_frontend_id(payload.frontend_id)
     forwarded_payload = {
         "user_id": payload.user_id,
@@ -89,13 +90,12 @@ async def inbound(payload: InboundRequest) -> dict[str, Any]:
         "content": payload.content,
         "attachments": list(payload.attachments),
         "metadata": dict(payload.metadata),
-        "raw": dict(payload.raw),
     }
-    return await _forward_inbound(frontend_id, forwarded_payload)
+    return await _forward_inbound(frontend_id, forwarded_payload, request.headers.get("authorization", ""))
 
 
 @app.post("/test/create-instances")
-async def create_instances_for_test(payload: BatchInboundTestRequest) -> dict[str, Any]:
+async def create_instances_for_test(payload: BatchInboundTestRequest, request: Request) -> dict[str, Any]:
     frontend_id = _resolve_frontend_id(payload.frontend_id)
     batch_id = uuid4().hex[:8]
     requests: list[dict[str, str]] = []
@@ -113,10 +113,9 @@ async def create_instances_for_test(payload: BatchInboundTestRequest) -> dict[st
                 "batch_id": batch_id,
                 "batch_index": index + 1,
             },
-            "raw": {},
         }
         requests.append({"user_id": user_id, "chat_id": chat_id})
-        tasks.append(_forward_inbound(frontend_id, forwarded_payload))
+        tasks.append(_forward_inbound(frontend_id, forwarded_payload, request.headers.get("authorization", "")))
     responses = await asyncio.gather(*tasks, return_exceptions=True)
     results: list[dict[str, Any]] = []
     success_count = 0
