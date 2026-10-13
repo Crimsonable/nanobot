@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -40,6 +41,60 @@ class _FakeResponse:
 
 async def _completed_coro() -> None:
     return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_failed_startup_drains_logs_and_releases_port(monkeypatch, tmp_path, cancelled):
+    manager = ProcessManager(idle_ttl=60)
+    output = asyncio.StreamReader()
+    output.feed_data(b"gateway startup traceback\n")
+    process = SimpleNamespace(returncode=None, stdout=output)
+    messages = []
+    log_read = asyncio.Event()
+    failure = asyncio.CancelledError if cancelled else RuntimeError
+
+    def capture_log(*args):
+        messages.append(args)
+        log_read.set()
+
+    async def spawn(*args, **kwargs):
+        return process
+
+    async def wait_ready(port):
+        await asyncio.wait_for(log_read.wait(), timeout=1)
+        raise failure("not ready")
+
+    async def terminate(child, **kwargs):
+        assert child is process
+        output.feed_data(b"gateway shutdown detail\n")
+        output.feed_eof()
+        process.returncode = 1
+
+    config = SimpleNamespace(
+        config_path=tmp_path / "config.json",
+        template_dir=tmp_path,
+        builtin_skills_dir=tmp_path,
+        raw={},
+    )
+    monkeypatch.setattr("bucket_runtime.process_manager.frontend_config_for", lambda _: config)
+    monkeypatch.setattr(manager._workspace_manager, "ensure_workspace", lambda path, **kw: path)
+    monkeypatch.setattr("bucket_runtime.process_manager.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("bucket_runtime.process_manager.terminate_process_group", terminate)
+    monkeypatch.setattr("bucket_runtime.process_manager.logger.info", capture_log)
+    monkeypatch.setattr(manager, "_wait_instance_ready", wait_ready)
+
+    with pytest.raises(failure, match="not ready"):
+        await manager.create_instance(
+            frontend_id="qxt-main", user_id="user-1", instance_id="failed",
+            workspace_path=str(tmp_path),
+        )
+
+    assert [args[-1] for args in messages] == [
+        "gateway startup traceback", "gateway shutdown detail",
+    ]
+    assert await manager.get_instance("failed") is None
+    assert manager._port_allocator.allocate("next") == 20000
 
 
 @pytest.mark.asyncio

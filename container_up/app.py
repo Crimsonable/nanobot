@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -19,18 +19,19 @@ from container_up.binding_repository import BindingRepository
 from container_up.bucket_client import BucketClient
 from container_up.bucket_manager import BucketManager
 from container_up.bucket_scheduler import BucketScheduler
+from container_up.frontend_config import frontend_config_for
 from container_up.http_state import close_dispatch_session, init_dispatch_session
 from container_up.im_tools import get_im_manager, get_im_parser, init_im_parser
 from container_up.logging_setup import configure_logging
-from container_up.frontend_config import frontend_config_for
 from container_up.outbound_attachment_store import upload_local_attachment
 from container_up.qxt_im_tool import build_im_receive_event
 from container_up.settings import (
     APP_HOST,
     APP_PORT,
-    BUCKET_MAX_INSTANCES_PER_BUCKET,
     BUCKET_IDLE_SWEEP_INTERVAL_SECONDS,
+    BUCKET_MAX_INSTANCES_PER_BUCKET,
     BUCKET_WORKSPACE_ROOT,
+    IM_PROVIDER,
     SYNC_REPLY_TIMEOUT_SECONDS,
 )
 from container_up.sync_reply import REQUEST_ID_KEY, SyncReplyBroker, SyncReplyMiddleware
@@ -52,7 +53,9 @@ cleanup_task: asyncio.Task[None] | None = None
 def _normalize_remote_attachment_payload(url: str) -> dict[str, Any]:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
-        raise HTTPException(status_code=400, detail="attachment_url must be an http(s) URL")
+        raise HTTPException(
+            status_code=400, detail="attachment_url must be an http(s) URL"
+        )
     filename = Path(parsed.path).name or "attachment.bin"
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return {
@@ -261,11 +264,18 @@ async def _forward_outbound_message(packet: dict[str, Any]) -> dict[str, Any]:
 async def _dispatch_subscribe_event(payload: dict[str, Any]) -> None:
     event = dict(payload.get("event") or {})
     metadata = dict(event.get("metadata") or {})
-    parser = get_im_parser(str(metadata.get("frontend_id") or "") or None)
-    prepare_event = getattr(parser, "prepare_inbound_event", None)
-    if callable(prepare_event):
-        payload = await prepare_event(payload)
-    await _dispatch_im_event(payload)
+    try:
+        parser = get_im_parser(str(metadata.get("frontend_id") or "") or None)
+        prepare_event = getattr(parser, "prepare_inbound_event", None)
+        if callable(prepare_event):
+            payload = await prepare_event(payload)
+        await _dispatch_im_event(payload)
+    except Exception:
+        logger.exception(
+            "subscribe dispatch failed frontend_id={} chat_id={}",
+            metadata.get("frontend_id"),
+            event.get("chat_id"),
+        )
 
 
 async def _cleanup_idle_buckets() -> None:
@@ -388,7 +398,9 @@ async def inbound_sync(frontend_id: str, payload: InboundRequest) -> dict[str, A
                 asyncio.shield(pending.future), timeout=SYNC_REPLY_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError as exc:
-            raise HTTPException(status_code=504, detail="timed out waiting for AI reply") from exc
+            raise HTTPException(
+                status_code=504, detail="timed out waiting for AI reply"
+            ) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -510,6 +522,17 @@ async def outbound(payload: OutboundRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _outbound_attachment_parser(frontend: Any, purpose: str) -> Any:
+    if purpose not in {"reference", "outbound"}:
+        raise HTTPException(
+            status_code=400, detail="purpose must be reference or outbound"
+        )
+    provider = str(frontend.raw.get("provider") or IM_PROVIDER).strip().lower()
+    if purpose == "outbound" and provider == "qxt":
+        return get_im_parser(frontend.id)
+    return None
+
+
 @app.post("/internal/attachments/upload")
 async def post_upload_attachment(
     request: Request,
@@ -534,9 +557,16 @@ async def post_upload_attachment(
             if not frontend_id:
                 raise HTTPException(status_code=400, detail="frontend_id is required")
             if not attachment_url:
-                raise HTTPException(status_code=400, detail="attachment_url is required")
+                raise HTTPException(
+                    status_code=400, detail="attachment_url is required"
+                )
             frontend = frontend_config_for(frontend_id)
             normalized = _normalize_remote_attachment_payload(attachment_url)
+            parser = _outbound_attachment_parser(
+                frontend, str(payload.get("purpose") or "reference")
+            )
+            if parser is not None:
+                return await parser.upload_outbound_attachment(attachment=normalized)
             logger.info(
                 "attachment normalize request: content_type='{}' frontend_id='{}' user_id='{}' url='{}'",
                 request_content_type,
@@ -583,6 +613,16 @@ async def post_upload_attachment(
 
         filename = str(getattr(upload, "filename", "") or "").strip()
         frontend = frontend_config_for(frontend_id)
+        parser = _outbound_attachment_parser(
+            frontend, str(form.get("purpose") or "reference")
+        )
+        if parser is not None:
+            return await parser.upload_outbound_attachment(
+                data=await upload.read(),
+                filename=filename or "upload.bin",
+                content_type=str(getattr(upload, "content_type", "") or "").strip()
+                or None,
+            )
         uploaded = await asyncio.to_thread(
             upload_local_attachment,
             frontend_id=frontend.id if frontend else frontend_id,
@@ -626,7 +666,9 @@ async def post_upload_attachment(
             type(exc).__name__,
             request_content_type,
         )
-        raise HTTPException(status_code=500, detail="internal attachment upload error") from exc
+        raise HTTPException(
+            status_code=500, detail="internal attachment upload error"
+        ) from exc
 
 
 @app.post("/api/bridge/outbound")
@@ -662,6 +704,7 @@ async def subscribe_frontend(frontend_id: str, sub_form: SubForm) -> dict[str, A
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload is not None:
+        print(payload)
         asyncio.create_task(_dispatch_subscribe_event(payload))
     return response
 

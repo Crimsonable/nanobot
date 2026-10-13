@@ -352,7 +352,11 @@ def _materialize_attachment_payload(
     ref: str | Path,
     *,
     metadata: dict[str, Any] | None = None,
+    purpose: str = "reference",
 ) -> dict[str, Any] | None:
+    """Upload bytes or normalize a URL; outbound uploads may return channel media IDs."""
+    if purpose not in {"reference", "outbound"}:
+        raise ValueError(f"unsupported attachment purpose: {purpose}")
     meta = dict(metadata or {})
     frontend_id = str(meta.get("frontend_id") or "").strip()
     user_id = str(meta.get("usr_id") or meta.get("user_id") or "").strip()
@@ -390,6 +394,8 @@ def _materialize_attachment_payload(
                     }
                     if user_id:
                         data["user_id"] = user_id
+                    if purpose == "outbound":
+                        data["purpose"] = purpose
                     response = client.post(
                         url,
                         data=data,
@@ -404,6 +410,8 @@ def _materialize_attachment_payload(
                 }
                 if user_id:
                     payload["user_id"] = user_id
+                if purpose == "outbound":
+                    payload["purpose"] = purpose
                 response = client.post(url, json=payload)
             response.raise_for_status()
             parsed = response.json()
@@ -416,6 +424,14 @@ def _materialize_attachment_payload(
     if not isinstance(parsed, dict):
         logger.warning("container-up normalize returned non-object payload for {}: {}", ref, parsed)
         return None
+    if (
+        purpose == "outbound"
+        and parsed.get("storage") == "qxt"
+        and parsed.get("frontend_id") == frontend_id
+        and isinstance(parsed.get("media_id"), str)
+        and parsed["media_id"].strip()
+    ):
+        return parsed
     uploaded = str(parsed.get("url") or "").strip()
     if not uploaded:
         logger.warning("container-up normalize returned no URL for {}", ref)

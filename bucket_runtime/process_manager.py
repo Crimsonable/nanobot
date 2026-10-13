@@ -122,13 +122,6 @@ class ProcessManager:
                 stderr=asyncio.subprocess.STDOUT,
                 **subprocess_group_kwargs(),
             )
-            try:
-                await self._wait_instance_ready(port)
-            except Exception:
-                await terminate_process_group(process, timeout=INSTANCE_STOP_GRACE_SECONDS)
-                self._port_allocator.release(instance_id)
-                raise
-
             instance = UserProcess(
                 instance_id=instance_id,
                 frontend_id=frontend_id,
@@ -141,6 +134,30 @@ class ProcessManager:
                 idle_ttl_seconds=instance_idle_ttl,
             )
             instance.log_task = asyncio.create_task(self._drain_logs(instance))
+            try:
+                await self._wait_instance_ready(port)
+            except (Exception, asyncio.CancelledError):
+                logger.exception(
+                    "user process startup failed instance_id={} frontend_id={} port={} exit_code={}",
+                    instance_id,
+                    frontend_id,
+                    port,
+                    process.returncode,
+                )
+                try:
+                    await terminate_process_group(process, timeout=INSTANCE_STOP_GRACE_SECONDS)
+                finally:
+                    self._port_allocator.release(instance_id)
+                    # Read remaining startup errors without waiting indefinitely
+                    # for descendants that may still hold the pipe open.
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.gather(instance.log_task, return_exceptions=True),
+                            timeout=1.0,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                raise
             self._processes[instance_id] = instance
             await self._ensure_instance_socket(instance)
             logger.info("started user process instance_id={} port={}", instance_id, port)

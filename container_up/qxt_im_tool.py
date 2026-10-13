@@ -261,7 +261,7 @@ class QxtIMParser:
                     access_token = payload.get("access_token")
                     if not access_token:
                         raise RuntimeError(
-                            f"access_token missing in response: {response_text}"
+                            f"access_token missing in response: {response_text} with corpid:{self.corpid};appid:{self.appid};"
                         )
                     return str(access_token)
             except (
@@ -301,16 +301,19 @@ class QxtIMParser:
             len(decrypted),
         )
         if event_type == "check_url":
-            logger.info("received qxt URL verification request frontend_id={}", self.frontend_id)
+            logger.info(
+                "received qxt URL verification request frontend_id={}", self.frontend_id
+            )
             return self.encrypt(text="success"), None
-        if event_type != "p2p_chat_receive_msg":
+        if event_type not in ["p2p_chat_receive_msg", "group_chat_at_bot"]:
             logger.info("ignore qxt subscribe event_type={}", event_type)
             return self.encrypt(text="success"), None
 
         return self.encrypt(text="success"), self.normalize_subscribe_payload(payload)
 
     def normalize_subscribe_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if str(payload.get("event_type") or "") != "p2p_chat_receive_msg":
+        event_type = str(payload.get("event_type") or "")
+        if event_type not in ["p2p_chat_receive_msg", "group_chat_at_bot"]:
             return payload
 
         event = dict(payload.get("event") or {})
@@ -318,6 +321,11 @@ class QxtIMParser:
         sender_uid = str(event.get("sender_uid") or "")
         chat_id = str(message.get("chat_id") or "")
         content = str(message.get("content") or "")
+        recipient = (
+            {"to_group_id": chat_id}
+            if event_type == "group_chat_at_bot"
+            else {"to_single_uid": sender_uid}
+        )
         return build_im_receive_event(
             chat_id=chat_id,
             usr_id=sender_uid,
@@ -335,7 +343,7 @@ class QxtIMParser:
                 "reply_target": {
                     "type": "qxt",
                     "frontend_id": self.frontend_id,
-                    "to_single_uid": sender_uid,
+                    **recipient,
                 },
             },
         )
@@ -364,9 +372,7 @@ class QxtIMParser:
         if not normalized:
             return normalized, False
 
-        attachment_group = (
-            chat_id or str(metadata.get("message_id") or "") or usr_id
-        )
+        attachment_group = chat_id or str(metadata.get("message_id") or "") or usr_id
         local_paths: list[Any] = []
         changed = False
         for attachment in normalized:
@@ -439,8 +445,7 @@ class QxtIMParser:
                     return (
                         data,
                         filename,
-                        str(response.headers.get("Content-Type") or "").strip()
-                        or None,
+                        str(response.headers.get("Content-Type") or "").strip() or None,
                     )
             except (asyncio.TimeoutError, ClientError, RuntimeError) as exc:
                 logger.error(
@@ -574,9 +579,64 @@ class QxtIMParser:
     async def _upload_attachment_with_retry(
         self, attachment: Any, access_token: str
     ) -> dict[str, str]:
+        if isinstance(attachment, dict) and attachment.get("storage") == "qxt":
+            if attachment.get("frontend_id") != self.frontend_id:
+                raise RuntimeError(
+                    "qxt media reference belongs to a different frontend"
+                )
+            media_id = attachment.get("media_id")
+            if not isinstance(media_id, str) or not media_id.strip():
+                raise RuntimeError("qxt media reference is missing media_id")
+            return {
+                "media_id": media_id,
+                "upload_type": str(attachment.get("upload_type") or "file"),
+                "filename": str(attachment.get("filename") or "attachment.bin"),
+            }
         media_bytes, filename, content_type = await self._attachment_upload_source(
             attachment
         )
+        return await self._upload_media_bytes_with_retry(
+            media_bytes, filename, content_type, access_token
+        )
+
+    async def upload_outbound_attachment(
+        self,
+        *,
+        data: bytes | None = None,
+        filename: str = "attachment.bin",
+        content_type: str | None = None,
+        attachment: Any = None,
+    ) -> dict[str, str]:
+        """Upload request bytes (or a URL) without reading the user's workspace."""
+        token_result = self.get_access_token()
+        access_token = (
+            await token_result if inspect.isawaitable(token_result) else token_result
+        )
+        if not access_token:
+            raise RuntimeError("Failed to retrieve access token for attachment upload")
+        if data is None:
+            data, filename, content_type = await self._attachment_upload_source(
+                attachment
+            )
+        if not data:
+            raise RuntimeError("empty attachment data")
+        uploaded = await self._upload_media_bytes_with_retry(
+            data, filename, content_type, access_token
+        )
+        return {
+            **uploaded,
+            "storage": "qxt",
+            "frontend_id": self.frontend_id,
+            "content_type": content_type or "application/octet-stream",
+        }
+
+    async def _upload_media_bytes_with_retry(
+        self,
+        media_bytes: bytes,
+        filename: str,
+        content_type: str | None,
+        access_token: str,
+    ) -> dict[str, str]:
         upload_type = self._guess_upload_type(filename, content_type)
 
         last_error: Exception | None = None
@@ -697,19 +757,27 @@ class QxtIMParser:
     def _normalize_outbound_payload(
         self, payload: dict[str, object]
     ) -> dict[str, object]:
-        if payload.get("to_single_uid") is not None:
+        if payload.get("to_single_uid") is not None or payload.get("to_group_id") is not None:
             return payload
 
         metadata = dict(payload.get("metadata") or {})
         reply_target = dict(metadata.get("reply_target") or {})
+        to_group_id = str(
+            reply_target.get("to_group_id") or metadata.get("to_group_id") or ""
+        ).strip()
         to_single_uid = str(
             reply_target.get("to_single_uid") or metadata.get("to_single_uid") or ""
         ).strip()
-        if not to_single_uid:
+        if not to_group_id and not to_single_uid:
             raise RuntimeError("missing qxt recipient")
 
+        recipient = (
+            {"to_group_id": to_group_id}
+            if to_group_id
+            else {"to_single_uid": to_single_uid}
+        )
         return {
-            "to_single_uid": to_single_uid,
+            **recipient,
             "type": "text",
             "message": {"content": str(payload.get("content") or "")},
             "attachments": list(payload.get("attachments") or []),

@@ -1,0 +1,57 @@
+services:
+  hazard-expert-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hazard-expert-mcp:1.0.0
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8082:8082"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # 所有运行配置均在本文件修改，无需 .env 或额外 JSON 配置文件。
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8082"
+      LOG_LEVEL: "info"
+      # 可信调用方携带 Authorization: Bearer <此值>；空字符串表示不校验。
+      # 这是服务访问凭证，user_id 仍由调用方从当前登录用户取得。
+      MCP_API_KEY: "replace-with-a-long-random-service-token"
+
+      # 已部署的 container-up 地址。容器里的 localhost 指当前 MCP 容器。
+      CONTAINER_UP_BASE_URL: "http://host.docker.internal:8080"
+      # 必须是 container-up frontends.json 中已有的 frontend id。
+      CONTAINER_UP_FRONTEND_ID: "web-wd"
+      CONTAINER_UP_API_KEY: ""
+      # 应大于 container-up 的 SYNC_REPLY_TIMEOUT_SECONDS（默认 600）及冷启动时间。
+      CONTAINER_UP_TIMEOUT_SECONDS: "720"
+      CONTAINER_UP_CONNECT_TIMEOUT_SECONDS: "10"
+
+      # MinIO S3 API 地址（一般是 9000，不是管理控制台的 9001）。桶需事先创建。
+      MINIO_ENDPOINT: "http://host.docker.internal:9000"
+      # 填写调用方和 nanobot 均能访问的 S3 地址；留空时使用 MINIO_ENDPOINT。
+      # 会直接使用此地址签名，不会签名后替换域名。不能带桶路径。
+      MINIO_DOWNLOAD_ENDPOINT: ""
+      MINIO_ACCESS_KEY: "replace-with-minio-access-key"
+      MINIO_SECRET_KEY: "replace-with-minio-secret-key"
+      MINIO_BUCKET: "nanobot-attachments"
+      MINIO_REGION: "us-east-1"
+      MINIO_KEY_PREFIX: "hazard-expert"
+      MINIO_PRESIGN_EXPIRY_SECONDS: "86400"
+      MINIO_CONNECT_TIMEOUT_SECONDS: "10"
+      MINIO_READ_TIMEOUT_SECONDS: "120"
+      # 默认单文件 25 MiB。Base64 约增加 1/3 请求体大小。
+      MAX_UPLOAD_BYTES: "26214400"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ['MCP_PORT'] + '/healthz', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

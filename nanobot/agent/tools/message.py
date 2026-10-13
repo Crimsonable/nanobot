@@ -183,6 +183,8 @@ class MessageTool(Tool, ContextAware):
             payload = _materialize_attachment_payload(
                 normalized_ref,
                 metadata=metadata,
+                # Sync replies return downloadable attachments to the HTTP caller.
+                purpose="reference" if metadata.get("_sync_request_id") else "outbound",
             )
             if not payload:
                 raise RuntimeError(
@@ -257,6 +259,8 @@ class MessageTool(Tool, ContextAware):
                 media = self._resolve_media(media, channel=channel)
             except (OSError, PermissionError, ValueError) as e:
                 return f"Error: media path is not allowed: {str(e)}"
+            except RuntimeError as e:
+                return f"Error sending message: {str(e)}"
 
         metadata = dict(self._default_metadata.get()) if same_target else {}
         if message_id:

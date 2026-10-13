@@ -1,11 +1,63 @@
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 
 from nanobot.agent.tools.message import MessageTool
 from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_workspace_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync_reply", [False, True])
+async def test_bridge_uploads_bytes_and_preserves_qxt_or_sync_reference(
+    monkeypatch, tmp_path, sync_reply
+):
+    from nanobot.agent.tools.context import RequestContext
+
+    attachment = tmp_path / "report.pdf"
+    attachment.write_bytes(b"local-report-bytes")
+    metadata = {"frontend_id": "qxt-main", "usr_id": "user-1"}
+    if sync_reply:
+        metadata["_sync_request_id"] = "sync-1"
+    reference = (
+        {"url": "https://minio.example/report.pdf"}
+        if sync_reply
+        else {
+            "storage": "qxt",
+            "frontend_id": "qxt-main",
+            "media_id": "mid-1",
+            "filename": "report.pdf",
+        }
+    )
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert b"local-report-bytes" in request.content
+        assert str(attachment).encode() not in request.content
+        assert b'name="file"; filename="report.pdf"' in request.content
+        assert (b'name="purpose"' in request.content) is not sync_reply
+        return httpx.Response(200, json=reference)
+
+    client_class = httpx.Client
+    monkeypatch.setattr(
+        "nanobot.utils.document.httpx.Client",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    tool = MessageTool(send_callback=send)
+    tool.set_context(RequestContext(channel="bridge", chat_id="chat-1", metadata=metadata))
+    result = await tool.execute(content="报告", media=[str(attachment)])
+    assert result == "Message sent to bridge:chat-1 with 1 attachments"
+    assert len(requests) == 1
+    assert sent[0].media == [reference]
+    assert sent[0].metadata["frontend_id"] == "qxt-main"
 
 
 @pytest.mark.asyncio
@@ -323,7 +375,7 @@ async def test_message_tool_uploads_local_bridge_media_via_container_up(
 
     monkeypatch.setattr(
         "nanobot.utils.document._materialize_attachment_payload",
-        lambda ref, metadata=None: {
+        lambda ref, metadata=None, purpose="reference": {
             "url": f"https://files.example/{Path(str(ref)).name}",
             "filename": Path(str(ref)).name,
             "content_type": "application/pdf",
@@ -365,7 +417,7 @@ async def test_message_tool_normalizes_remote_bridge_media_to_attachment_objects
     url = "https://example.com/file.pdf"
     monkeypatch.setattr(
         "nanobot.utils.document._materialize_attachment_payload",
-        lambda ref, metadata=None: {
+        lambda ref, metadata=None, purpose="reference": {
             "url": str(ref),
             "filename": "file.pdf",
             "content_type": "application/pdf",
@@ -409,7 +461,7 @@ async def test_message_tool_reports_bridge_upload_failure(
 
     monkeypatch.setattr(
         "nanobot.utils.document._materialize_attachment_payload",
-        lambda ref, metadata=None: None,
+        lambda ref, metadata=None, purpose="reference": None,
     )
 
     tool = MessageTool(send_callback=_send)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
 
 from container_up.app import post_upload_attachment
+from container_up.frontend_config import FrontendConfig
 from nanobot.utils.document import _materialize_attachment_payload, _upload_local_attachment_ref
 
 
@@ -294,3 +296,105 @@ def test_document_materialize_remote_attachment_calls_container_up(
         "user_id": "user-1",
         "attachment_url": "https://upstream.example.com/path/report.pdf?token=abc",
     }
+
+
+@pytest.mark.asyncio
+async def test_qxt_outbound_upload_routes_request_bytes_without_minio(monkeypatch):
+    frontend = FrontendConfig(id="qxt-main", raw={"provider": "qxt"})
+    reference = {"storage": "qxt", "frontend_id": "qxt-main", "media_id": "mid-1"}
+    upload_to_qxt = AsyncMock(return_value=reference)
+    parser = type("Parser", (), {"upload_outbound_attachment": upload_to_qxt})()
+    minio = Mock(side_effect=AssertionError("QXT outbound must not use MinIO"))
+    monkeypatch.setattr("container_up.app.frontend_config_for", lambda _: frontend)
+    monkeypatch.setattr("container_up.app.get_im_parser", lambda _: parser)
+    monkeypatch.setattr("container_up.app.upload_local_attachment", minio)
+
+    result = await post_upload_attachment(
+        _MultipartRequest(
+            {
+                "frontend_id": "qxt-main",
+                "user_id": "user-1",
+                "purpose": "outbound",
+                "file": _FakeUploadFile(
+                    filename="report.pdf", content=b"pdf-bytes", content_type="application/pdf"
+                ),
+            }
+        )
+    )
+
+    assert result == reference
+    upload_to_qxt.assert_awaited_once_with(
+        data=b"pdf-bytes", filename="report.pdf", content_type="application/pdf"
+    )
+    minio.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_qxt_outbound_remote_url_routes_to_qxt(monkeypatch):
+    frontend = FrontendConfig(id="qxt-main", raw={"provider": "qxt"})
+    upload_to_qxt = AsyncMock(return_value={"storage": "qxt", "media_id": "mid-url"})
+    parser = type("Parser", (), {"upload_outbound_attachment": upload_to_qxt})()
+    monkeypatch.setattr("container_up.app.frontend_config_for", lambda _: frontend)
+    monkeypatch.setattr("container_up.app.get_im_parser", lambda _: parser)
+    url = "https://files.example/report.pdf?signature=abc"
+    result = await post_upload_attachment(
+        _JsonRequest(
+            {
+                "frontend_id": "qxt-main",
+                "purpose": "outbound",
+                "attachment_url": url,
+            }
+        )
+    )
+    assert result["media_id"] == "mid-url"
+    upload_to_qxt.assert_awaited_once_with(
+        attachment={
+            "url": url,
+            "filename": "report.pdf",
+            "content_type": "application/pdf",
+        }
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,purpose", [("qxt", "reference"), ("web", "outbound"), ("feishu", "outbound")]
+)
+async def test_inbound_and_non_qxt_outbound_keep_minio(monkeypatch, provider, purpose):
+    frontend = FrontendConfig(id="frontend-1", raw={"provider": provider})
+    minio = Mock(return_value={"url": "https://minio.example/report.pdf"})
+    monkeypatch.setattr("container_up.app.frontend_config_for", lambda _: frontend)
+    monkeypatch.setattr("container_up.app.upload_local_attachment", minio)
+    monkeypatch.setattr(
+        "container_up.app.get_im_parser", Mock(side_effect=AssertionError("must not use QXT"))
+    )
+    result = await post_upload_attachment(
+        _MultipartRequest(
+            {
+                "frontend_id": "frontend-1",
+                "purpose": purpose,
+                "file": _FakeUploadFile(filename="report.pdf", content=b"pdf-bytes"),
+            }
+        )
+    )
+    assert result["url"] == "https://minio.example/report.pdf"
+    minio.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_unknown_upload_purpose_is_rejected(monkeypatch):
+    monkeypatch.setattr(
+        "container_up.app.frontend_config_for",
+        lambda _: FrontendConfig(id="qxt-main", raw={"provider": "qxt"}),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await post_upload_attachment(
+            _JsonRequest(
+                {
+                    "frontend_id": "qxt-main",
+                    "purpose": "invalid",
+                    "attachment_url": "https://files.example/a.pdf",
+                }
+            )
+        )
+    assert exc.value.status_code == 400

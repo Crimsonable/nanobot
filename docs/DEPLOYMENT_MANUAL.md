@@ -333,6 +333,11 @@ docker push <your-registry>/nanobot-container-up:v1.0.0
 - [k8s/base/base.yaml](../k8s/base/base.yaml)
 - [k8s/base/engineering-scene-mcp.yaml](../k8s/base/engineering-scene-mcp.yaml)
 
+隐患识别与分析 MCP 使用独立清单 [k8s/base/hazard-expert-mcp.yaml](../k8s/base/hazard-expert-mcp.yaml)，
+同样挂载 `nanobot-source-pvc` 并调度到 `nanobot_node=prod` 节点，NodePort 为 `30088`。
+运行配置集中在其 Deployment 的 `env` 中；镜像构建、源码同步和部署步骤见
+[隐患专家 MCP 部署说明](../hazard_expert_mcp/README.md#kubernetes-部署)。
+
 至少改这几项：
 
 1. `image`
@@ -392,7 +397,81 @@ kubectl logs -n nanobot-test deploy/nanobot-test-bucket-0 -f
 kubectl logs -n nanobot-test deploy/engineering-scene-mcp -f
 ```
 
-web server测试：
+### 7.6 inbound-sync 同步调用示例
+
+接口为 `POST /inbound-sync/{frontend_id}`，直接请求 container-up，在同一个 HTTP 响应中返回 nanobot 的最终回答。
+正式环境 NodePort 为 `30080`，测试环境为 `30081`；集群内正式环境地址为 `http://container-up.nanobot.svc.cluster.local:8080`。
+下面的 Bash 示例使用 `192.168.199.166:30080` 和已配置的 `web-wd`，可以整段粘贴执行。
+
+首次调用（纯文本，无需准备附件）：
+
+```bash
+curl -sS --connect-timeout 10 --max-time 750 \
+  -X POST 'http://192.168.199.166:30080/inbound-sync/web-wd' \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "user_id": "user-123",
+  "chat_id": "inspection-001",
+  "content": "施工现场临边没有防护栏，人员正在附近作业。请分析安全隐患并给出整改建议。",
+  "attachments": [],
+  "metadata": {},
+  "raw": {}
+}
+JSON
+```
+
+需要分析附件时，在 `attachments` 数组中填写 nanobot 可下载的真实 URL（可以使用 MinIO 预签名链接，需保留完整查询参数）。
+纯文本请求保留 `attachments: []` 或省略该字段即可。
+
+| 参数 | 说明 |
+| --- | --- |
+| `frontend_id` | URL 路径中的前端 ID，与 `user_id` 一起确定工作空间和实例 |
+| `user_id` | 当前业务用户的 ID，由调用方从登录用户取得；必填 |
+| `chat_id` | 会话 ID；多轮对话复用同一值，省略时为 `default` |
+| `content` | 用户问题；必填，直接调用此接口时字段名为 `content` |
+| `attachments` | 附件 URL 数组；可省略，默认 `[]` |
+| `metadata`、`raw` | 可选扩展对象，默认 `{}`；普通调用无需填写内部路由字段 |
+
+成功返回示例（回答及实例标识以实际返回为准）：
+
+```json
+{
+  "status": "completed",
+  "frontend_id": "web-wd",
+  "user_id": "user-123",
+  "chat_id": "inspection-001",
+  "bucket_id": "bucket-1",
+  "instance_id": "web-wd__user-123",
+  "content": "发现临边防护缺失，建议设置符合要求的防护设施，并在整改前限制人员进入。",
+  "attachments": [],
+  "metadata": {}
+}
+```
+
+收到第一轮回答后，保持相同的 `frontend_id`、`user_id` 和 `chat_id` 继续追问：
+
+```bash
+curl -sS --connect-timeout 10 --max-time 750 \
+  -X POST 'http://192.168.199.168:30080/inbound-sync/web-test' \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "user_id": "user-123",
+  "chat_id": "inspection-001",
+  "content": "你好",
+  "attachments": []
+}
+JSON
+```
+
+更换 `chat_id` 可使用独立会话；后端需保持 `agents.defaults.unifiedSession=false`（默认值），否则不同聊天会共用会话。
+`SYNC_REPLY_TIMEOUT_SECONDS` 默认 600 秒，从消息转发后开始等待回复；示例给客户端预留 750 秒以覆盖实例冷启动，反向代理超时也需相应设置。
+超时返回 HTTP `504` 和 `{"detail":"timed out waiting for AI reply"}`；路由或回复处理失败返回 HTTP `503`。
+HTTP 超时不代表后端任务已取消，不要自动重试同一个请求。
+
+### 7.7 Web server 测试
+
 说明：`attachments` 里如果已经是 `http/https` URL，直接按 URL 使用；不要下载到本地，也不要写入本地缓存。仅当附件是本地路径时，才走上传并替换为可访问 URL。
 
 env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -sS -X POST http://127.0.0.1:8090/inbound/web-wd -H 'Content-Type: application/json' -d '{"user_id":"web-demo-2","chat_id":"web-chat-2","content":"给我生成一个txt，里面写sucess，作为附件发给我","attachments":[],"metadata":{},"raw":{}}'
