@@ -8,10 +8,10 @@ spec:
   selector:
     app: engineering-scene-mcp
   ports:
-    - name: http
-      port: 8090
-      targetPort: http
-      nodePort: 30087
+  - name: http
+    port: 8090
+    targetPort: http
+    nodePort: 30087
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -30,44 +30,45 @@ spec:
     spec:
       enableServiceLinks: false
       nodeSelector:
-        opencode-sv_node: "prod"
+        opencode-runtime: 'true'
       containers:
-        - name: engineering-scene-mcp
-          image: opencode-sv-engineering-scene-mcp:v0.1.0
-          imagePullPolicy: IfNotPresent
-          workingDir: /mnt/source/engineering_scene_mcp
-          ports:
-            - name: http
-              containerPort: 8090
-          volumeMounts:
-            - name: source-root
-              mountPath: /mnt/source
-              readOnly: true
-            - name: host-localtime
-              mountPath: /etc/localtime
-              readOnly: true
-            - name: host-timezone
-              mountPath: /etc/timezone
-              readOnly: true
-          readinessProbe:
-            httpGet:
-              path: /health/ready
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /health/live
-              port: http
-            initialDelaySeconds: 20
-            periodSeconds: 10
-      volumes:
+      - name: engineering-scene-mcp
+        image: opencode-sv-engineering-scene-mcp:v0.1.0
+        imagePullPolicy: IfNotPresent
+        workingDir: /mnt/source/engineering_scene_mcp
+        ports:
+        - name: http
+          containerPort: 8090
+        volumeMounts:
         - name: source-root
-          persistentVolumeClaim:
-            claimName: opencode-sv-source-pvc
+          mountPath: /mnt/source
+          readOnly: true
         - name: host-localtime
-          hostPath:
-            path: /etc/localtime
+          mountPath: /etc/localtime
+          readOnly: true
         - name: host-timezone
-          hostPath:
-            path: /etc/timezone
+          mountPath: /etc/timezone
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: http
+          initialDelaySeconds: 20
+          periodSeconds: 10
+      volumes:
+      - name: source-root
+        persistentVolumeClaim:
+          claimName: opencode-source-pvc
+      - name: host-localtime
+        hostPath:
+          path: /etc/localtime
+      - name: host-timezone
+        hostPath:
+          path: /etc/timezone
+      automountServiceAccountToken: false

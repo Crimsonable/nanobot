@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import uvicorn
@@ -54,12 +54,11 @@ def _resolve_frontend_id(payload_frontend_id: str) -> str:
     raise RuntimeError("frontend_id is required")
 
 
-async def _forward_inbound(frontend_id: str, payload: dict[str, Any], authorization: str = "") -> dict[str, Any]:
+async def _forward_inbound(frontend_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     target_url = f"{CONTAINER_UP_BASE_URL}/inbound/{frontend_id}"
     try:
         async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-            response = await client.post(target_url, json=payload,
-                                         headers={"Authorization": authorization})
+            response = await client.post(target_url, json=payload)
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as exc:
@@ -91,7 +90,7 @@ async def inbound(payload: InboundRequest, request: Request) -> dict[str, Any]:
         "attachments": list(payload.attachments),
         "metadata": dict(payload.metadata),
     }
-    return await _forward_inbound(frontend_id, forwarded_payload, request.headers.get("authorization", ""))
+    return await _forward_inbound(frontend_id, forwarded_payload)
 
 
 @app.post("/test/create-instances")
@@ -115,7 +114,7 @@ async def create_instances_for_test(payload: BatchInboundTestRequest, request: R
             },
         }
         requests.append({"user_id": user_id, "chat_id": chat_id})
-        tasks.append(_forward_inbound(frontend_id, forwarded_payload, request.headers.get("authorization", "")))
+        tasks.append(_forward_inbound(frontend_id, forwarded_payload))
     responses = await asyncio.gather(*tasks, return_exceptions=True)
     results: list[dict[str, Any]] = []
     success_count = 0

@@ -1,0 +1,69 @@
+# Optional web proxy; business integration is configured separately.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-server
+  namespace: opencode-sv
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: &id001
+      app: web-server
+  template:
+    metadata:
+      labels: *id001
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        opencode-runtime: 'true'
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+      - name: web-server
+        image: agent-web-server:opencode-1.18.31
+        imagePullPolicy: IfNotPresent
+        workingDir: /mnt/source
+        args:
+        - python
+        - -m
+        - web_server.app
+        env:
+        - name: CONTAINER_UP_BASE_URL
+          value: http://container-up:8000
+        - name: WEB_SERVER_DEFAULT_FRONTEND_ID
+          value: web-yk
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: source
+          mountPath: /mnt/source
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8000
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+      volumes:
+      - name: source
+        persistentVolumeClaim:
+          claimName: opencode-source-pvc
+          readOnly: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-server
+  namespace: opencode-sv
+spec:
+  selector:
+    app: web-server
+  ports:
+  - port: 8000
+    targetPort: 8000

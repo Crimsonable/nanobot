@@ -12,11 +12,9 @@ from container_up.server import create_app
 
 @pytest.fixture
 def config(tmp_path):
-    token = tmp_path / "token"
-    token.write_text("test-credential-123456789")
     return ControlConfig.model_validate({"state_root": str(tmp_path / "state"),
         "bucket_ids": ["b"], "frontends": {"qxt": {"provider": "qxt", "profile_id": "p",
-        "api_key_file": str(token)}}})
+        "channel_config": {}}}})
 
 
 @pytest.mark.asyncio
@@ -42,15 +40,13 @@ async def test_qxt_delivery_uses_trusted_group_target_and_configured_attachment_
 
 
 @pytest.mark.asyncio
-async def test_qxt_upload_purpose_authentication_and_reference_contract(config):
+async def test_qxt_upload_purpose_and_keyless_reference_contract(config):
     app = create_app(config)
     upload = AsyncMock(return_value={"storage": "qxt", "frontend_id": "qxt", "media_id": "m"})
     app.state.service.channels.parsers["qxt"] = SimpleNamespace(upload_outbound_attachment=upload)
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             body = {"frontend_id": "qxt", "attachment_url": "https://files.example/report.pdf"}
-            assert (await client.post("/internal/attachments/upload", json=body)).status_code == 401
-            client.headers["Authorization"] = "Bearer test-credential-123456789"
             reference = await client.post("/internal/attachments/upload", json=body)
             assert reference.json()["url"] == body["attachment_url"]
             upload.assert_not_awaited()

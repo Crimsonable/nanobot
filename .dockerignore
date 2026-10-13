@@ -14,7 +14,3 @@ workspace/
 .venv/
 .opencode-reference/
 tests/
-!vendor/plugin/node_modules/
-!vendor/plugin/node_modules/**
-!vendor/plugin/dist/
-!vendor/plugin/dist/**

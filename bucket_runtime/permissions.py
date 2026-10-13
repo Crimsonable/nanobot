@@ -4,30 +4,33 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from agent_backend.common import scoped_public_path
 from agent_backend.config import RuntimeConfig, UserPolicy
 
 
-def public_roots(config: RuntimeConfig, policy: UserPolicy, profile_id: str) -> list[Path]:
+def public_roots(config: RuntimeConfig, policy: UserPolicy, profile_id: str,
+                 frontend_id: str | None = None) -> list[Path]:
+    if config.frontend_id and (not policy.sandbox.enabled or not policy.session.enabled):
+        raise ValueError("frontend isolation requires sandbox.enabled=true and session.enabled=true")
     configured = policy.filesystem.public_roots
     roots = configured if configured is not None else config.profiles[profile_id].public_roots
     protected = [config.workspace_root, config.state_root,
-                 config.opencode.context_root, config.opencode.config_file, config.opencode.plugin_file,
+                 config.opencode.context_root, config.opencode.plugin_file,
                  config.opencode.dependency_dir]
+    private = [config.opencode.config_file, config.permissions_file, config.frontend_config_file]
     if config.storage:
-        protected.extend(p for p in [config.storage.access_key_file, config.storage.secret_key_file] if p)
-    if config.permissions_file:
-        protected.append(config.permissions_file)
+        private.extend([config.storage.access_key_file, config.storage.secret_key_file])
     result = []
     for root in roots:
-        if not root.is_absolute() or any(c in str(root) for c in "*?\n\r"):
-            raise ValueError("public roots must be absolute literal paths")
-        resolved = root.resolve()
+        resolved = scoped_public_path(root, config.common_root, frontend_id or config.frontend_id)
         if resolved == Path(resolved.anchor):
             raise ValueError("filesystem root cannot be public")
         if any(resolved.is_relative_to(Path(p).resolve()) for p in ["/proc", "/sys", "/dev"]):
             raise ValueError("host process, kernel and device directories cannot be public")
         if any(resolved.is_relative_to(p.resolve()) or p.resolve().is_relative_to(resolved) for p in protected):
             raise ValueError("public roots must not expose users or service files")
+        if any(p and resolved.is_relative_to(p.resolve()) for p in private):
+            raise ValueError("service configuration cannot be a public root")
         result.append(resolved)
     return result
 

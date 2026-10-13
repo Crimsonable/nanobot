@@ -21,6 +21,6 @@ PY
 
 WORKDIR /mnt/source/engineering_scene_mcp
 
-EXPOSE 8081
+EXPOSE 8090
 
 CMD ["python", "-m", "engineering_scene_mcp.app"]

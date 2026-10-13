@@ -24,7 +24,7 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   hostPath:
-    path: /data/minio/data
+    path: /data/opencode_backend_k8s/minio/data
     type: DirectoryOrCreate
 ---
 apiVersion: v1

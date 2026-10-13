@@ -5,7 +5,7 @@
       "name": "Internal model endpoint",
       "options": {
         "baseURL": "http://model-service:8000/v1",
-        "apiKey": "{file:/run/secrets/opencode-api-key}"
+        "apiKey": "REPLACE_WITH_THIS_FRONTEND_MODEL_API_KEY"
       },
       "models": {
         "your-model": {
@@ -22,7 +22,7 @@
   "permission": {
     "*": "allow"
   },
-  "autoupdate": true,
+  "autoupdate": false,
   "share": "manual",
   "snapshot": true,
   "compaction": {
@@ -34,8 +34,8 @@
   "formatter": {},
   "skills": {
     "paths": [
-      "/mnt/common/skills",
-      "/opt/public/skills"
+      "/mnt/common/{frontend_id}/app/skills",
+      "/mnt/source/public/skills"
     ]
   }
 }

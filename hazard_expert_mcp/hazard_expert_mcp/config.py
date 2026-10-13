@@ -16,7 +16,6 @@ class Settings(BaseSettings):
 
     container_up_base_url: str
     container_up_frontend_id: str = Field(min_length=1)
-    container_up_api_key: SecretStr = SecretStr("")
     container_up_timeout_seconds: float = Field(default=720, gt=0)
     container_up_connect_timeout_seconds: float = Field(default=10, gt=0)
 

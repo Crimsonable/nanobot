@@ -1,4 +1,4 @@
-# Original data/source/common server paths are retained to reuse existing files.
+# All deployment data lives under /data/opencode_backend_k8s.
 # Change storage_backend below to nfs before FIRST binding; set NFS server/exports as needed.
 # SQLite/OpenCode state stays on the dedicated local PV even when user data uses NFS.
 apiVersion: v1
@@ -26,7 +26,7 @@ items:
     - ReadWriteMany
     persistentVolumeReclaimPolicy: Retain
     hostPath:
-      path: /data/nanobot_backend_k8s/data
+      path: /data/opencode_backend_k8s/data
       type: Directory
     nodeAffinity:
       required:
@@ -51,7 +51,7 @@ items:
     - ReadOnlyMany
     persistentVolumeReclaimPolicy: Retain
     hostPath:
-      path: /data/nanobot_backend_k8s/source
+      path: /data/opencode_backend_k8s/source
       type: Directory
     nodeAffinity:
       required:
@@ -76,7 +76,7 @@ items:
     - ReadOnlyMany
     persistentVolumeReclaimPolicy: Retain
     hostPath:
-      path: /data/nanobot_backend_k8s/common
+      path: /data/opencode_backend_k8s/common
       type: Directory
     nodeAffinity:
       required:
@@ -102,7 +102,7 @@ items:
     persistentVolumeReclaimPolicy: Retain
     nfs:
       server: 192.168.48.104
-      path: /data/nanobot_backend_k8s/data
+      path: /data/opencode_backend_k8s/data
 - apiVersion: v1
   kind: PersistentVolume
   metadata:
@@ -119,7 +119,7 @@ items:
     persistentVolumeReclaimPolicy: Retain
     nfs:
       server: 192.168.48.104
-      path: /data/nanobot_backend_k8s/source
+      path: /data/opencode_backend_k8s/source
 - apiVersion: v1
   kind: PersistentVolume
   metadata:
@@ -136,7 +136,7 @@ items:
     persistentVolumeReclaimPolicy: Retain
     nfs:
       server: 192.168.48.104
-      path: /data/nanobot_backend_k8s/common
+      path: /data/opencode_backend_k8s/common
 - apiVersion: v1
   kind: PersistentVolumeClaim
   metadata:

@@ -45,7 +45,7 @@ class ChannelService:
 
     async def deliver(self, record: dict, result: Result) -> None:
         identity = record["submit"]["identity"]
-        # Routing metadata comes from the authenticated inbound request, never the model.
+        # Routing metadata comes from the inbound request, never the model.
         metadata = {**record["metadata"], "frontend_id": identity["frontend_id"],
                     "usr_id": identity["user_id"], "request_id": result.request_id}
         if result.usage:

@@ -1,23 +1,22 @@
-# Defaults apply to every user. Matching users override only fields they specify.
+# Defaults apply only to users of this frontend. Matching users override selected fields.
 defaults:
   sandbox:
-    enabled: true              # bwrap switch; false executes bash without OS isolation
+    enabled: true              # must remain true for frontend directory isolation
     network: false             # network namespace access when bwrap is enabled
   session:
-    enabled: true              # session rules + native file-tool path checks
+    enabled: true              # must remain true: session rules + native file-tool path checks
     default_tools: true        # tools enabled by default; directory scope still applies
     tools: {}                  # e.g. {webfetch: false, task: false, bash: true}
   filesystem:
     workspace: read_write      # read_write | read_only | none; always this user's directory
-    public_roots: null         # null inherits profile.public_roots; [] allows no public dirs
+    public_roots: null         # null inherits profile roots; common paths must stay under /mnt/common/{frontend_id}/app; [] grants none
 users: []
-# Example: alice may only read her workspace and /opt/public/manuals.
+# Example: alice may only read her workspace and /mnt/source/public/manuals.
 # users:
-#   - frontend_id: web-yk
-#     user_id: alice
+#   - user_id: alice
 #     filesystem:
 #       workspace: read_only
-#       public_roots: [/opt/public/manuals]
+#       public_roots: [/mnt/source/public/manuals]
 #     session:
 #       tools: {edit: false, write: false, apply_patch: false, webfetch: false}
 #     sandbox:

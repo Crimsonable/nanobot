@@ -6,11 +6,11 @@ CU 入站只传引用，不下载文件、不读取用户工作目录。OpenCode
 
 模型调用 `publish_attachment(files=[{path, filename?}])`，runtime 校验当前用户、会话和路径，对普通文件创建快照并上传 MinIO，返回 URL 并登记本轮附件。仅能发布当前用户工作目录内的文件；没有配置 attachment_storage 时发布失败。
 
-同步 `/inbound-sync/{frontend_id}` 始终返回可下载 URL。异步 Web 回调带 attachments；QXT/飞书默认发送链接文本。QXT 可在 frontend.json 设置 `channel.attachment_delivery: "media"`，由 CU 从发布 URL 下载、上传 QXT，再用 media_id 发往原私聊或群聊。默认值 `links` 保持链接发送。媒体模式需要 CU 能访问 MinIO URL 和 QXT 媒体接口。
+同步 `/inbound-sync/{frontend_id}` 始终返回可下载 URL。异步 Web 回调带 attachments；QXT/飞书默认发送链接文本。QXT 可在 frontends.json 的对应 frontend 条目中设置 `channel.attachment_delivery: "media"`，由 CU 从发布 URL 下载、上传 QXT，再用 media_id 发往原私聊或群聊。默认值 `links` 保持链接发送。媒体模式需要 CU 能访问 MinIO URL 和 QXT 媒体接口。
 
 ## 内部兼容接口
 
-`POST /internal/attachments/upload` 要求 `Authorization: Bearer <frontend API key>` 和 JSON。
+`POST /internal/attachments/upload` 接收 JSON，不需要 API key；frontend_id 必须已经注册。
 
 | 字段 | 说明 |
 | --- | --- |

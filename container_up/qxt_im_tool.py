@@ -312,8 +312,6 @@ class QxtIMParser:
             },
         )
 
-
-
     async def _download_attachment_bytes(
         self,
         url: str,

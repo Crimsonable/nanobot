@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+from pathlib import PurePosixPath
 
 import httpx
 
+from agent_backend.common import frontend_segment
 from agent_backend.config import ControlConfig
+from agent_backend.models import digest
+from agent_backend.workspaces import workspace_volume_subpath
 
 
 class BucketManager:
@@ -25,24 +29,38 @@ class BucketManager:
             response.raise_for_status()
         return response
 
-    def deployment(self, bucket_id: str) -> dict:
-        pool, runtime = self.pool, self.config.runtime_template
+    def deployment(self, bucket_id: str, frontend_id: str | None = None) -> dict:
+        if frontend_id is None and len(self.config.frontends) == 1:
+            frontend_id = next(iter(self.config.frontends))
+        if frontend_id not in self.config.frontends:
+            raise ValueError("bucket requires a registered frontend_id")
+        frontend_id = frontend_segment(frontend_id)
+        pool, runtime = self.pool, self.config.runtime_for(frontend_id)
+        workspace_subpath = workspace_volume_subpath(runtime.workspace_root, frontend_id)
         labels = {"app": "opencode-bucket", "bucket-id": bucket_id}
+        pod_labels = {**labels, "frontend-key": digest(frontend_id)[:16]}
+        annotations = {"opencode.io/frontend-id": frontend_id}
         container = {
-            "name": "runtime", "image": pool.image, "imagePullPolicy": pool.image_pull_policy,
+            "name": "runtime", "workingDir": "/mnt/source", "image": pool.image, "imagePullPolicy": pool.image_pull_policy,
             "args": ["python", "-m", "agent_backend", "runtime", "--config",
-                     "/mnt/common/frontend.json", "--bucket-id", bucket_id],
+                     self.config.frontend_config_path.as_posix(), "--frontend-id", frontend_id,
+                     "--bucket-id", bucket_id],
             "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
                                 "capabilities": {"drop": ["ALL"]}},
             "resources": {"requests": {"cpu": "1", "memory": "1Gi"},
                           "limits": {"cpu": "4", "memory": "4Gi"}},
             "volumeMounts": [
                 {"name": "data", "mountPath": "/data"},
-                {"name": "workspace", "mountPath": "/mnt/env"},
+                {"name": "workspace", "mountPath": str(PurePosixPath("/mnt/env") / workspace_subpath),
+                 "subPath": str(workspace_subpath)},
                 {"name": "source", "mountPath": "/mnt/source", "readOnly": True},
-                {"name": "common", "mountPath": "/mnt/common", "readOnly": True},
-                {"name": "config", "mountPath": "/etc/agent", "readOnly": True},
-                {"name": "secrets", "mountPath": "/run/secrets", "readOnly": True},
+                {"name": "opencode", "mountPath": "/opt/opencode", "readOnly": True},
+                {"name": "common", "mountPath": str(PurePosixPath(runtime.common_root.as_posix()) / frontend_id / "app"),
+                 "subPath": frontend_id + "/app", "readOnly": True},
+                {"name": "common", "mountPath": str(PurePosixPath(runtime.common_root.as_posix()) / frontend_id / "config"),
+                 "subPath": frontend_id + "/config", "readOnly": True},
+                {"name": "common", "mountPath": self.config.frontend_config_path.as_posix(),
+                 "subPath": self.config.frontend_config_path.name, "readOnly": True},
                 {"name": "tmp", "mountPath": "/tmp"}],
             "startupProbe": {"httpGet": {"path": "/health/ready", "port": runtime.health_port},
                              "failureThreshold": max(30, pool.ready_timeout_seconds // 5), "periodSeconds": 5},
@@ -50,10 +68,11 @@ class BucketManager:
             "livenessProbe": {"httpGet": {"path": "/health/live", "port": runtime.health_port}},
         }
         return {"apiVersion": "apps/v1", "kind": "Deployment",
-                "metadata": {"name": bucket_id, "namespace": pool.namespace, "labels": labels},
+                "metadata": {"name": bucket_id, "namespace": pool.namespace, "labels": pod_labels,
+                             "annotations": annotations},
                 "spec": {"replicas": 1, "strategy": {"type": "Recreate"},
                          "selector": {"matchLabels": labels}, "template": {
-                             "metadata": {"labels": labels}, "spec": {
+                             "metadata": {"labels": pod_labels, "annotations": annotations}, "spec": {
                                  "automountServiceAccountToken": False,
                                  "nodeSelector": pool.node_selector,
                                  "terminationGracePeriodSeconds": 45,
@@ -63,16 +82,15 @@ class BucketManager:
                                      {"name": "workspace", "persistentVolumeClaim": {"claimName": pool.data_pvc}},
                                      {"name": "source", "persistentVolumeClaim": {"claimName": pool.source_pvc, "readOnly": True}},
                                      {"name": "common", "persistentVolumeClaim": {"claimName": pool.common_pvc, "readOnly": True}},
-                                     {"name": "config", "configMap": {"name": pool.config_map}},
-                                     {"name": "secrets", "secret": {"secretName": pool.runtime_secret}},
+                                     {"name": "opencode", "hostPath": {"path": pool.opencode_host_path, "type": "Directory"}},
                                      {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}},
                                  ]}}}}
 
-    async def ensure(self, bucket_id: str) -> None:
+    async def ensure(self, bucket_id: str, frontend_id: str | None = None) -> None:
         collection = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments"
         response = await self.request("GET", collection + "/" + bucket_id)
         if response.status_code == 404:
-            response = await self.request("POST", collection, json=self.deployment(bucket_id))
+            response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id))
             if response.status_code != 409:
                 response.raise_for_status()
             else:
@@ -81,7 +99,10 @@ class BucketManager:
         current = response.json()
         if current.get("metadata", {}).get("labels", {}).get("bucket-id") != bucket_id:
             raise RuntimeError("existing Deployment is not owned by this bucket")
-        desired = self.deployment(bucket_id)
+        owner = current.get("metadata", {}).get("annotations", {}).get("opencode.io/frontend-id")
+        if owner and frontend_id and owner != frontend_id:
+            raise RuntimeError("existing Deployment belongs to another frontend")
+        desired = self.deployment(bucket_id, frontend_id)
         desired["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
         response = await self.request("PUT", collection + "/" + bucket_id, json=desired)
         response.raise_for_status()

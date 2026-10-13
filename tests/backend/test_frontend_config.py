@@ -1,13 +1,12 @@
-import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from agent_backend.config import FrontendConfig, StorageConfig, load_config
+from agent_backend.config import FrontendConfig, StorageConfig, load_frontends
 from bucket_runtime.artifact_service import ArtifactService
 
-EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontend.json"
+EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
 
 
 def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
@@ -19,16 +18,17 @@ def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
     assert config.control.bucket_pool.data_pvc == "opencode-data-pvc"
     assert config.runtime.opencode.port == 4096
     assert config.runtime.workspace_root == Path("/mnt/env/workspaces")
-    assert config.runtime.permissions_file == Path("/etc/agent/user-permissions.yaml")
-    assert config.runtime.profiles["reports"].public_roots == [Path("/mnt/common"), Path("/opt/public")]
+    assert config.runtime.permissions_file == Path("/mnt/common/{frontend_id}/config/user-permissions.yaml")
+    assert config.runtime.profiles["reports"].public_roots == [Path("/mnt/common/{frontend_id}/app"), Path("/mnt/source/public")]
     assert config.runtime.workspace_layout == "frontend_user"
     runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
+    assert runtime.frontend_id == "web-yk"
     assert not hasattr(runtime, "credential_file")
     assert runtime.limits.active == 4
 
 
 def test_default_values_can_still_be_overridden():
-    raw = json.loads(EXAMPLE.read_text())
+    raw = load_frontends(EXAMPLE).frontend("web-yk").model_dump(mode="json")
     raw["control"].update(port=8100)
     raw["control"]["bucket_pool"].update(max_users_per_bucket=8, namespace="test")
     raw["runtime"].update(rpc_port=4107, health_port=8109, limits={"active": 2},
@@ -42,7 +42,7 @@ def test_default_values_can_still_be_overridden():
 
 
 def static_config():
-    config = load_config(EXAMPLE, FrontendConfig)
+    config = load_frontends(EXAMPLE).frontend("web-yk")
     config.control.bucket_pool = None
     config.control.bucket_ids = ["bucket-0"]
     return config
@@ -104,7 +104,7 @@ def test_shared_config_can_live_in_common_but_native_tools_cannot_read_it():
 
 
 def test_no_duplicate_runtime_storage_and_profile_validation():
-    raw = json.loads(EXAMPLE.read_text())
+    raw = load_frontends(EXAMPLE).frontend("web-yk").model_dump(mode="json")
     raw["runtime"]["storage"] = raw["attachment_storage"]
     with pytest.raises(ValidationError):
         FrontendConfig.model_validate(raw)
@@ -133,7 +133,7 @@ def test_kubernetes_mounts_same_frontend_and_uses_pod_identity():
     for workload in workloads:
         pod = workload["spec"]["template"]["spec"]
         container = pod["containers"][0]
-        assert "/mnt/common/frontend.json" in container["args"]
+        assert "/mnt/common/frontends.json" in container["args"]
         assert not any(v["name"] == "frontend" for v in pod["volumes"])
         assert next(v for v in pod["volumes"] if v["name"] == "common")["persistentVolumeClaim"]["claimName"] == "opencode-common-pvc"
         if workload["kind"] == "StatefulSet":

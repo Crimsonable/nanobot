@@ -34,6 +34,17 @@ class BucketScheduler:
     def bindings(self, bucket_id: str) -> list[dict]:
         return [b for b in self.db.records("binding") if b.get("bucket_id") == bucket_id]
 
+    def frontend_for(self, bucket: dict) -> str | None:
+        if bucket.get("frontend_id"):
+            return bucket["frontend_id"]
+        # Old single-frontend buckets can be identified from their durable bindings.
+        owners = {b["identity"]["frontend_id"] for b in self.bindings(bucket["bucket_id"])}
+        if len(owners) == 1:
+            return next(iter(owners))
+        if not owners and len(self.service.config.frontends) == 1:
+            return next(iter(self.service.config.frontends))
+        return None
+
     def busy(self, bucket_id: str) -> bool:
         return bool(self.pins.get(bucket_id) or any(
             r["bucket_id"] == bucket_id and not r.get("result") for r in self.db.records("request")))
@@ -50,11 +61,13 @@ class BucketScheduler:
             if existing and existing.get("bucket_id"):
                 bucket = self.db.get("bucket", existing["bucket_id"])
                 if bucket and bucket["status"] in {"creating", "running"}:
+                    if self.frontend_for(bucket) != identity.frontend_id:
+                        raise ValueError("bucket frontend ownership mismatch")
                     self.touch(bucket["bucket_id"])
                     return existing
                 if self.busy(existing["bucket_id"]):
                     raise RuntimeError("previous bucket still has unfinished requests")
-            runtime = self.service.config.runtime_template
+            runtime = self.service.config.runtime_for(identity.frontend_id)
             workspace = str(workspace_path(runtime.workspace_root, identity, runtime.workspace_layout))
             # The original sanitizer can collide. Never grant two identities the same directory.
             owner = self.db.get("workspace_owner", workspace)
@@ -62,19 +75,22 @@ class BucketScheduler:
                 raise ValueError("workspace path collides with another user")
             self.db.put("workspace_owner", workspace, {"user_key": identity.key})
             candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
+                          and self.frontend_for(b) == identity.frontend_id
                           and len(self.bindings(b["bucket_id"])) < self.config.max_users_per_bucket]
             if candidates:
                 bucket = min(candidates, key=lambda b: (not self.connected(b["bucket_id"]),
                                                         len(self.bindings(b["bucket_id"]))))
             else:
                 # Reuse an empty, scaled-down workload before allocating another one.
-                bucket = next((b for b in self.db.records("bucket") if b["status"] == "idle"), None)
+                bucket = next((b for b in self.db.records("bucket") if b["status"] == "idle"
+                               and self.frontend_for(b) == identity.frontend_id), None)
                 if bucket is None:
                     bucket_id = self.config.name_prefix + "-" + uuid4().hex[:12]
                     bucket = {"bucket_id": bucket_id, "created_at": time.time()}
                 bucket = {**bucket, "status": "creating"}
             bucket_id = bucket["bucket_id"]
-            self.db.put("bucket", bucket_id, {**bucket, "last_active_at": time.time()})
+            self.db.put("bucket", bucket_id, {**bucket, "frontend_id": identity.frontend_id,
+                                              "last_active_at": time.time()})
             binding = {"bucket_id": bucket_id, "user_key": identity.key, "identity": identity.model_dump(),
                        "workspace_path": workspace, "generation": uuid4().hex, "status": "assigned"}
             self.db.put("binding", identity.key, binding)
@@ -84,7 +100,11 @@ class BucketScheduler:
         async with self.start_locks.setdefault(bucket_id, asyncio.Lock()):
             if not self.connected(bucket_id):
                 async with asyncio.timeout(self.config.ready_timeout_seconds):
-                    await self.manager.ensure(bucket_id)
+                    bucket = self.db.get("bucket", bucket_id)
+                    frontend_id = self.frontend_for(bucket)
+                    if frontend_id is None:
+                        raise RuntimeError("legacy bucket frontend is ambiguous; retire it before migration")
+                    await self.manager.ensure(bucket_id, frontend_id=frontend_id)
                     while not self.connected(bucket_id):
                         await asyncio.sleep(0.1)
             bucket = self.db.get("bucket", bucket_id)
@@ -113,7 +133,6 @@ class BucketScheduler:
             self.touch(bucket_id)
 
     async def sweep(self):
-        ttl = self.service.config.instance_idle_ttl_seconds
         for bucket in self.db.records("bucket"):
             bucket_id = bucket["bucket_id"]
             async with self.lock:
@@ -121,6 +140,8 @@ class BucketScheduler:
                 if bucket["status"] == "idle" or self.busy(bucket_id):
                     continue
                 if bucket["status"] != "draining":
+                    ttl = self.service.config.frontend_idle_ttl_seconds.get(
+                        self.frontend_for(bucket), self.service.config.instance_idle_ttl_seconds)
                     if ttl == 0 or time.time() - bucket["last_active_at"] < ttl:
                         continue
                     if self.db.pending(bucket_id):

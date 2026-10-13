@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,7 +12,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import Field
 
-from agent_backend.config import ControlConfig, secret
+from agent_backend.config import ControlConfig
 from agent_backend.journal import Journal
 from agent_backend.models import (
     Attachment,
@@ -78,11 +77,9 @@ class ControlService:
             raise PermissionError("request does not belong to this bucket")
         return row
 
-    def authenticate(self, frontend_id: str, authorization: str | None) -> None:
-        frontend = self.config.frontends.get(frontend_id)
-        if not frontend or not secrets.compare_digest(
-                authorization or "", "Bearer " + secret(frontend.api_key_file)):
-            raise HTTPException(401, "invalid frontend credential")
+    def require_frontend(self, frontend_id: str) -> None:
+        if frontend_id not in self.config.frontends:
+            raise HTTPException(404, "frontend is not registered")
 
     async def normalize(self, identity: Identity, values: list, trusted_channel: bool) -> list[Attachment]:
         result = []
@@ -101,6 +98,7 @@ class ControlService:
 
     async def submit(self, frontend_id: str, inbound: Inbound, sync: bool = False,
                      trusted_channel: bool = False) -> dict:
+        self.require_frontend(frontend_id)
         if not self.pool:
             return await self._submit(frontend_id, inbound, sync, trusted_channel)
         identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
@@ -336,12 +334,12 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
 
     @app.post("/inbound/{frontend_id}")
     async def inbound(frontend_id: str, body: Inbound, request: Request):
-        service.authenticate(frontend_id, request.headers.get("authorization"))
+        service.require_frontend(frontend_id)
         return await response(await service.submit(frontend_id, body))
 
     @app.post("/inbound-sync/{frontend_id}")
     async def inbound_sync(frontend_id: str, body: Inbound, request: Request):
-        service.authenticate(frontend_id, request.headers.get("authorization"))
+        service.require_frontend(frontend_id)
         row = await service.submit(frontend_id, body, sync=True)
         until = time.monotonic() + config.limits.request_seconds
         while not row.get("result"):
@@ -353,7 +351,7 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
 
     @app.get("/requests/{frontend_id}/{request_id}")
     async def query(frontend_id: str, request_id: str, request: Request):
-        service.authenticate(frontend_id, request.headers.get("authorization"))
+        service.require_frontend(frontend_id)
         row = service.db.get("request", request_id)
         if not row or row["submit"]["identity"]["frontend_id"] != frontend_id:
             raise HTTPException(404, "request not found")
@@ -391,7 +389,7 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     async def cancel_alias(request: Request):
         body = await request.json()
         frontend_id = body["frontend_id"]
-        service.authenticate(frontend_id, request.headers.get("authorization"))
+        service.require_frontend(frontend_id)
         matches = [row for row in service.db.records("request") if not row.get("result")
             and row["submit"]["identity"] == {"frontend_id": frontend_id, "user_id": body["usr_id"]}
             and row["chat_id"] == body.get("chat_id", "default")]
@@ -405,7 +403,7 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
         if not request.headers.get("content-type", "").startswith("application/json"):
             raise HTTPException(400, "send a JSON attachment URL or path; file uploads are handled by publish_attachment")
         body = await request.json()
-        service.authenticate(body["frontend_id"], request.headers.get("authorization"))
+        service.require_frontend(body["frontend_id"])
         purpose = body.get("purpose") or "reference"
         if purpose not in {"reference", "outbound"}:
             raise HTTPException(400, "purpose must be reference or outbound")

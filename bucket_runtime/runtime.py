@@ -32,7 +32,11 @@ class Runtime:
         for profile_id in config.profiles:
             public_roots(config, self.permissions.defaults, profile_id)
             for user in self.permissions.users:
-                public_roots(config, self.permissions.for_user(user.frontend_id, user.user_id), profile_id)
+                if config.frontend_id and user.frontend_id not in {None, config.frontend_id}:
+                    raise ValueError("permission entry belongs to another frontend")
+                frontend_id = user.frontend_id or config.frontend_id
+                public_roots(config, self.permissions.for_user(frontend_id, user.user_id), profile_id,
+                             frontend_id)
         self.db = Journal(config.state_root / "runtime.sqlite", config.limits.outbox_messages)
         self.artifacts = ArtifactService(config, self.db)
         self.peer: Peer | None = None
@@ -49,10 +53,17 @@ class Runtime:
         return self.permissions.for_user(submit.identity.frontend_id, submit.identity.user_id)
 
     def public_roots(self, submit: Submit) -> list[Path]:
-        return public_roots(self.config, self.policy(submit), submit.profile_id)
+        if self.config.frontend_id and submit.identity.frontend_id != self.config.frontend_id:
+            raise PermissionError("request belongs to another frontend")
+        return public_roots(self.config, self.policy(submit), submit.profile_id,
+                            submit.identity.frontend_id)
 
     def private_files(self) -> list[Path]:
-        return [self.config.frontend_config_file] if self.config.frontend_config_file else []
+        paths = [self.config.frontend_config_file, self.config.opencode.config_file,
+                 self.config.permissions_file]
+        if self.config.storage:
+            paths.extend([self.config.storage.access_key_file, self.config.storage.secret_key_file])
+        return [path for path in paths if path is not None]
 
     def session_permissions(self, submit: Submit) -> list[dict]:
         return session_rules(self.policy(submit), self.workspace(submit), self.public_roots(submit),
@@ -94,6 +105,8 @@ class Runtime:
 
     def workspace(self, submit: Submit) -> Path:
         from agent_backend.workspaces import workspace_path
+        if self.config.frontend_id and submit.identity.frontend_id != self.config.frontend_id:
+            raise PermissionError("request belongs to another frontend")
         path = workspace_path(self.config.workspace_root, submit.identity, self.config.workspace_layout)
         for parent in [path, *path.parents]:
             if parent.is_symlink():
@@ -148,6 +161,8 @@ class Runtime:
             submit = Submit.model_validate(event.payload)
             if submit.request_id != event.request_id:
                 raise ValueError("request identity mismatch")
+            if self.config.frontend_id and submit.identity.frontend_id != self.config.frontend_id:
+                raise PermissionError("request belongs to another frontend")
             row = self.db.get("run", submit.request_id)
             if row:
                 if row["hash"] != digest(event.payload):

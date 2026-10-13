@@ -1,4 +1,4 @@
-> OpenCode 分支部署说明：使用 `k8s/base/hazard-expert-mcp.yaml`，命名空间 opencode-sv，节点标签 opencode-runtime=true，源码卷 opencode-source-pvc。先把本目录复制到服务器 source/hazard_expert_mcp，再构建独立 MCP 镜像。CU 地址为 http://container-up.opencode-sv.svc.cluster.local:8000，frontend ID 必须匹配 common/frontend.json（示例 web-yk），CONTAINER_UP_API_KEY 必须与 CU web-api-key 一致。MinIO 桶与密钥按实际配置填写。此 MCP 是供业务客户端调用的入口，内部 analyze 工具回调 CU；不要把它注册为同一 CU 的 OpenCode 模型工具，以免递归调用自身。下文旧端口/ID示例须按这些值调整。
+> OpenCode 分支部署说明：使用 `k8s/base/hazard-expert-mcp.yaml`，命名空间 opencode-sv，节点标签 opencode-runtime=true，源码卷 opencode-source-pvc。先把本目录复制到服务器 source/hazard_expert_mcp，再构建独立 MCP 镜像。CU 地址为 http://container-up.opencode-sv.svc.cluster.local:8000，frontend ID 必须匹配 common/frontends.json 中的注册项（示例 web-yk），调用 CU 不需要 API key。MinIO 桶与密钥按实际配置填写。此 MCP 是供业务客户端调用的入口，内部 analyze 工具回调 CU；不要把它注册为同一 CU 的 OpenCode 模型工具，以免递归调用自身。下文旧端口/ID示例须按这些值调整。
 
 # 隐患识别与分析 MCP 服务
 
@@ -71,7 +71,7 @@ Authorization: Bearer <部署配置中的 MCP_API_KEY>
 ```
 
 这是服务级鉴权，不是用户登录或 OAuth。**调用方必须从当前登录用户获得 `user_id`，并绑定到工具调用，不能允许不可信客户端随意选择其他用户的 ID。**
-当前需求显式传入 `user_id`，本服务会原样转发，不额外引入账号映射。`CONTAINER_UP_API_KEY` 仅用于上游网关需要 Bearer 凭证时；默认留空。
+当前需求显式传入 `user_id`，本服务会原样转发，不额外引入账号映射。调用 CU 不发送 Bearer 凭据；MCP_API_KEY 仍仅用于客户端访问本 MCP 服务。
 
 支持远程 HTTP MCP 的客户端配置通常类似下面这样，具体字段以客户端为准；不要选旧版 SSE 传输：
 

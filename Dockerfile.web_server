@@ -1,11 +1,11 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-WORKDIR /opt/app
+WORKDIR /mnt/source
+# Business source is mounted read-only from opencode-source-pvc at deployment.
 COPY requirements-backend.lock /opt/build/requirements.lock
 COPY vendor/wheels /opt/build/wheels
 RUN pip install --no-index --find-links=/opt/build/wheels --require-hashes -r /opt/build/requirements.lock \
     && rm -rf /opt/build
-COPY web_server /opt/app/web_server
 RUN useradd --uid 10001 --create-home agent
 USER 10001:10001
 EXPOSE 8000

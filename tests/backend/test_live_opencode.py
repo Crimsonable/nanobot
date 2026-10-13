@@ -80,12 +80,15 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     plugin = Path(__file__).resolve().parents[2] / "opencode_plugin/dist/index.mjs"
     assert plugin.exists(), "run npm ci && npm run build in opencode_plugin"
     oc_port, rpc_port, cu_port, model_port = port(), port(), port(), port()
-    token = tmp_path / "token"
-    token.write_text("integration-secret-not-production")
-    public = tmp_path / "public"
-    public.mkdir()
+    common = tmp_path / "common"
+    public = common / "web/app"
+    public.mkdir(parents=True)
     (public / "SKILL.md").write_text("public skill")
-    model_config = tmp_path / "model.json"
+    private_config = common / "web/config"
+    private_config.mkdir()
+    secret_file = private_config / "future-secret.txt"
+    secret_file.write_text("frontend-config-must-stay-private")
+    model_config = private_config / "opencode-server.json"
     model_config.write_text(json.dumps({"provider": {"test": {
         "npm": "@ai-sdk/openai-compatible", "name": "Offline test",
         "options": {"baseURL": f"http://127.0.0.1:{model_port}/v1", "apiKey": "unused"},
@@ -93,6 +96,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     }}}))
     runtime_config = RuntimeConfig.model_validate({
         "bucket_id": "bucket-0", "control_url": f"ws://127.0.0.1:{cu_port}/internal/buckets/ws",
+        "frontend_id": "web", "common_root": str(common),
         "state_root": str(tmp_path / "runtime"),
         "workspace_root": str(tmp_path / "workspaces"), "rpc_port": rpc_port, "health_port": port(),
         "opencode": {"binary": str(binary), "port": oc_port,
@@ -104,7 +108,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     control_config = ControlConfig.model_validate({
         "state_root": str(tmp_path / "control"), "bucket_ids": ["bucket-0"],
         "frontends": {"web": {"provider": "web", "profile_id": "default",
-                              "credential_file": str(token), "api_key_file": str(token)}},
+                              "channel_config": {}}},
         "limits": {"request_seconds": 90},
     })
     app = create_app(control_config, Channels())
@@ -133,7 +137,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
         tool_messages = [m for m in body["messages"] if m["role"] == "tool"]
         if not tool_messages:
             name = "bash"
-            args = {"command": "printf 'generated report' > output/report.txt; cat "
+            args = {"command": f"test ! -e '{private_config}' && printf 'generated report' > output/report.txt && cat "
                     + str(public / "SKILL.md"), "description": "Generate report"}
             if any("Long task" in str(m.get("content")) for m in body["messages"]):
                 args = {"command": "sleep 30", "description": "Long task"}
@@ -143,8 +147,13 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
         elif len(tool_messages) == 2:
             assert "generated report" in str(tool_messages[-1]["content"]), tool_messages[-1]
             name = "read"
-            args = {"filePath": str(public / "SKILL.md")}
+            args = {"filePath": str(secret_file)}
         elif len(tool_messages) == 3:
+            assert "Runtime rejected /authorize: 403" in str(tool_messages[-1]["content"]), tool_messages[-1]
+            assert "frontend-config-must-stay-private" not in str(body["messages"])
+            name = "read"
+            args = {"filePath": str(public / "SKILL.md")}
+        elif len(tool_messages) == 4:
             assert "public skill" in str(tool_messages[-1]["content"]), tool_messages[-1]
             name = "publish_attachment"
             args = {"files": [{"path": "output/report.txt", "filename": "report.txt"}]}
@@ -191,7 +200,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
                 peer_task = asyncio.create_task(runtime.peer.run())
                 event_task = asyncio.create_task(runtime.events())
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{cu_port}",
-                    headers={"Authorization": "Bearer " + token.read_text()}, timeout=100, trust_env=False) as client:
+                    timeout=100, trust_env=False) as client:
                     payload = {"user_id": "alice", "content": "Generate the report", "request_id": "req-test",
                         "attachments": [{"url": f"http://127.0.0.1:{model_port}/input.txt",
                                          "filename": "input.txt", "content_type": "text/plain"}]}
@@ -245,7 +254,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
                     own = tmp_path / "own"
                     own.mkdir()
                     check = await executor.execute("isolation", own, [public],
-                        f"test ! -e '{private}' && test ! -e '{token}' && cat '{public / 'SKILL.md'}'")
+                        f"test ! -e '{private}' && test ! -e '{private_config}' && cat '{public / 'SKILL.md'}'")
                     assert check == {"output": "public skill", "exit_code": 0}
         finally:
             await runtime.shutdown()

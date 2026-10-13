@@ -8,7 +8,6 @@ def settings():
     return Settings(
         container_up_base_url="http://container-up:8080",
         container_up_frontend_id="web-wd",
-        container_up_api_key="upstream-token",
         minio_endpoint="http://minio:9000",
         minio_download_endpoint="https://files.example.com",
         minio_access_key="test-access",

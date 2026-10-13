@@ -163,14 +163,10 @@ class ExpertService:
             f"{self.settings.container_up_base_url}/inbound-sync/"
             f"{quote(self.settings.container_up_frontend_id, safe='')}"
         )
-        headers = {}
-        if token := self.settings.container_up_api_key.get_secret_value():
-            headers["Authorization"] = f"Bearer {token}"
         try:
             # Deliberately no retries: another POST could run the same agent task twice.
             response = await self.http.post(
                 endpoint,
-                headers=headers,
                 json={
                     "user_id": user_id,
                     "chat_id": chat_id,

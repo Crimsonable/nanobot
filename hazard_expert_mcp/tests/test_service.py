@@ -34,7 +34,7 @@ async def test_preserves_conversation_identity_query_and_signed_urls(settings, c
             assert "bucket_id" not in result.model_dump()
             request = requests[-1]
             assert str(request.url) == "http://container-up:8080/inbound-sync/web-wd"
-            assert request.headers["Authorization"] == "Bearer upstream-token"
+            assert "Authorization" not in request.headers
             assert json.loads(request.content) == {
                 "user_id": user,
                 "chat_id": chat,

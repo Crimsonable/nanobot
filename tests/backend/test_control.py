@@ -10,12 +10,9 @@ from container_up.server import Inbound, create_app
 
 @pytest.fixture
 def control(tmp_path):
-    token = tmp_path / "token"
-    token.write_text("test-credential-123456789")
     config = ControlConfig.model_validate({"state_root": str(tmp_path / "state"),
         "bucket_ids": ["b"],
-        "frontends": {"web": {"provider": "web", "profile_id": "p", "credential_file": str(token),
-                              "api_key_file": str(token)}},
+        "frontends": {"web": {"provider": "web", "profile_id": "p", "channel_config": {}}},
     })
     app = create_app(config)
     app.state.service.peers["b"] = SimpleNamespace(closed=False)
@@ -24,12 +21,10 @@ def control(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_authenticated_routing_idempotency_and_result_ownership(control):
+async def test_keyless_routing_idempotency_and_result_ownership(control):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
         body = {"user_id": "u", "content": "hello", "request_id": "r",
                 "metadata": {"frontend_id": "forged", "usr_id": "someone-else"}}
-        assert (await client.post("/inbound/web", json=body)).status_code == 401
-        client.headers["Authorization"] = "Bearer test-credential-123456789"
         first = await client.post("/inbound/web", json=body)
         assert first.status_code == 200
         again = await client.post("/inbound/web", json=body)
@@ -46,7 +41,7 @@ async def test_authenticated_routing_idempotency_and_result_ownership(control):
             request_id="r", payload={"request_id": "r", "status": "completed", "content": "done"}))
         response = await client.get("/requests/web/r")
         assert response.json()["content"] == "done"
-        assert (await client.get("/requests/other/r")).status_code == 401
+        assert (await client.get("/requests/other/r")).status_code == 404
 
 
 @pytest.mark.asyncio
@@ -141,8 +136,7 @@ async def test_control_returns_runtime_published_url_without_storage(control):
     artifact = {"attachment_id": "published", "url": "https://objects.example/report.pdf", "filename": "report.pdf"}
     await service.on_event("b", Envelope(type="request.completed", bucket_id="b", request_id="r",
         payload={"request_id": "r", "status": "completed", "content": "Done", "attachments": [artifact]}))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test",
-            headers={"Authorization": "Bearer test-credential-123456789"}) as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
         result = await client.get("/requests/web/r")
         assert result.json()["attachments"][0]["url"] == artifact["url"]
 

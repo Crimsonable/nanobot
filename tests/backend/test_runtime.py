@@ -117,7 +117,7 @@ async def test_workspace_file_in_place_of_directory_fails_request(runtime):
     submit = Submit(request_id="bad-dir", conversation_id="chat",
                     identity=Identity(frontend_id="web", user_id="alice"), profile_id="p",
                     content="hello", deadline_at=time.time() + 60)
-    path = runtime.config.workspace_root / submit.identity.key
+    path = runtime.config.workspace_root / submit.identity.frontend_id / submit.identity.key
     path.parent.mkdir(parents=True)
     path.write_text("not a directory")
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id=submit.request_id,
@@ -257,6 +257,8 @@ async def test_supervisor_preserves_server_features(runtime, monkeypatch):
 
     from bucket_runtime.supervisor import Supervisor
     oc = runtime.config.opencode
+    oc.binary.write_text("#!/bin/sh\nexit 0\n")
+    oc.binary.chmod(0o555)
     features = {"permission": {"*": "allow"}, "lsp": {}, "formatter": {},
                 "mcp": {"test": {"type": "local", "command": ["test"]}},
                 "snapshot": True, "autoupdate": True, "compaction": {"auto": True},

@@ -6,13 +6,13 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent_backend.config import FrontendConfig, load_config
+from agent_backend.config import load_frontends
 from agent_backend.models import Envelope, Identity
 from agent_backend.workspaces import workspace_path
 from container_up.bucket_manager import BucketManager
 from container_up.server import ControlService, Inbound
 
-EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontend.json"
+EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
 
 
 class FakeManager:
@@ -23,7 +23,7 @@ class FakeManager:
         self.fail_start = False
         self.fail_stop = False
 
-    async def ensure(self, bucket_id):
+    async def ensure(self, bucket_id, frontend_id=None):
         self.created.append(bucket_id)
         await asyncio.sleep(0.01)
         if self.fail_start:
@@ -39,7 +39,7 @@ class FakeManager:
 
 @pytest.fixture
 def service(tmp_path):
-    config = load_config(EXAMPLE, FrontendConfig).control_config()
+    config = load_frontends(EXAMPLE).frontend("web-yk").control_config()
     config.state_root = tmp_path / "control"
     config.runtime_template.workspace_root = tmp_path / "workspaces"
     config.bucket_pool.max_users_per_bucket = 2
@@ -149,10 +149,10 @@ async def test_restart_keeps_mapping_and_recovers_same_bucket(service):
 
 
 def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
-    config = load_config(EXAMPLE, FrontendConfig)
+    config = load_frontends(EXAMPLE).frontend("web-yk")
     bucket_id = config.control.bucket_pool.name_prefix + "-0123456789ab"
     runtime = config.runtime_config(EXAMPLE, bucket_id)
-    assert runtime.state_root == config.runtime.state_root / bucket_id
+    assert runtime.state_root == config.runtime.state_root / config.id / bucket_id
     assert runtime.workspace_root == config.runtime.workspace_root
     assert not hasattr(runtime, "credential_file")
     manifest = BucketManager(config.control_config()).deployment(bucket_id)
@@ -230,7 +230,7 @@ async def test_slow_retirement_does_not_block_or_erase_new_assignment(service):
 
 @pytest.mark.asyncio
 async def test_kubernetes_api_create_update_scale_and_wait_for_pod_exit():
-    config = load_config(EXAMPLE, FrontendConfig).control_config()
+    config = load_frontends(EXAMPLE).frontend("web-yk").control_config()
     manager = BucketManager(config)
     bucket_id = config.bucket_pool.name_prefix + "-0123456789ab"
     calls = []

@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from agent_backend.common import scoped_public_path
 from agent_backend.config import RuntimeConfig
 from bucket_runtime.opencode_client import OpenCodeClient
 
@@ -20,13 +21,23 @@ class Supervisor:
         self.client = OpenCodeClient(config.opencode, self.password)
         self.process: asyncio.subprocess.Process | None = None
 
+    def server_config(self) -> dict:
+        raw = json.loads(self.config.opencode.config_file.read_text(encoding="utf-8"))
+        skills = raw.get("skills") or {}
+        if "paths" in skills:
+            skills["paths"] = [str(scoped_public_path(Path(path), self.config.common_root,
+                self.config.frontend_id)) for path in skills["paths"]]
+        return raw
+
     async def start(self) -> None:
         config = self.config
         oc = config.opencode
         oc.context_root.mkdir(parents=True, exist_ok=True)
+        if not oc.binary.is_file() or not os.access(oc.binary, os.X_OK):
+            raise RuntimeError(f"OpenCode executable missing or not executable: {oc.binary}")
         if not oc.plugin_file.is_file():
-            raise RuntimeError("bundled runtime plugin missing")
-        raw = json.loads(oc.config_file.read_text(encoding="utf-8"))
+            raise RuntimeError(f"mounted runtime plugin missing: {oc.plugin_file}")
+        raw = self.server_config()
         plugin = oc.plugin_file.resolve().as_uri()
         plugins = raw.setdefault("plugin", [])
         if plugin not in plugins:
@@ -42,8 +53,12 @@ class Supervisor:
         modules = global_config / "node_modules"
         if not (oc.dependency_dir / "node_modules/@opencode-ai/plugin/package.json").is_file():
             raise RuntimeError("offline plugin dependencies missing")
+        target = (oc.dependency_dir / "node_modules").resolve()
+        # Persistent homes may still point at the previous image-bundled plugin path.
+        if modules.is_symlink() and modules.resolve() != target:
+            modules.unlink()
         if not modules.exists():
-            modules.symlink_to((oc.dependency_dir / "node_modules").resolve(), target_is_directory=True)
+            modules.symlink_to(target, target_is_directory=True)
         env = {key: os.environ[key] for key in ["PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"]
                if key in os.environ}
         env.update({"HOME": str(home), "XDG_CONFIG_HOME": str(home / "config"),
