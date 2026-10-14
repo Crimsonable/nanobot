@@ -17,7 +17,9 @@
 
 user_id 必填；chat_id 默认 default；request_id 可选，建议由调用方生成以便去重与超时查询。content、attachments、metadata 可省略。相同用户与 chat_id 继续同一逻辑会话。严格 schema 不接受旧 raw 字段。
 
-响应包含 request_id、status、frontend_id、user_id、chat_id、bucket_id、instance_id、conversation_id、content、attachments、metadata、delivery_state，以及可选 error、partial、usage。HTTP 200 时仍应检查 status：completed、failed、cancelled；不可把传输成功当作执行成功。同步请求不触发渠道回调，因此 delivery_state 可保持 pending，它不是执行状态。
+响应包含 request_id、status、frontend_id、user_id、chat_id、bucket_id、identity_id、content、attachments、metadata、delivery_state，以及可选 error、partial、usage。HTTP 200 时仍应检查 status：completed、failed、cancelled；不可把传输成功当作执行成功。同步请求不触发渠道回调，因此 delivery_state 可保持 pending，它不是执行状态。
+
+项目统一使用 `user_id` 和 `identity_id`；旧响应字段 `instance_id` 已更名为 `identity_id`，值不变。`chat_id` 是调用方或渠道的聊天标识，在 `frontend_id + user_id` 范围内区分会话。重复的派生字段 `conversation_id` 已删除；`session_id` 是后端调用 OpenCode 使用的原生会话 ID。完整命名和升级说明见 [日志与 ID 约定](SESSION_LOGGING.md)。
 
 默认等待上限由 control.limits.request_seconds 控制（600 秒）。超时返回 504，detail 含 request_id；任务可能仍在执行。查询 `GET /requests/{frontend_id}/{request_id}`，或通过 `POST /requests/{frontend_id}/{request_id}/cancel` 取消。不要换一个 request_id 盲目重试有副作用的请求。相同 request_id 与相同请求内容复用原结果，内容改变返回 409。
 

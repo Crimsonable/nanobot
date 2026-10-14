@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import mimetypes
 import time
@@ -18,6 +19,7 @@ from agent_backend.models import (
     Attachment,
     Envelope,
     Identity,
+    OpenCodeEventChunk,
     Result,
     StrictModel,
     Submit,
@@ -102,7 +104,7 @@ class ControlService:
         if not self.pool:
             return await self._submit(frontend_id, inbound, sync, trusted_channel)
         identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
-        async with self.user_locks.setdefault(identity.key, asyncio.Lock()):
+        async with self.user_locks.setdefault(identity.identity_id, asyncio.Lock()):
             if inbound.request_id and self.db.get("request", inbound.request_id):
                 return await self._submit(frontend_id, inbound, sync, trusted_channel)
             async with self.pool.assignment(identity):
@@ -120,7 +122,7 @@ class ControlService:
             if existing["hash"] != fingerprint:
                 raise HTTPException(409, "request_id already used for different input")
             return existing
-        binding = self.db.get("binding", identity.key)
+        binding = self.db.get("binding", identity.identity_id)
         if binding is None:
             available = [key for key, peer in self.peers.items() if not peer.closed]
             if not available:
@@ -128,22 +130,21 @@ class ControlService:
             counts = {key: sum(b["bucket_id"] == key for b in self.db.records("binding"))
                       for key in available}
             bucket_id = min(available, key=lambda k: (counts[k], k))
-            binding = {"bucket_id": bucket_id, "user_key": identity.key,
+            binding = {"bucket_id": bucket_id, "identity_id": identity.identity_id,
                        "identity": identity.model_dump()}
-        conversation_id = digest([identity.key, inbound.chat_id])
         attachments_input = list(inbound.attachments)
         from container_up.attachments import attachment_from_content_url
         auto = attachment_from_content_url(inbound.content, frontend.attachment_url_prefix)
         if auto and not any((a.get("url") if isinstance(a, dict) else a) == auto["url"] for a in attachments_input):
             attachments_input.append(auto)
         attachments = await self.normalize(identity, attachments_input, trusted_channel)
-        submit = Submit(request_id=request_id, conversation_id=conversation_id,
+        submit = Submit(request_id=request_id, chat_id=inbound.chat_id,
                         identity=identity, profile_id=frontend.profile_id, content=inbound.content,
                         attachments=attachments, deadline_at=time.time() + self.config.limits.request_seconds)
         if self.pool:
             submit.session_epoch = binding["generation"]
             history = [r for r in self.db.records("request") if r.get("result")
-                       and r["submit"]["conversation_id"] == conversation_id
+                       and r["chat_id"] == inbound.chat_id
                        and r["submit"]["identity"] == identity.model_dump()]
             submit.previous_turns = [{"user": r["submit"]["content"],
                                       "input_attachments": r["submit"].get("attachments", []),
@@ -161,18 +162,30 @@ class ControlService:
             # There may have been an await during normalization.
             if self.db.get("request", request_id):
                 raise HTTPException(409, "concurrent duplicate request; query the existing request")
-            current = self.db.get("binding", identity.key)
+            current = self.db.get("binding", identity.identity_id)
             if current:
                 record["bucket_id"] = current["bucket_id"]
             else:
-                self.db.put("binding", identity.key, binding)
+                self.db.put("binding", identity.identity_id, binding)
             self.db.put("request", request_id, record)
             self.db.enqueue(record["bucket_id"], Envelope(type="request.submit",
                 bucket_id=record["bucket_id"], request_id=request_id, payload=submit.model_dump(mode="json")))
-        log.info("request queued bucket_id=%s request_id=%s user_key=%s", record["bucket_id"], request_id, identity.key)
+        log.info("request queued bucket_id=%s request_id=%s identity_id=%s", record["bucket_id"], request_id, identity.identity_id)
         return record
 
     async def on_event(self, bucket_id: str, event: Envelope) -> None:
+        if event.bucket_id != bucket_id:
+            raise PermissionError("bucket event ownership mismatch")
+        if event.type == "opencode.event.chunk":
+            self.receive_event_chunk(bucket_id, event)
+            return
+        if event.type == "opencode.event":
+            if event.request_id:
+                self.request(bucket_id, event.request_id)
+            # Persist the whole event for inspection, even when no request is
+            # attached or its final result was already delivered to the channel.
+            self.db.put("opencode_event", digest([bucket_id, event.event_id]), event.model_dump(mode="json"))
+            return
         row = self.request(bucket_id, event.request_id)
         if event.type in {"request.completed", "request.failed", "request.cancelled"}:
             result = Result.model_validate(event.payload)
@@ -198,6 +211,36 @@ class ControlService:
         elif event.type != "tool.progress":
             raise ValueError("unsupported bucket event")
 
+    def receive_event_chunk(self, bucket_id: str, event: Envelope) -> None:
+        chunk = OpenCodeEventChunk.model_validate(event.payload)
+        if chunk.index >= chunk.count:
+            raise ValueError("invalid event chunk index")
+        if event.request_id:
+            self.request(bucket_id, event.request_id)
+        key = digest([bucket_id, chunk.event_id])
+        with self.db.transaction():
+            if self.db.get("opencode_event", key):
+                return
+            state = self.db.get("opencode_event_chunks", key) or {
+                "count": chunk.count, "request_id": event.request_id, "parts": {}}
+            if state["count"] != chunk.count or state["request_id"] != event.request_id:
+                raise ValueError("event chunk identity mismatch")
+            index = str(chunk.index)
+            if index in state["parts"] and state["parts"][index] != chunk.data:
+                raise ValueError("conflicting event chunk")
+            state["parts"][index] = chunk.data
+            if len(state["parts"]) == chunk.count:
+                encoded = b"".join(base64.b64decode(state["parts"][str(i)], validate=True)
+                                   for i in range(chunk.count))
+                original = Envelope.model_validate_json(encoded)
+                if (original.type != "opencode.event" or original.event_id != chunk.event_id
+                        or original.bucket_id != bucket_id or original.request_id != event.request_id):
+                    raise ValueError("reassembled event identity mismatch")
+                self.db.put("opencode_event", key, original.model_dump(mode="json"))
+                self.db.delete("opencode_event_chunks", key)
+            else:
+                self.db.put("opencode_event_chunks", key, state)
+
     async def rpc(self, bucket_id: str, method: str, args: dict, data: bytes | None):
         self.request(bucket_id, args.get("request_id", ""))
         raise ValueError("file transfer RPC is not supported; pass attachment references")
@@ -205,7 +248,7 @@ class ControlService:
     async def dispatch_channel(self, frontend_id: str, payload: dict) -> None:
         event = payload.get("event") or {}
         try:
-            await self.submit(frontend_id, Inbound(user_id=event["usr_id"],
+            await self.submit(frontend_id, Inbound(user_id=event["user_id"],
                 chat_id=event.get("chat_id") or "default", content=event.get("content") or "",
                 attachments=event.get("attachments") or [], metadata=event.get("metadata") or {}),
                 trusted_channel=True)
@@ -326,8 +369,7 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
         result = dict(row.get("result") or {})
         return {"request_id": row["request_id"], "status": row["status"], **identity,
                 "chat_id": row["chat_id"], "bucket_id": row["bucket_id"],
-                "instance_id": Identity.model_validate(identity).key,
-                "conversation_id": row["submit"]["conversation_id"],
+                "identity_id": Identity.model_validate(identity).identity_id,
                 "metadata": row["metadata"],
                 "progress": row.get("progress"),
                 "delivery_state": row["delivery"], **result}
@@ -382,16 +424,25 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     async def message_alias(request: Request):
         body = await request.json()
         frontend_id = body.pop("frontend_id", "")
-        body["user_id"] = body.pop("usr_id")
+        if "usr_id" in body:
+            legacy_user_id = body.pop("usr_id")
+            if "user_id" in body and body["user_id"] != legacy_user_id:
+                raise HTTPException(400, "conflicting user_id and legacy usr_id")
+            body["user_id"] = legacy_user_id
         return await inbound(frontend_id, Inbound.model_validate(body), request)
 
     @app.post("/api/cancel")
     async def cancel_alias(request: Request):
         body = await request.json()
+        if "usr_id" in body:
+            legacy_user_id = body.pop("usr_id")
+            if "user_id" in body and body["user_id"] != legacy_user_id:
+                raise HTTPException(400, "conflicting user_id and legacy usr_id")
+            body["user_id"] = legacy_user_id
         frontend_id = body["frontend_id"]
         service.require_frontend(frontend_id)
         matches = [row for row in service.db.records("request") if not row.get("result")
-            and row["submit"]["identity"] == {"frontend_id": frontend_id, "user_id": body["usr_id"]}
+            and row["submit"]["identity"] == {"frontend_id": frontend_id, "user_id": body["user_id"]}
             and row["chat_id"] == body.get("chat_id", "default")]
         for row in matches:
             service.db.enqueue(row["bucket_id"], Envelope(type="request.cancel",

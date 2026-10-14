@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from agent_backend.common import scoped_public_path
+from agent_backend.common import frontend_app_root, scoped_public_path
 from agent_backend.config import RuntimeConfig, UserPolicy
 
 
@@ -14,10 +14,14 @@ def public_roots(config: RuntimeConfig, policy: UserPolicy, profile_id: str,
         raise ValueError("frontend isolation requires sandbox.enabled=true and session.enabled=true")
     configured = policy.filesystem.public_roots
     roots = configured if configured is not None else config.profiles[profile_id].public_roots
+    # The frontend app tree is shared by every bucket/user of this frontend.
+    # Policy overrides select additional public directories, never remove app.
+    owner = config.frontend_id or frontend_id
+    roots = [*roots, *([frontend_app_root(config.common_root, owner)] if owner else [])]
     protected = [config.workspace_root, config.state_root,
                  config.opencode.context_root, config.opencode.plugin_file,
                  config.opencode.dependency_dir]
-    private = [config.opencode.config_file, config.permissions_file, config.frontend_config_file]
+    private = [config.opencode.config_file, config.permissions_file, config.logging_file, config.frontend_config_file]
     if config.storage:
         private.extend([config.storage.access_key_file, config.storage.secret_key_file])
     result = []
@@ -31,7 +35,8 @@ def public_roots(config: RuntimeConfig, policy: UserPolicy, profile_id: str,
             raise ValueError("public roots must not expose users or service files")
         if any(p and resolved.is_relative_to(p.resolve()) for p in private):
             raise ValueError("service configuration cannot be a public root")
-        result.append(resolved)
+        if resolved not in result:
+            result.append(resolved)
     return result
 
 
@@ -61,9 +66,17 @@ def session_rules(policy: UserPolicy, workspace: Path, public: list[Path], workt
             enabled = policy.session.tools.get(name, True)
         if not enabled:
             continue
-        for root in roots:
+        # The workspace may itself be the Git worktree. Its relative children
+        # have no './' prefix; deny parent traversal before adding public roots.
+        for root in sorted(roots, key=lambda root: root != worktree):
             pattern = (str(root) if name == "external_directory" else os.path.relpath(root, worktree)).replace("\\", "/")
             rule(name, pattern, True)
+            if pattern == "." and name != "external_directory":
+                rule(name, "*", True)
+                rule(name, "..", False)
+                rule(name, "../*", False)
+                rule(name, "/*", False)
+                continue
             rule(name, pattern.rstrip("/") + "/*", True)
     for path in private_files:
         pattern = os.path.relpath(path, worktree).replace("\\", "/")

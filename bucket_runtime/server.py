@@ -29,16 +29,27 @@ def rpc_app(runtime: Runtime, token: str) -> FastAPI:
 
     @app.post("/plugin/ready")
     async def plugin_ready(request: Request):
-        if (await request.json()).get("version") != "1":
+        if (await request.json()).get("version") != "3":
             raise HTTPException(409, "plugin protocol mismatch")
         runtime.plugin_ready = True
         return {"ok": True}
+
+    @app.post("/plugin/event")
+    async def plugin_event(request: Request):
+        try:
+            return runtime.plugin_event(await request.json())
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/authorize")
     async def authorize(request: Request):
         body = await request.json()
         try:
-            await runtime.bind_tool_session(body["session_id"])
+            if not isinstance(body.get("directory"), str) or not body["directory"]:
+                raise ValueError("plugin must supply its session directory")
+            await runtime.bind_tool_session(body["session_id"], body["directory"])
             return runtime.authorize(body["session_id"], body["call_id"], body["tool"], body["args"])
         except (PermissionError, ValueError) as exc:
             raise HTTPException(403, str(exc)) from exc
@@ -70,7 +81,7 @@ def health_app(runtime: Runtime) -> FastAPI:
     @app.get("/health/ready")
     async def ready():
         if (not runtime.ready or runtime.draining or not runtime.plugin_ready or not runtime.peer
-                or runtime.peer.closed or not runtime.client.sse_connected):
+                or runtime.peer.closed):
             raise HTTPException(503, "runtime not ready")
         return {"status": "ready", "active": len(runtime.tasks)}
 
@@ -129,7 +140,7 @@ async def serve(config: RuntimeConfig) -> None:
             raise RuntimeError("runtime plugin handshake missing")
         await runtime.recover()
         runtime.ready = True
-        tasks.extend([asyncio.create_task(connection_loop()), asyncio.create_task(runtime.events()),
+        tasks.extend([asyncio.create_task(connection_loop()),
                       asyncio.create_task(supervisor.process.wait())])
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:

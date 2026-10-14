@@ -19,6 +19,9 @@
     }
   },
   "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "/mnt/common/web-yk/app/templates/AGENTS.md"
+  ],
   "permission": {
     "*": "allow"
   },

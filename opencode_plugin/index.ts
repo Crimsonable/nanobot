@@ -1,10 +1,12 @@
 import { tool, type Plugin } from "@opencode-ai/plugin"
+import { createSessionLogger } from "./session-logger"
+import { createRuntimeEvents } from "./runtime-events"
 
 function quote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'"
 }
 
-export const BucketRuntimePlugin: Plugin = async () => {
+export const BucketRuntimePlugin: Plugin = async ({ client: opencode, directory }) => {
   const url = process.env.BUCKET_RPC_URL
   const token = process.env.BUCKET_RPC_TOKEN
   const python = process.env.BUCKET_EXEC_PYTHON
@@ -21,14 +23,23 @@ export const BucketRuntimePlugin: Plugin = async () => {
     return response.json()
   }
 
-  await rpc("/plugin/ready", { version: "1" })
+  await rpc("/plugin/ready", { version: "3" })
+  const logger = createSessionLogger(opencode, JSON.parse(process.env.BUCKET_SESSION_LOGGING ?? "{}"))
+  const events = createRuntimeEvents(opencode, directory,
+    body => rpc("/plugin/event", body, AbortSignal.timeout(5000)),
+    () => console.error("Runtime event delivery failed"))
   return {
+    event: async ({ event }) => { await Promise.all([logger.event(event), events.event(event)]) },
+    dispose: async () => { await Promise.all([logger.flush(), events.flush()]) },
     "tool.execute.before": async (input, output) => {
       // Runtime applies this user's configured session scope to native file tools.
       const args = structuredClone(output.args)
       delete args._runtime_ticket
+      await Promise.all([logger.toolStart(input, args), events.event({ type: "tool.execute.before", properties: {
+        sessionID: input.sessionID, callID: input.callID, tool: input.tool, args,
+      } })])
       const authorized = await rpc("/authorize", {
-        session_id: input.sessionID, call_id: input.callID, tool: input.tool, args,
+        session_id: input.sessionID, directory, call_id: input.callID, tool: input.tool, args,
       })
       if (input.tool === "bash") {
         output.args.command = [python, client, authorized.ticket].map(quote).join(" ")

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from agent_backend.models import Envelope
+from agent_backend.models import Envelope, Submit
 
 
 class Journal:
@@ -44,6 +44,69 @@ class Journal:
                 peer TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(peer,event_id));
         """)
         self.max_outbox = max_outbox
+        try:
+            self.migrate_identifiers()
+            self.migrate_chats()
+        except BaseException:
+            self.close()
+            raise
+
+    def migrate_identifiers(self) -> None:
+        """Rename stored fields without changing identities, keys or workspace paths."""
+        if self.db.execute("PRAGMA user_version").fetchone()[0] >= 1:
+            return
+        renames = {
+            "binding": {"user_key": "identity_id"},
+            "workspace_owner": {"user_key": "identity_id"},
+            "session": {"user_key": "identity_id", "profile": "profile_id"},
+            "artifact": {"owner": "identity_id"},
+        }
+        with self.transaction():
+            for kind, fields in renames.items():
+                for row in self.db.execute("SELECT key,value FROM records WHERE kind=?", (kind,)).fetchall():
+                    value = json.loads(row["value"])
+                    for old, new in fields.items():
+                        if old in value:
+                            if new in value and value[new] != value[old]:
+                                raise ValueError(f"conflicting persisted {old}/{new}")
+                            value[new] = value.pop(old)
+                    self.put(kind, row["key"], value)
+            self.db.execute("PRAGMA user_version=1")
+
+    def migrate_chats(self) -> None:
+        """Recover chat_id from CU records, including unacknowledged submissions."""
+        if self.db.execute("PRAGMA user_version").fetchone()[0] >= 2:
+            return
+
+        def convert(payload: dict, chat_id: str) -> dict:
+            payload = dict(payload)
+            legacy_key = payload.pop("conversation_id")
+            if "chat_id" in payload and payload["chat_id"] != chat_id:
+                raise ValueError("conflicting persisted chat_id")
+            payload["chat_id"] = chat_id
+            if Submit.model_validate(payload).session_key != legacy_key:
+                raise ValueError("persisted chat key mismatch")
+            return payload
+
+        with self.transaction():
+            for row in self.db.execute("SELECT key,value FROM records WHERE kind='request'").fetchall():
+                value = json.loads(row["value"])
+                if "conversation_id" in value.get("submit", {}):
+                    value["submit"] = convert(value["submit"], value["chat_id"])
+                    self.put("request", row["key"], value)
+            for row in self.db.execute("SELECT seq,event FROM outbox").fetchall():
+                event = json.loads(row["event"])
+                if event["type"] != "request.submit" or "conversation_id" not in event["payload"]:
+                    continue
+                request = self.get("request", event["request_id"])
+                if request is None:
+                    raise ValueError("legacy submission is missing its CU request record")
+                event["payload"] = convert(event["payload"], request["chat_id"])
+                self.db.execute("UPDATE outbox SET event=? WHERE seq=?",
+                                (json.dumps(event, ensure_ascii=False), row["seq"]))
+            # Bucket runs have only the old hash; Submit.from_record handles those
+            # until a CU replay supplies chat_id. Session table keys stay unchanged.
+            self.db.execute("PRAGMA user_version=2")
 
     @contextmanager
     def transaction(self):
@@ -67,6 +130,9 @@ class Journal:
     def records(self, kind: str) -> list[dict]:
         return [json.loads(row[0]) for row in self.db.execute(
             "SELECT value FROM records WHERE kind=? ORDER BY rowid", (kind,))]
+
+    def delete(self, kind: str, key: str) -> None:
+        self.db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
 
     def enqueue(self, peer: str, event: Envelope) -> None:
         if self.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] >= self.max_outbox:

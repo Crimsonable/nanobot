@@ -21,6 +21,8 @@ def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
     assert config.runtime.permissions_file == Path("/mnt/common/{frontend_id}/config/user-permissions.yaml")
     assert config.runtime.profiles["reports"].public_roots == [Path("/mnt/common/{frontend_id}/app"), Path("/mnt/source/public")]
     assert config.runtime.workspace_layout == "frontend_user"
+    assert config.model_dump()["frontend_id"] == "web-yk"
+    assert "id" not in config.model_dump()
     runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
     assert runtime.frontend_id == "web-yk"
     assert not hasattr(runtime, "credential_file")

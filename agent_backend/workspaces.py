@@ -16,7 +16,7 @@ def workspace_volume_subpath(root: Path, frontend_id: str) -> PurePosixPath:
 def workspace_path(root: Path, identity: Identity, layout: str) -> Path:
     frontend = frontend_segment(identity.frontend_id)
     if layout == "identity_hash":
-        return root / frontend / identity.key
+        return root / frontend / identity.identity_id
     if layout != "frontend_user":
         raise ValueError("unknown workspace layout")
     user = "".join(c if c.isalnum() or c in "._-" else "-" for c in identity.user_id).strip("-.")

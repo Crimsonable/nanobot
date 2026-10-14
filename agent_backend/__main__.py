@@ -31,9 +31,9 @@ def main():
         frontend.control_config()
         for entry in frontend.frontends:
             for bucket_id in frontend.control.bucket_ids:
-                frontend.runtime_config(args.config, bucket_id, entry.id)
+                frontend.runtime_config(args.config, bucket_id, entry.frontend_id)
             if frontend.control.bucket_pool:
-                frontend.runtime_config(args.config, frontend.control.bucket_pool.name_prefix + "-000000000000", entry.id)
+                frontend.runtime_config(args.config, frontend.control.bucket_pool.name_prefix + "-000000000000", entry.frontend_id)
         print("Configuration schema valid (credentials and runtime capabilities not probed).")
 
 

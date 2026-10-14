@@ -26,7 +26,7 @@ _AES_BLOCK_SIZE = 16
 def build_im_receive_event(
     *,
     chat_id: str,
-    usr_id: str,
+    user_id: str,
     content: str,
     attachments: list[Any] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -35,7 +35,7 @@ def build_im_receive_event(
         "event_type": "im_message_receive",
         "event": {
             "chat_id": chat_id,
-            "usr_id": usr_id,
+            "user_id": user_id,
             "content": content,
             "attachments": list(attachments or []),
             "metadata": dict(metadata or {}),
@@ -292,7 +292,7 @@ class QxtIMParser:
         )
         return build_im_receive_event(
             chat_id=chat_id,
-            usr_id=sender_uid,
+            user_id=sender_uid,
             content=content,
             attachments=[],
             metadata={

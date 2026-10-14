@@ -35,7 +35,7 @@ def tenants(tmp_path):
             frontend_config_file=common / "frontend.json",
             profiles={"p": {"model": "test/model", "public_roots": [common / "{frontend_id}/app"]}})
         runtime = Runtime(cfg, SimpleNamespace(), SandboxExecutor(cfg.sandbox, 4096))
-        submit = Submit(request_id=frontend, conversation_id=frontend,
+        submit = Submit(request_id=frontend, chat_id=frontend,
             identity=Identity(frontend_id=frontend, user_id="alice"), profile_id="p", content="test",
             deadline_at=time.time()+60)
         runtime.db.put("run", frontend, {"request_id": frontend, "status": "running",
@@ -46,11 +46,14 @@ def tenants(tmp_path):
         runtime.db.close()
 
 
-def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants):
+@pytest.mark.parametrize("explicit_empty", [False, True])
+def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants, explicit_empty):
     import fnmatch
     import os
     common, pairs = tenants
     for runtime, submit in pairs:
+        if explicit_empty:
+            runtime.permissions.defaults.filesystem.public_roots = []
         frontend = submit.identity.frontend_id
         other = "web-b" if frontend == "web-a" else "web-a"
         assert runtime.public_roots(submit) == [common / frontend / "app"]
@@ -79,7 +82,7 @@ def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants)
                                (common / frontend / "config/future-secret.txt", "deny"),
                                (common / frontend, "deny"),
                                (common / other / "app/manual.txt", "deny"), (common / "frontend.json", "deny")]:
-            pattern = os.path.relpath(path, runtime.opencode_worktree).replace("\\", "/")
+            pattern = os.path.relpath(path, runtime.worktree(submit)).replace("\\", "/")
             applicable = [r for r in rules if fnmatch.fnmatchcase("read", r["permission"])
                           and fnmatch.fnmatchcase(pattern, r["pattern"])]
             assert applicable[-1]["action"] == expected
@@ -94,8 +97,8 @@ def test_user_override_cannot_grant_other_frontend_or_parent(tenants):
         with pytest.raises(ValueError, match="current frontend"):
             public_roots(runtime.config, policy, "p", "web-a")
     assert public_roots(runtime.config, UserPolicy.model_validate({"filesystem": {
-        "public_roots": [common / "web-a/app/skills"]}}), "p", "web-a") == [common / "web-a/app/skills"]
-    assert public_roots(runtime.config, UserPolicy.model_validate({"filesystem": {"public_roots": []}}), "p", "web-a") == []
+        "public_roots": [common / "web-a/app/skills"]}}), "p", "web-a") == [common / "web-a/app/skills", common / "web-a/app"]
+    assert public_roots(runtime.config, UserPolicy.model_validate({"filesystem": {"public_roots": []}}), "p", "web-a") == [common / "web-a/app"]
 
 
 @pytest.mark.parametrize("suffix", ["", "web-a", "web-a/config", "web-b/app"])
@@ -149,7 +152,10 @@ async def test_skill_discovery_is_scoped_and_broad_configuration_rejected(tenant
         runtime.config.opencode.config_file = path
         supervisor = Supervisor(runtime.config)
         try:
-            path.write_text(json.dumps({"skills": {"paths": [str(common / "{frontend_id}/app/skills")]}}))
+            instructions = [str(common / submit.identity.frontend_id / "app/templates/AGENTS.md")]
+            path.write_text(json.dumps({"instructions": instructions,
+                "skills": {"paths": [str(common / "{frontend_id}/app/skills")]}}))
+            assert supervisor.server_config()["instructions"] == instructions
             assert supervisor.server_config()["skills"]["paths"] == [str(common / submit.identity.frontend_id / "app/skills")]
             for wrong in [common, common / submit.identity.frontend_id, common / submit.identity.frontend_id / "config",
                           common / ("web-b" if submit.identity.frontend_id == "web-a" else "web-a") / "app"]:

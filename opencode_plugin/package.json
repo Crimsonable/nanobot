@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.mjs",
+    "build": "esbuild index.ts session-logger.ts runtime-events.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs",
     "test": "node --test test.mjs"
   },
   "dependencies": { "@opencode-ai/plugin": "1.18.31" },

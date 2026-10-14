@@ -16,7 +16,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
             return None
 
         def json(self) -> dict[str, object]:
-            return {"status": "accepted", "instance_id": "u-1"}
+            return {"status": "accepted", "identity_id": "u-1"}
 
     class _FakeAsyncClient:
         def __init__(self, *args, **kwargs) -> None:
@@ -52,7 +52,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
         )
 
     assert response.status_code == 200
-    assert response.json() == {"status": "accepted", "instance_id": "u-1"}
+    assert response.json() == {"status": "accepted", "identity_id": "u-1"}
     assert captured["url"] == "http://container-up:8000/inbound/web-main"
     assert captured["json"] == {
         "user_id": "u-1",
@@ -121,7 +121,7 @@ def test_web_server_create_instances_for_test(monkeypatch) -> None:
 
         async def post(self, url: str, json: dict[str, object], headers: dict[str, str] | None = None) -> _FakeResponse:
             captured_posts.append({"url": url, "json": json})
-            return _FakeResponse({"status": "accepted", "instance_id": json["user_id"]})
+            return _FakeResponse({"status": "accepted", "identity_id": json["user_id"]})
 
     monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
@@ -194,7 +194,7 @@ def test_web_server_create_instances_for_test_partial_failure(monkeypatch) -> No
                     request=httpx.Request("POST", url),
                     response=httpx.Response(503, request=httpx.Request("POST", url), text="bucket busy"),
                 )
-            return _FakeResponse({"status": "accepted", "instance_id": user_id})
+            return _FakeResponse({"status": "accepted", "identity_id": user_id})
 
     monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)

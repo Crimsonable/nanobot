@@ -24,17 +24,21 @@ def registry(tmp_path):
         (own / "app/skills").mkdir(parents=True)
         (own / "app/templates").mkdir()
         (own / "app/templates/README.txt").write_text(frontend)
+        (own / "app/templates/AGENTS.md").write_text(frontend)
         (own / "app/manual.txt").write_text(frontend)
         (own / "config").mkdir()
         (own / "config/future-secret.txt").write_text("not-a-known-config-file")
         (own / "config/opencode-server.json").write_text(json.dumps({
+            "instructions": [str(own / "app/templates/AGENTS.md")],
             "provider": {"local": {"options": {"apiKey": "model-secret-" + frontend}}},
             "skills": {"paths": [str(common / "{frontend_id}/app/skills")]}}))
         (own / "config/user-permissions.yaml").write_text(json.dumps({
             "defaults": {"filesystem": {"workspace": "read_only" if frontend == "web-a" else "read_write"}},
             "users": [{"user_id": "alice", "session": {"tools": {"bash": frontend == "web-b"}}}]}))
+        (own / "config/session-logging.json").write_text(json.dumps({"enabled": frontend == "web-a"}))
         entries.append({"id": frontend, "provider": "web", "instance_idle_ttl_seconds": 1 if frontend == "web-a" else 0,
-            "runtime": {"common_root": str(common), "profiles": {"reports": {
+            "runtime": {"common_root": str(common),
+                        "logging_file": str(common / "{frontend_id}/config/session-logging.json"), "profiles": {"reports": {
                 "model": "local/" + frontend, "public_roots": [str(common / "{frontend_id}/app")]}}}})
     path = common / "frontends.json"
     path.write_text(json.dumps({"frontends": entries}))
@@ -47,7 +51,7 @@ def runtime_for(path, registry, frontend, tmp_path):
     config.workspace_root = tmp_path / "workspaces"
     config.opencode.context_root = tmp_path / "context"
     runtime = Runtime(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
-    submit = Submit(request_id=frontend, conversation_id=frontend,
+    submit = Submit(request_id=frontend, chat_id=frontend,
         identity=Identity(frontend_id=frontend, user_id="alice"), profile_id="reports", content="hello",
         deadline_at=time.time() + 60)
     runtime.db.put("run", frontend, {"request_id": frontend, "status": "running", "session_id": frontend,
@@ -66,10 +70,14 @@ async def test_models_permissions_and_templates_are_selected_per_frontend(regist
             native = supervisor.server_config()
             assert native["provider"]["local"]["options"]["apiKey"] == "model-secret-" + frontend
             assert native["skills"]["paths"] == [str(path.parent / frontend / "app/skills")]
+            from agent_backend.config import SessionLoggingConfig, load_config
+            assert load_config(runtime.config.logging_file, SessionLoggingConfig).enabled == (frontend == "web-a")
             assert runtime.policy(submit).filesystem.workspace == ("read_only" if frontend == "web-a" else "read_write")
             assert runtime.policy(submit).session.tools["bash"] is (frontend == "web-b")
-            assert (runtime.workspace(submit) / "README.txt").read_text() == frontend
-            for filename in ["opencode-server.json", "user-permissions.yaml", "future-secret.txt"]:
+            assert native["instructions"] == [str(path.parent / frontend / "app/templates/AGENTS.md")]
+            assert not (runtime.workspace(submit) / "README.txt").exists()
+            assert not (runtime.workspace(submit) / "AGENTS.md").exists()
+            for filename in ["opencode-server.json", "user-permissions.yaml", "session-logging.json", "future-secret.txt"]:
                 with pytest.raises(PermissionError, match="outside user permission scope"):
                     runtime.authorize(frontend, filename, "read", {"filePath": str(path.parent / frontend / "config" / filename)})
             runtime.authorize(frontend, "public", "read", {"filePath": str(path.parent / frontend / "app/manual.txt")})
@@ -98,7 +106,7 @@ async def test_entire_frontend_config_directory_is_absent_in_bash(registry, tmp_
 
 def test_cross_frontend_configuration_paths_fail_closed(registry):
     path, config = registry
-    for section in ["opencode", "permissions_file", "workspace_template_root"]:
+    for section in ["opencode", "permissions_file"]:
         frontend = config.frontend("web-a")
         wrong = path.parent / "web-b"
         if section == "opencode":
@@ -109,13 +117,13 @@ def test_cross_frontend_configuration_paths_fail_closed(registry):
             frontend.runtime_config(path, "opencode-bucket-0123456789ab")
 
 
-@pytest.mark.parametrize("section", ["opencode", "permissions_file", "workspace_template_root", "storage"])
+@pytest.mark.parametrize("section", ["opencode", "permissions_file", "storage"])
 def test_configuration_and_content_cannot_swap_subtrees(registry, section):
     from agent_backend.config import StorageConfig
 
     path, config = registry
     frontend = config.frontend("web-a")
-    own = path.parent / frontend.id
+    own = path.parent / frontend.frontend_id
     if section == "opencode":
         frontend.runtime.opencode.config_file = own / "app/opencode-server.json"
     elif section == "permissions_file":
@@ -123,8 +131,6 @@ def test_configuration_and_content_cannot_swap_subtrees(registry, section):
     elif section == "storage":
         frontend.attachment_storage = StorageConfig(endpoint="http://minio:9000", bucket="test",
             access_key_file=own / "app/access-key", secret_key_file=own / "config/secret-key")
-    else:
-        frontend.runtime.workspace_template_root = own / "config"
     with pytest.raises(ValueError, match="must belong to this frontend"):
         frontend.runtime_config(path, "opencode-bucket-0123456789ab")
 
@@ -132,7 +138,7 @@ def test_configuration_and_content_cannot_swap_subtrees(registry, section):
 def test_config_symlink_cannot_alias_public_content(registry):
     path, config = registry
     frontend = config.frontend("web-a")
-    own = path.parent / frontend.id
+    own = path.parent / frontend.frontend_id
     link = own / "config/link"
     try:
         link.symlink_to(own / "app", target_is_directory=True)
@@ -220,7 +226,7 @@ def test_registry_rejects_duplicate_ids_and_global_frontend_credentials(registry
     path, config = registry
     raw = config.model_dump()
     assert FrontendsConfig.model_validate(raw).model_dump() == raw
-    raw["frontends"][1]["id"] = raw["frontends"][0]["id"]
+    raw["frontends"][1]["frontend_id"] = raw["frontends"][0]["frontend_id"]
     with pytest.raises(ValueError, match="duplicate"):
         FrontendsConfig.model_validate(raw)
     raw["frontends"] = raw["frontends"][:1]

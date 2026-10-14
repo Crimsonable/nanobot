@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import yaml
 
@@ -6,6 +7,16 @@ from agent_backend.config import load_frontends
 from container_up.bucket_manager import BucketManager
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_shared_instructions_use_the_bucket_container_mount():
+    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
+    native = json.loads((ROOT / "config/opencode/web-yk/config/opencode-server.json").read_text(encoding="utf-8"))
+    assert native["instructions"] == ["/mnt/common/web-yk/app/templates/AGENTS.md"]
+    deployment = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
+    mounts = deployment["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+    assert any(m["mountPath"] == "/mnt/common/web-yk/app" and m["subPath"] == "web-yk/app"
+               and m["readOnly"] for m in mounts)
 
 
 def test_all_services_use_one_source_mount_and_shared_opencode_binary():
@@ -79,7 +90,7 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
     assert mounts["/mnt/common/web-yk/config"]["subPath"] == "web-yk/config"
     assert mounts["/mnt/common/web-yk/config"]["readOnly"] is True
     assert mounts["/mnt/common/frontends.json"]["subPath"] == "frontends.json"
-    config.id = "qxt-main"
+    config.frontend_id = "qxt-main"
     other = BucketManager(config.control_config()).deployment("opencode-bucket-abcdef123456")
     mounts = other["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert {m["subPath"] for m in mounts if m["name"] == "common"} == {"qxt-main/app", "qxt-main/config", "frontends.json"}

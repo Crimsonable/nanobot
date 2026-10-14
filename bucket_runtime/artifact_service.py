@@ -34,15 +34,15 @@ class ArtifactService:
         return self.client().generate_presigned_url("get_object", Params={
             "Bucket": storage.bucket, "Key": key}, ExpiresIn=storage.expiry_seconds)
 
-    async def upload(self, identity: Identity, upload_id: str, path: Path,
+    async def upload(self, identity: Identity, attachment_id: str, path: Path,
                      attachment: Attachment) -> Attachment:
         if self.config.storage is None:
             raise RuntimeError("publish_attachment storage is not configured")
-        key = "/".join([self.config.storage.prefix.strip("/"), identity.key,
-                        digest(upload_id), attachment.sha256, attachment.filename])
-        existing = self.journal.get("artifact", upload_id)
+        key = "/".join([self.config.storage.prefix.strip("/"), identity.identity_id,
+                        digest(attachment_id), attachment.sha256, attachment.filename])
+        existing = self.journal.get("artifact", attachment_id)
         if existing:
-            if existing["owner"] != identity.key or existing["attachment"]["sha256"] != attachment.sha256:
+            if existing["identity_id"] != identity.identity_id or existing["attachment"]["sha256"] != attachment.sha256:
                 raise ValueError("upload identity mismatch")
             result = Attachment.model_validate(existing["attachment"])
             return result.model_copy(update={"url": await asyncio.to_thread(self.url, result.object_key)})
@@ -50,6 +50,6 @@ class ArtifactService:
                                 key, ExtraArgs={"ContentType": attachment.content_type})
         result = attachment.model_copy(update={"url": await asyncio.to_thread(self.url, key),
                                                 "storage": "minio", "object_key": key})
-        self.journal.put("artifact", upload_id, {"owner": identity.key,
+        self.journal.put("artifact", attachment_id, {"identity_id": identity.identity_id,
                          "attachment": result.model_dump(mode="json")})
         return result

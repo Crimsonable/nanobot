@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from websockets.asyncio.client import connect
 
 from agent_backend.config import ControlConfig, RuntimeConfig
+from agent_backend.models import Identity
 from agent_backend.wire import Peer
 from bucket_runtime.runtime import Runtime
 from bucket_runtime.sandbox_executor import SandboxExecutor
@@ -75,7 +76,7 @@ class Channels:
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "linux" or not os.environ.get("OPENCODE_TEST_BINARY"),
                     reason="requires Linux, bwrap and explicit pinned OpenCode binary")
-async def test_real_backend_attachment_and_isolation(tmp_path):
+async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     binary = Path(os.environ["OPENCODE_TEST_BINARY"])
     plugin = Path(__file__).resolve().parents[2] / "opencode_plugin/dist/index.mjs"
     assert plugin.exists(), "run npm ci && npm run build in opencode_plugin"
@@ -84,6 +85,9 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     public = common / "web/app"
     public.mkdir(parents=True)
     (public / "SKILL.md").write_text("public skill")
+    templates = public / "templates"
+    templates.mkdir()
+    (templates / "AGENTS.md").write_text("FRONTEND_TEMPLATE_RULE_78421")
     private_config = common / "web/config"
     private_config.mkdir()
     secret_file = private_config / "future-secret.txt"
@@ -93,7 +97,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
         "npm": "@ai-sdk/openai-compatible", "name": "Offline test",
         "options": {"baseURL": f"http://127.0.0.1:{model_port}/v1", "apiKey": "unused"},
         "models": {"test": {"name": "test", "limit": {"context": 32000, "output": 4096}}},
-    }}}))
+    }}, "instructions": [str(templates / "AGENTS.md")]}))
     runtime_config = RuntimeConfig.model_validate({
         "bucket_id": "bucket-0", "control_url": f"ws://127.0.0.1:{cu_port}/internal/buckets/ws",
         "frontend_id": "web", "common_root": str(common),
@@ -114,11 +118,11 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     app = create_app(control_config, Channels())
     uploaded = []
 
-    async def upload(identity, upload_id, path, attachment):
+    async def upload(identity, attachment_id, path, attachment):
         uploaded.append(path.read_bytes())
-        result = attachment.model_copy(update={"url": "https://files.invalid/" + upload_id,
-                                               "object_key": upload_id, "storage": "minio"})
-        runtime.db.put("artifact", upload_id, {"owner": identity.key, "attachment": result.model_dump()})
+        result = attachment.model_copy(update={"url": "https://files.invalid/" + attachment_id,
+                                               "object_key": attachment_id, "storage": "minio"})
+        runtime.db.put("artifact", attachment_id, {"identity_id": identity.identity_id, "attachment": result.model_dump()})
         return result
 
     model = FastAPI()
@@ -134,6 +138,10 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     async def completion(request: Request):
         body = await request.json()
         model_calls.append(body)
+        system = str([m["content"] for m in body["messages"] if m["role"] == "system"])
+        assert "FRONTEND_TEMPLATE_RULE_78421" in system, system
+        bob_request = any("BOB_REQUEST" in str(m.get("content")) for m in body["messages"] if m["role"] == "user")
+        assert ("BOB_ONLY_RULE_96431" in system) == bob_request, system
         tool_messages = [m for m in body["messages"] if m["role"] == "tool"]
         if not tool_messages:
             name = "bash"
@@ -160,7 +168,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
         else:
             name = None
             args = None
-        chunks = []
+        chunks = [{"reasoning_content": "Planning test step."}]
         if name:
             chunks.append({"tool_calls": [{"index": 0, "id": "call_" + str(len(tool_messages)),
                 "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
@@ -183,7 +191,14 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
     executor = SandboxExecutor(runtime_config.sandbox, runtime_config.limits.output_bytes)
     runtime = Runtime(runtime_config, supervisor.client, executor)
     runtime.artifacts.upload = upload
-    peer_task = event_task = None
+    def forbid_reply_queries(request):
+        assert not request.url.path.endswith("/message"), "runtime must not query replies"
+        assert request.url.path != "/global/event", "runtime must not subscribe to SSE"
+    async def check_request(request):
+        forbid_reply_queries(request)
+    supervisor.client.http.event_hooks["request"].append(check_request)
+
+    peer_task = None
     async with running(model, model_port), running(app, cu_port), running(rpc_app(runtime, supervisor.rpc_token), rpc_port):
         try:
             await executor.probe(tmp_path / "probe")
@@ -198,7 +213,6 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
                 "X-Bucket-ID": "bucket-0"}) as socket_:
                 runtime.peer = Peer(socket_, runtime.db, "bucket-0", runtime.on_command, runtime.rpc)
                 peer_task = asyncio.create_task(runtime.peer.run())
-                event_task = asyncio.create_task(runtime.events())
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{cu_port}",
                     timeout=100, trust_env=False) as client:
                     payload = {"user_id": "alice", "content": "Generate the report", "request_id": "req-test",
@@ -213,21 +227,60 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
                     assert result["usage"]["output_tokens"] > 0
                     assert uploaded == [b"generated report"]
                     assert not input_downloads
+                    raw_events = app.state.service.db.records("opencode_event")
+                    own_events = [e["payload"]["event"] for e in raw_events if e["request_id"] == "req-test"]
+                    assert any(e["type"] == "message.part.updated" and
+                               e["properties"]["part"]["type"] == "reasoning" for e in own_events), own_events
+                    assert any(e["type"] == "message.part.delta" for e in own_events)
+                    assert any(e["type"] == "tool.execute.before" for e in own_events)
+                    assert any(e["payload"]["event"]["type"] == "session.created" for e in raw_events)
                     alice_row = runtime.db.get("run", "req-test")
+                    session_info = await runtime.run_client(alice_row).session(alice_row["session_id"])
+                    context = session_info["metadata"]["bucket_runtime"]
+                    assert context["frontend_id"] == "web" and context["user_id"] == "alice"
+                    assert context["chat_id"] == "default"
+                    assert "conversation_id" not in context and "conversation_id" not in result
+                    assert context["requests"][alice_row["message_id"]] == "req-test"
                     from agent_backend.models import Submit
                     alice_workspace = runtime.workspace(Submit.model_validate(alice_row["submit"]))
                     assert not (alice_workspace / "inbox").exists()
+                    assert session_info["directory"] == str(alice_workspace)
+                    assert not (alice_workspace / "AGENTS.md").exists()
                     assert any(f"http://127.0.0.1:{model_port}/input.txt" in str(call["messages"]) for call in model_calls)
                     again = await client.post("/inbound-sync/web", json=payload)
                     assert again.json()["request_id"] == result["request_id"]
                     assert len(uploaded) == 1
-                    # A second user shares the server, but owns another session and workspace.
-                    other = await client.post("/inbound-sync/web", json={"user_id": "bob",
-                        "content": "Generate the report", "request_id": "req-bob"})
+                    # Per-user rules remain independent of the shared instructions file.
+                    # Exercise different directory instances concurrently in this one server.
+                    bob_workspace = runtime_config.workspace_root / "web" / Identity(frontend_id="web", user_id="bob").identity_id
+                    bob_workspace.mkdir(parents=True)
+                    (bob_workspace / "AGENTS.md").write_text("BOB_ONLY_RULE_96431")
+                    other, followup = await asyncio.gather(
+                        client.post("/inbound-sync/web", json={"user_id": "bob",
+                            "content": "Generate the report BOB_REQUEST", "request_id": "req-bob"}),
+                        client.post("/inbound-sync/web", json={"user_id": "alice",
+                            "content": "Say the result again", "request_id": "req-alice-next"}))
+                    (templates / "AGENTS.md").write_text("FRONTEND_TEMPLATE_RULE_78421")
                     assert other.json()["status"] == "completed", other.text
                     bob_row = runtime.db.get("run", "req-bob")
                     assert bob_row["session_id"] != alice_row["session_id"]
                     assert other.json()["attachments"][0]["attachment_id"] != result["attachments"][0]["attachment_id"]
+                    assert followup.json()["status"] == "completed", followup.text
+                    assert runtime.db.get("run", "req-alice-next")["session_id"] == alice_row["session_id"]
+                    session_info = await runtime.run_client(alice_row).session(alice_row["session_id"])
+                    assert set(session_info["metadata"]["bucket_runtime"]["requests"].values()) == {"req-test", "req-alice-next"}
+                    # A separate chat for the same user gets a different native session.
+                    other_chat = await client.post("/inbound-sync/web", json={"user_id": "alice",
+                        "chat_id": "group-2", "content": "Generate another report", "request_id": "req-alice-other"})
+                    assert other_chat.json()["status"] == "completed", other_chat.text
+                    other_row = runtime.db.get("run", "req-alice-other")
+                    assert other_row["session_id"] not in {alice_row["session_id"], bob_row["session_id"]}
+                    other_info = await runtime.run_client(other_row).session(other_row["session_id"])
+                    assert other_info["metadata"]["bucket_runtime"]["chat_id"] == "group-2"
+                    assert other_info["directory"] == str(alice_workspace)
+                    bob_info = await runtime.run_client(bob_row).session(bob_row["session_id"])
+                    assert bob_info["directory"] == bob_row["directory"]
+                    assert bob_info["directory"] != str(alice_workspace)
                     # Cancel a live sandbox command and wait for a durable terminal result.
                     await client.post("/inbound/web", json={"user_id": "charlie", "content": "Long task",
                         "request_id": "req-cancel"})
@@ -258,9 +311,20 @@ async def test_real_backend_attachment_and_isolation(tmp_path):
                     assert check == {"output": "public skill", "exit_code": 0}
         finally:
             await runtime.shutdown()
-            for task in [peer_task, event_task]:
+            for task in [peer_task]:
                 if task:
                     task.cancel()
-            await asyncio.gather(*(t for t in [peer_task, event_task] if t), return_exceptions=True)
+            await asyncio.gather(*(t for t in [peer_task] if t), return_exceptions=True)
             await supervisor.stop()
             runtime.db.close()
+    output = capfd.readouterr().out
+    logs = [json.loads(line) for line in output.splitlines() if line.startswith('{"timestamp":')]
+    assert not [row for row in logs if row["event"] == "logging.error"], logs
+    for user_id, request_id in [("alice", "req-test"), ("bob", "req-bob")]:
+        own_logs = [row for row in logs if row.get("user_id") == user_id]
+        assert {"reasoning", "text", "tool.start", "tool.end", "tool.error"} <= {row["event"] for row in own_logs}, own_logs
+        allowed = {request_id, "req-alice-next", "req-alice-other"} if user_id == "alice" else {request_id}
+        assert all(row.get("request_id") in allowed for row in own_logs), own_logs
+        assert all(row["chat_id"] == ("group-2" if row["request_id"] == "req-alice-other" else "default")
+                   and "conversation_id" not in row for row in own_logs), own_logs
+        assert any(row.get("text") == "Report ready." for row in own_logs)

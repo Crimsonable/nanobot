@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from agent_backend.config import RuntimeConfig
-from agent_backend.models import Envelope, Identity, Submit
+from agent_backend.models import Envelope, Identity, Submit, digest
 from bucket_runtime.opencode_client import OpenCodeClient
 from bucket_runtime.runtime import Runtime
 
@@ -13,6 +13,12 @@ from bucket_runtime.runtime import Runtime
 class Client:
     def __init__(self):
         self.aborted = []
+
+    def for_directory(self, directory):
+        from copy import copy
+        scoped = copy(self)
+        scoped.directory = directory
+        return scoped
 
     async def paths(self):
         return {"worktree": self.worktree}
@@ -68,7 +74,7 @@ async def test_opencode_health_does_not_require_a_version(runtime, payload, expe
 
 
 def active(runtime, name="alice", request_id="r", session_id="s"):
-    submit = Submit(request_id=request_id, conversation_id="conversation-" + name,
+    submit = Submit(request_id=request_id, chat_id="chat-" + name,
         identity=Identity(frontend_id="web", user_id=name), profile_id="p", content="hello",
         deadline_at=time.time() + 60)
     runtime.db.put("run", request_id, {"request_id": request_id, "status": "running",
@@ -77,25 +83,24 @@ def active(runtime, name="alice", request_id="r", session_id="s"):
 
 
 @pytest.mark.asyncio
-async def test_every_request_recreates_deleted_workspace_with_templates(runtime, tmp_path):
+async def test_every_request_recreates_deleted_workspace_without_copying_templates(runtime, tmp_path):
     import shutil
 
     runtime.config.workspace_layout = "frontend_user"
     templates = tmp_path / "templates"
     templates.mkdir()
     (templates / "AGENTS.md").write_text("workspace instructions")
-    runtime.config.workspace_template_root = templates
     workspace = runtime.config.workspace_root / "web" / "alice"
     # Existing user mapping/session is irrelevant to the per-request directory check.
     for index in range(2):
-        submit = Submit(request_id=f"check-{index}", conversation_id="chat",
+        submit = Submit(request_id=f"check-{index}", chat_id="chat",
                         identity=Identity(frontend_id="web", user_id="alice"), profile_id="p",
                         content="/cancel", deadline_at=time.time() + 60)
         await runtime.on_command(Envelope(type="request.submit", bucket_id="b",
             request_id=submit.request_id, payload=submit.model_dump(mode="json")))
         assert (workspace / "output").is_dir()
         assert (workspace / "scratch").is_dir()
-        assert (workspace / "AGENTS.md").read_text() == "workspace instructions"
+        assert not (workspace / "AGENTS.md").exists()
         assert runtime.db.get("run", submit.request_id)["status"] == "completed"
         shutil.rmtree(workspace)
 
@@ -106,18 +111,23 @@ def test_workspace_checks_preserve_existing_files_and_repair_subdirectories(runt
     submit = active(runtime)
     workspace = runtime.workspace(submit)
     (workspace / "custom.txt").write_text("keep")
+    (workspace / "AGENTS.md").write_text("user rules")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "AGENTS.md").write_text("new template rules")
     shutil.rmtree(workspace / "output")
     assert runtime.workspace(submit) == workspace
     assert (workspace / "output").is_dir()
     assert (workspace / "custom.txt").read_text() == "keep"
+    assert (workspace / "AGENTS.md").read_text() == "user rules"
 
 
 @pytest.mark.asyncio
 async def test_workspace_file_in_place_of_directory_fails_request(runtime):
-    submit = Submit(request_id="bad-dir", conversation_id="chat",
+    submit = Submit(request_id="bad-dir", chat_id="chat",
                     identity=Identity(frontend_id="web", user_id="alice"), profile_id="p",
                     content="hello", deadline_at=time.time() + 60)
-    path = runtime.config.workspace_root / submit.identity.frontend_id / submit.identity.key
+    path = runtime.config.workspace_root / submit.identity.frontend_id / submit.identity.identity_id
     path.parent.mkdir(parents=True)
     path.write_text("not a directory")
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id=submit.request_id,
@@ -181,7 +191,7 @@ async def test_publication_rejects_other_user_and_symlink(runtime):
 
 @pytest.mark.asyncio
 async def test_cancel_before_task_first_step_has_terminal(runtime):
-    submit = Submit(request_id="queued", conversation_id="q", identity=Identity(frontend_id="f", user_id="u"),
+    submit = Submit(request_id="queued", chat_id="q", identity=Identity(frontend_id="f", user_id="u"),
                     profile_id="p", content="hello", deadline_at=time.time() + 60)
     event = Envelope(type="request.submit", bucket_id="b", request_id="queued", payload=submit.model_dump(mode="json"))
     await runtime.on_command(event)
@@ -204,12 +214,24 @@ async def test_terminal_is_immutable(runtime):
 
 
 @pytest.mark.asyncio
-async def test_slash_cancel_scoped_to_user_conversation_and_idempotent(runtime):
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_slash_cancel_scoped_to_frontend_user_chat_and_idempotent(runtime, legacy):
     alice = active(runtime)
-    active(runtime, "bob", "bob-run", "bob-session")
-    other = alice.model_copy(update={"request_id": "other-run", "conversation_id": "other-chat"})
+    bob = alice.model_copy(update={"request_id": "bob-run", "identity": Identity(frontend_id="web", user_id="bob")})
+    runtime.db.put("run", "bob-run", {"request_id": "bob-run", "status": "running",
+                   "submit": bob.model_dump(mode="json"), "session_id": "bob-session", "artifacts": []})
+    other = alice.model_copy(update={"request_id": "other-run", "chat_id": "other-chat"})
     runtime.db.put("run", "other-run", {"request_id": "other-run", "status": "queued",
                    "submit": other.model_dump(mode="json"), "artifacts": []})
+    frontend = alice.model_copy(update={"request_id": "frontend-run", "identity": Identity(frontend_id="im", user_id="alice")})
+    runtime.db.put("run", "frontend-run", {"request_id": "frontend-run", "status": "queued",
+                   "submit": frontend.model_dump(mode="json"), "artifacts": []})
+    if legacy:
+        row = runtime.db.get("run", "r")
+        row["submit"].pop("chat_id")
+        row["submit"]["conversation_id"] = alice.session_key
+        runtime.db.put("run", "r", row)
+        assert "chat_id" not in runtime.session_context(Submit.from_record(row["submit"]), "m")
     cancel = alice.model_copy(update={"request_id": "cancel", "content": " /cancel\n"})
     event = Envelope(type="request.submit", bucket_id="b", request_id="cancel",
                      payload=cancel.model_dump(mode="json"))
@@ -218,10 +240,34 @@ async def test_slash_cancel_scoped_to_user_conversation_and_idempotent(runtime):
     assert runtime.db.get("run", "r")["status"] == "cancelled"
     assert runtime.db.get("run", "bob-run")["status"] == "running"
     assert runtime.db.get("run", "other-run")["status"] == "queued"
+    assert runtime.db.get("run", "frontend-run")["status"] == "queued"
     assert runtime.db.get("run", "cancel")["status"] == "completed"
     assert "cancel" not in runtime.tasks
     await runtime.on_command(event)
     assert runtime.client.aborted == ["s"]
+
+
+@pytest.mark.asyncio
+async def test_migrated_replay_does_not_execute_twice_or_accept_changed_content(runtime):
+    submit = active(runtime)
+    row = runtime.db.get("run", "r")
+    row["submit"].pop("chat_id")
+    row["submit"]["conversation_id"] = submit.session_key
+    row["hash"] = digest(row["submit"])
+    runtime.db.put("run", "r", row)
+    changed = submit.model_copy(update={"content": "changed"})
+    with pytest.raises(ValueError, match="request content changed"):
+        await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="r",
+                                          payload=changed.model_dump(mode="json")))
+    event = Envelope(type="request.submit", bucket_id="b", request_id="r", payload=submit.model_dump(mode="json"))
+    await runtime.on_command(event)
+    await runtime.on_command(event)
+    restored = runtime.db.get("run", "r")
+    assert restored["submit"] == submit.model_dump(mode="json")
+    assert restored["hash"] == digest(event.payload)
+    assert restored["session_id"] == "s"
+    assert not runtime.tasks
+    assert not runtime.db.pending("b")
 
 
 @pytest.mark.asyncio
@@ -302,7 +348,9 @@ async def test_supervisor_preserves_server_features(runtime, monkeypatch):
 async def test_slash_cancel_running_task_calls_abort(runtime):
     started = asyncio.Event()
 
-    async def create_session(permissions):
+    async def create_session(permissions, context):
+        assert context["user_id"] == "u"
+        assert context["requests"][context["input_message_id"]] == "live"
         return "live-session"
 
     async def submit_message(*args):
@@ -311,7 +359,7 @@ async def test_slash_cancel_running_task_calls_abort(runtime):
 
     runtime.client.create_session = create_session
     runtime.client.submit = submit_message
-    submit = Submit(request_id="live", conversation_id="chat", identity=Identity(frontend_id="f", user_id="u"),
+    submit = Submit(request_id="live", chat_id="chat", identity=Identity(frontend_id="f", user_id="u"),
                     profile_id="p", content="hello", deadline_at=time.time() + 60)
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="live",
                                      payload=submit.model_dump(mode="json")))
@@ -326,21 +374,24 @@ async def test_slash_cancel_running_task_calls_abort(runtime):
 
 @pytest.mark.asyncio
 async def test_child_tool_session_resolves_trusted_parent_and_expires(runtime):
-    active(runtime)
+    submit = active(runtime)
+    directory = str(runtime.workspace(submit))
 
     async def session(session_id):
-        return {"id": session_id, "parentID": "s"} if session_id == "child" else {"id": session_id}
+        return {"id": session_id, "directory": directory, **({"parentID": "s"} if session_id == "child" else {})}
 
     runtime.client.session = session
-    await runtime.bind_tool_session("child")
+    with pytest.raises(PermissionError, match="workspace mismatch"):
+        await runtime.bind_tool_session("s", str(runtime.config.opencode.context_root))
+    await runtime.bind_tool_session("child", directory)
     ticket = runtime.authorize("child", "call", "bash", {"command": "echo hi"})
     await runtime.execute(ticket["ticket"])
     assert runtime.executor.executions == [("r", "echo hi")]
     with pytest.raises(PermissionError):
-        await runtime.bind_tool_session("unrelated")
+        await runtime.bind_tool_session("unrelated", directory)
     runtime.db.put("run", "r", {**runtime.db.get("run", "r"), "status": "completed"})
     with pytest.raises(PermissionError):
-        await runtime.bind_tool_session("child")
+        await runtime.bind_tool_session("child", directory)
 
 
 @pytest.mark.asyncio
@@ -356,7 +407,8 @@ async def test_user_permission_switches_are_independent(runtime, sandbox_enabled
     await runtime.execute(ticket["ticket"])
     assert runtime.executor.last_options["sandbox"].enabled is sandbox_enabled
     assert runtime.executor.last_options["workspace_access"] == "read_only"
-    assert runtime.executor.last_options["public"] == []
+    assert runtime.executor.last_options["public"] == [
+        runtime.config.common_root / submit.identity.frontend_id / "app"]
 
 
 def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_path):
@@ -376,7 +428,7 @@ def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_
     rules = runtime.session_permissions(alice)
 
     def allowed(name, path):
-        pattern = os.path.relpath(path, runtime.opencode_worktree).replace("\\", "/")
+        pattern = os.path.relpath(path, runtime.worktree(alice)).replace("\\", "/")
         matching = [r for r in rules if fnmatch.fnmatchcase(name, r["permission"])
                     and fnmatch.fnmatchcase(pattern, r["pattern"])]
         return matching[-1]["action"] == "allow"
@@ -463,7 +515,7 @@ async def test_publish_tool_uploads_to_storage_without_control_peer(runtime, tmp
     assert uploaded[0][1] == "reports"
     attachment = result["attachments"][0]
     assert attachment["url"].startswith("https://objects.example/reports/")
-    assert submit.identity.key in uploaded[0][2]
+    assert submit.identity.identity_id in uploaded[0][2]
     assert runtime.db.get("run", "r")["artifacts"] == result["attachments"]
     assert await runtime.publish(ticket["ticket"]) == result
     assert len(uploaded) == 1

@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "text": true,
+  "reasoning": true,
+  "tools": true,
+  "tool_arguments": true,
+  "tool_output": true,
+  "max_chars": 16000
+}

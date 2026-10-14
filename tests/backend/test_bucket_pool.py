@@ -95,7 +95,19 @@ async def test_bucket_only_lifecycle_does_not_release_individual_users(service):
     new = await submit(service, "a", "a2")
     assert new["submit"]["session_epoch"] != first["submit"]["session_epoch"]
     assert new["submit"]["previous_turns"][0]["assistant"] == "done"
-    assert service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").key)["workspace_path"] == before
+    assert service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").identity_id)["workspace_path"] == before
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_bucket_restores_only_the_same_user_and_chat_history(service):
+    for user, chat, content in [("alice", "group-1", "Keep this"), ("alice", "group-2", "Other chat"),
+                                ("bob", "group-1", "Other user")]:
+        row = await service.submit("web-yk", Inbound(user_id=user, chat_id=chat, content=content))
+        await complete(service, row)
+    expire(service)
+    await service.pool.sweep()
+    restored = await service.submit("web-yk", Inbound(user_id="alice", chat_id="group-1", content="Continue"))
+    assert [turn["user"] for turn in restored["submit"]["previous_turns"]] == ["Keep this"]
 
 
 @pytest.mark.asyncio
@@ -152,7 +164,7 @@ def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
     config = load_frontends(EXAMPLE).frontend("web-yk")
     bucket_id = config.control.bucket_pool.name_prefix + "-0123456789ab"
     runtime = config.runtime_config(EXAMPLE, bucket_id)
-    assert runtime.state_root == config.runtime.state_root / config.id / bucket_id
+    assert runtime.state_root == config.runtime.state_root / config.frontend_id / bucket_id
     assert runtime.workspace_root == config.runtime.workspace_root
     assert not hasattr(runtime, "credential_file")
     manifest = BucketManager(config.control_config()).deployment(bucket_id)
@@ -224,7 +236,7 @@ async def test_slow_retirement_does_not_block_or_erase_new_assignment(service):
     finally:
         stopped.set()
         await task
-    binding = service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").key)
+    binding = service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").identity_id)
     assert binding["bucket_id"] == new["bucket_id"]
 
 

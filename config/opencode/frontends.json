@@ -7,7 +7,7 @@
   },
   "frontends": [
     {
-      "id": "web-yk",
+      "frontend_id": "web-yk",
       "provider": "web",
       "send_msg_url": "http://your-frontend:8090/outbound",
       "attachment_storage": {
@@ -22,6 +22,7 @@
       },
       "instance_idle_ttl_seconds": 3600,
       "runtime": {
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json",
         "profiles": {
           "reports": {
             "model": "intranet/your-model",

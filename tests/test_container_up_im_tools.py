@@ -245,7 +245,7 @@ async def test_feishu_post_message_rebuilds_target_from_bridge_chat_id() -> None
         payload={
             "chat_id": "oc_1",
             "content": "done",
-            "metadata": {"message_id": "om_1", "usr_id": "ou_1"},
+            "metadata": {"message_id": "om_1", "user_id": "ou_1"},
         }
     )
 
@@ -423,7 +423,7 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
         "event_type": "im_message_receive",
         "event": {
             "chat_id": "chat-1",
-            "usr_id": "user-1",
+            "user_id": "user-1",
             "content": "hello",
             "attachments": [],
             "metadata": {
@@ -450,7 +450,7 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
 async def test_qxt_prepare_preserves_attachment_references_without_download():
     parser = qxt_im_tool.QxtIMParser()
     payload = {"event_type": "im_message_receive", "event": {
-        "usr_id": "alice", "attachments": [{"url": "https://files.example/report.pdf"},
+        "user_id": "alice", "attachments": [{"url": "https://files.example/report.pdf"},
                                             {"path": "/shared/report.pdf"}]}}
     assert await parser.prepare_inbound_event(payload) is payload
 
@@ -484,7 +484,7 @@ async def test_qxt_group_reply_sends_text_and_attachment_to_group(
         },
     })
     event = normalized["event"]
-    assert event["usr_id"] == "14777504996831943"
+    assert event["user_id"] == "14777504996831943"
     assert event["content"] == "@智成安监\u2004你好"
     payload = {
         "chat_id": event["chat_id"],

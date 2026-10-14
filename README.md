@@ -9,7 +9,7 @@
 
 - `container_up`：渠道接入、用户分桶、附件引用转发和消息投递。
 - `bucket_runtime`：会话归属、事件适配、用户权限、工具执行、MinIO 附件发布及 `/cancel`。
-- `opencode_plugin`：工具调用 hook 和附件发布工具。
+- `opencode_plugin`：工具调用 hook、附件发布工具，以及带会话身份的过程日志。
 - `public`：公共技能与报告脚本。
 - `engineering_scene_mcp`：可选的工程场景分析服务。
 - `hazard_expert_mcp`：供业务客户端上传附件、调用 OpenCode 隐患分析的入口。
@@ -19,6 +19,7 @@
 - [CU 与 bucket runtime 统一配置](config/opencode/frontends.json)
 - [OpenCode server](config/opencode/web-yk/config/opencode-server.json)
 - [用户权限与目录范围](config/opencode/web-yk/config/user-permissions.yaml)
+- [会话日志配置](config/opencode/web-yk/config/session-logging.json)：按 frontend 控制思考、回复和工具日志，详见 [日志与 ID 约定](docs/SESSION_LOGGING.md)。
 
 `common/frontends.json` 是统一入口总表，一个 CU 可同时接入多个 frontend。每个条目的渠道、回调、MinIO、runtime profile 和闲置 TTL 仅作用于该 frontend；基础设施参数放在总表的 control 中。每个 frontend 的配置统一放在 `common/<frontend_id>/config/`：`opencode-server.json` 配置模型/provider/MCP，`user-permissions.yaml` 配置用户权限。业务资料、skills 和模板分别放在同级 `app/` 下。权限 defaults 只影响该 frontend 的用户。
 

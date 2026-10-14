@@ -1,25 +1,31 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-from collections.abc import AsyncIterator
+from copy import copy
+from pathlib import Path
 
 import httpx
 
 from agent_backend.config import OpenCodeConfig
-from agent_backend.models import Usage
-
-log = logging.getLogger(__name__)
-
+from agent_backend.models import digest
 
 class OpenCodeClient:
     def __init__(self, config: OpenCodeConfig, password: str):
         self.config = config
-        self.sse_connected = False
+        self.directory = config.context_root.resolve()
         self.http = httpx.AsyncClient(base_url=f"http://127.0.0.1:{config.port}",
             auth=("opencode", password), timeout=30, trust_env=False,
             params={"directory": str(config.context_root)})
+
+    def for_directory(self, directory: Path) -> OpenCodeClient:
+        """A request-local view sharing the server transport, never its mutable defaults."""
+        scoped = copy(self)
+        scoped.directory = directory.resolve()
+        return scoped
+
+    @property
+    def params(self) -> dict[str, str]:
+        return {"directory": str(self.directory)}
 
     async def health(self) -> bool:
         response = await self.http.get("/global/health")
@@ -27,103 +33,60 @@ class OpenCodeClient:
         data = response.json()
         return bool(data.get("healthy"))
 
-    async def create_session(self, permissions: list[dict]) -> str:
-        response = await self.http.post("/session", json={"title": "Managed conversation", "permission": permissions})
+    async def create_session(self, permissions: list[dict], context: dict) -> str:
+        response = await self.http.post("/session", params=self.params, json={"title": "Managed conversation",
+            "permission": permissions, "metadata": {"bucket_runtime": context}})
         response.raise_for_status()
         data = response.json()
+        if Path(data["directory"]).resolve() != self.directory:
+            raise RuntimeError("OpenCode created session in an unexpected directory")
         await self.set_permissions(data["id"], permissions)
         return data["id"]
+
+    async def set_context(self, session_id: str, context: dict) -> None:
+        # PATCH only metadata: resending permissions appends rules in OpenCode 1.18.31.
+        info = await self.session(session_id)
+        metadata = dict(info.get("metadata") or {})
+        previous = metadata.get("bucket_runtime") or {}
+        for field in ("frontend_id", "user_id", "identity_id", "chat_id"):
+            if field in previous and field in context and previous[field] != context[field]:
+                raise PermissionError("OpenCode session metadata ownership mismatch")
+        if "conversation_id" in previous and "chat_id" in context:
+            if previous["conversation_id"] != digest([context["identity_id"], context["chat_id"]]):
+                raise PermissionError("OpenCode session metadata ownership mismatch")
+        requests = {**previous.get("requests", {}), **context["requests"]}
+        metadata["bucket_runtime"] = {**context, "requests": dict(list(requests.items())[-128:])}
+        response = await self.http.patch(f"/session/{session_id}", params=self.params, json={"metadata": metadata})
+        response.raise_for_status()
 
     async def set_permissions(self, session_id: str, permissions: list[dict]) -> None:
         # v1.18.31 PATCH appends rules. Managed sessions have an immutable policy;
         # never silently accumulate or repair an unknown policy on a shared server.
-        current = await self.http.get(f"/session/{session_id}")
+        current = await self.http.get(f"/session/{session_id}", params=self.params)
         current.raise_for_status()
         if current.json().get("permission") != permissions:
             raise RuntimeError("session permission readback failed: " + json.dumps(current.json().get("permission")))
 
     async def submit(self, session_id: str, message_id: str, text: str, model: str) -> None:
         provider, model_id = model.split("/", 1)
-        response = await self.http.post(f"/session/{session_id}/prompt_async", json={
+        response = await self.http.post(f"/session/{session_id}/prompt_async", params=self.params, json={
             "messageID": message_id, "model": {"providerID": provider, "modelID": model_id},
             "agent": "build", "parts": [{"type": "text", "text": text}]})
         response.raise_for_status()
 
-    async def messages(self, session_id: str) -> list[dict]:
-        response = await self.http.get(f"/session/{session_id}/message")
-        response.raise_for_status()
-        return response.json()
-
     async def paths(self) -> dict:
-        response = await self.http.get("/path")
+        response = await self.http.get("/path", params=self.params)
         response.raise_for_status()
         return response.json()
 
     async def session(self, session_id: str) -> dict:
-        response = await self.http.get(f"/session/{session_id}")
+        response = await self.http.get(f"/session/{session_id}", params=self.params)
         response.raise_for_status()
         return response.json()
 
     async def abort(self, session_id: str) -> None:
-        response = await self.http.post(f"/session/{session_id}/abort")
+        response = await self.http.post(f"/session/{session_id}/abort", params=self.params)
         response.raise_for_status()
-
-    async def events(self) -> AsyncIterator[dict]:
-        while True:
-            try:
-                async with self.http.stream("GET", "/global/event", timeout=httpx.Timeout(40, read=45)) as response:
-                    response.raise_for_status()
-                    self.sse_connected = True
-                    lines = []
-                    async for line in response.aiter_lines():
-                        if line.startswith("data:"):
-                            lines.append(line[5:].lstrip())
-                        elif not line and lines:
-                            data = json.loads("\n".join(lines))
-                            lines.clear()
-                            yield data.get("payload", data)
-            except (httpx.HTTPError, ValueError):
-                log.warning("OpenCode event stream disconnected; reconciling snapshots")
-                await asyncio.sleep(1)
-            finally:
-                self.sse_connected = False
 
     async def close(self):
         await self.http.aclose()
-
-
-def final_message(messages: list[dict], input_id: str) -> tuple[str, str | None] | None:
-    """Only a completed assistant answer correlated to this input may terminate a run."""
-    answers = [m for m in messages if m["info"].get("role") == "assistant"
-               and m["info"].get("parentID") == input_id]
-    if not answers:
-        return None
-    if any(p.get("type") == "tool" and p.get("state", {}).get("status") in {"pending", "running"}
-           for m in answers for p in m.get("parts", [])):
-        return None
-    last = max(answers, key=lambda m: (m["info"].get("time", {}).get("created", 0), m["info"]["id"]))
-    info = last["info"]
-    if not info.get("time", {}).get("completed"):
-        return None
-    if info.get("error"):
-        return "", str(info["error"].get("name", "MODEL_ERROR"))
-    if info.get("finish") not in {"stop", "end_turn", "length", "content-filter"}:
-        return None
-    text = "\n".join(p["text"] for p in last.get("parts", []) if p.get("type") == "text"
-                     and not p.get("ignored") and p.get("text"))
-    return text, None if info["finish"] in {"stop", "end_turn"} else "MODEL_" + info["finish"].upper()
-
-
-def usage_for(messages: list[dict], input_id: str) -> Usage:
-    result = Usage()
-    for message in messages:
-        info = message["info"]
-        if info.get("role") != "assistant" or info.get("parentID") != input_id:
-            continue
-        tokens = info.get("tokens", {})
-        result.input_tokens += int(tokens.get("input", 0))
-        result.output_tokens += int(tokens.get("output", 0))
-        result.reasoning_tokens += int(tokens.get("reasoning", 0))
-        result.cache_read_tokens += int(tokens.get("cache", {}).get("read", 0))
-        result.cache_write_tokens += int(tokens.get("cache", {}).get("write", 0))
-    return result

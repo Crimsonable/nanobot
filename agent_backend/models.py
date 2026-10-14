@@ -5,7 +5,7 @@ import json
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 
 class StrictModel(BaseModel):
@@ -26,7 +26,7 @@ class Identity(StrictModel):
     user_id: str = Field(min_length=1, max_length=500)
 
     @property
-    def key(self) -> str:
+    def identity_id(self) -> str:
         return digest(self.model_dump())
 
 
@@ -52,7 +52,7 @@ class Attachment(StrictModel):
 
 class Submit(StrictModel):
     request_id: str = Field(min_length=1, max_length=100)
-    conversation_id: str
+    chat_id: str = "default"
     identity: Identity
     profile_id: str
     content: str = Field(max_length=200_000)
@@ -60,6 +60,32 @@ class Submit(StrictModel):
     deadline_at: float
     session_epoch: str = ""
     previous_turns: list[dict[str, Any]] = Field(default_factory=list)
+    _legacy_session_key: str | None = PrivateAttr(default=None)
+
+    @property
+    def session_key(self) -> str:
+        """Internal SQLite key, never a separate ID in the protocol or logs."""
+        return self._legacy_session_key or digest([self.identity.identity_id, self.chat_id])
+
+    @property
+    def has_chat_id(self) -> bool:
+        return self._legacy_session_key is None
+
+    @classmethod
+    def from_record(cls, value: dict) -> Submit:
+        """Read pre-upgrade runs whose original chat_id was stored only in CU."""
+        payload = dict(value)
+        legacy_key = payload.pop("conversation_id", None)
+        submit = cls.model_validate(payload)
+        if legacy_key is not None:
+            if "chat_id" in payload:
+                if legacy_key != submit.session_key:
+                    raise ValueError("persisted chat key mismatch")
+            else:
+                # Hashes cannot be reversed. Retain the old lookup key for recovery,
+                # and omit chat_id from legacy logs instead of inventing an identity.
+                submit._legacy_session_key = legacy_key
+        return submit
 
 
 class Usage(StrictModel):
@@ -68,6 +94,39 @@ class Usage(StrictModel):
     reasoning_tokens: int = Field(default=0, ge=0)
     cache_read_tokens: int = Field(default=0, ge=0)
     cache_write_tokens: int = Field(default=0, ge=0)
+
+
+class OpenCodeEvent(StrictModel):
+    type: Literal["opencode.event"]
+    event_id: str = Field(min_length=1, max_length=100)
+    directory: str = Field(min_length=1)
+    session_id: str = ""
+    message_id: str = ""
+    input_message_id: str = ""
+    request_id: str = ""
+    event: dict[str, Any]
+
+
+class OpenCodeEventChunk(StrictModel):
+    event_id: str = Field(min_length=1, max_length=100)
+    index: int = Field(ge=0)
+    count: int = Field(ge=1)
+    data: str
+
+
+class PluginEvent(StrictModel):
+    type: Literal["response.delta", "tool.progress", "result", "error"]
+    request_id: str
+    session_id: str
+    input_message_id: str
+    directory: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    content: str = Field(default="", max_length=200_000)
+    messages: list[dict[str, Any]] = Field(default_factory=list, max_length=4096)
+    error: str | None = Field(default=None, max_length=1000)
+    call_id: str | None = None
+    tool: str | None = None
+    status: str | None = None
 
 
 class Result(StrictModel):

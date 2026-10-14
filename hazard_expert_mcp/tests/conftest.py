@@ -28,7 +28,7 @@ def completed_reply():
             "content": "发现临边防护缺失。",
             "attachments": [{"url": "https://files.example.com/report.pdf"}],
             "bucket_id": "internal-bucket",
-            "instance_id": "internal-instance",
+            "identity_id": "internal-instance",
         }
 
     return build

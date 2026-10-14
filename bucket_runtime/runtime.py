@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import mimetypes
@@ -10,13 +11,16 @@ import shutil
 import time
 from pathlib import Path
 
+import httpx
+
 from agent_backend.config import PermissionConfig, RuntimeConfig, load_config
 from agent_backend.files import file_hash
 from agent_backend.journal import Journal
 from agent_backend.models import TERMINAL, Attachment, Envelope, Result, Submit, digest, uid
-from agent_backend.wire import Peer
+from agent_backend.wire import CHUNK_SIZE, Peer
 from bucket_runtime.artifact_service import ArtifactService
-from bucket_runtime.opencode_client import OpenCodeClient, final_message, usage_for
+from bucket_runtime.opencode_client import OpenCodeClient
+from bucket_runtime.session_results import final_message, usage_for
 from bucket_runtime.permissions import check_native_paths, public_roots, session_rules
 from bucket_runtime.sandbox_executor import SandboxExecutor, contained
 
@@ -28,7 +32,7 @@ class Runtime:
         self.config, self.client, self.executor = config, client, executor
         self.permissions = (load_config(config.permissions_file, PermissionConfig)
                             if config.permissions_file else PermissionConfig())
-        self.opencode_worktree = config.opencode.context_root.resolve()
+        self.opencode_worktrees: dict[Path, Path] = {}
         for profile_id in config.profiles:
             public_roots(config, self.permissions.defaults, profile_id)
             for user in self.permissions.users:
@@ -47,7 +51,7 @@ class Runtime:
         self.draining = False
         self.ready = False
         self.plugin_ready = False
-        self.last_text_event: dict[str, float] = {}
+        self.completions: dict[str, asyncio.Event] = {}
 
     def policy(self, submit: Submit):
         return self.permissions.for_user(submit.identity.frontend_id, submit.identity.user_id)
@@ -60,14 +64,29 @@ class Runtime:
 
     def private_files(self) -> list[Path]:
         paths = [self.config.frontend_config_file, self.config.opencode.config_file,
-                 self.config.permissions_file]
+                 self.config.permissions_file, self.config.logging_file]
         if self.config.storage:
             paths.extend([self.config.storage.access_key_file, self.config.storage.secret_key_file])
         return [path for path in paths if path is not None]
 
     def session_permissions(self, submit: Submit) -> list[dict]:
         return session_rules(self.policy(submit), self.workspace(submit), self.public_roots(submit),
-                             self.opencode_worktree, self.private_files())
+                             self.worktree(submit), self.private_files())
+
+    def worktree(self, submit: Submit) -> Path:
+        workspace = self.workspace(submit)
+        return self.opencode_worktrees.get(workspace, workspace)
+
+    def run_client(self, row: dict) -> OpenCodeClient:
+        directory = Path(row["directory"]) if row.get("directory") else self.workspace(Submit.from_record(row["submit"]))
+        return self.client.for_directory(directory)
+
+    def session_context(self, submit: Submit, message_id: str) -> dict:
+        return {"schema_version": 1, **submit.identity.model_dump(),
+                "identity_id": submit.identity.identity_id, "bucket_id": self.config.bucket_id,
+                **({"chat_id": submit.chat_id} if submit.has_chat_id else {}),
+                "input_message_id": message_id,
+                "requests": {message_id: submit.request_id}}
 
     async def cancel_request(self, request_id: str) -> None:
         row = self.db.get("run", request_id)
@@ -84,7 +103,7 @@ class Runtime:
         else:
             await self.executor.kill(request_id)
             if row.get("session_id"):
-                await self.client.abort(row["session_id"])
+                await self.run_client(row).abort(row["session_id"])
         self.finish(Result(request_id=request_id, status="cancelled"))
 
     async def cancel_conversation(self, submit: Submit) -> None:
@@ -92,8 +111,8 @@ class Runtime:
         for row in self.db.records("run"):
             if row["request_id"] == submit.request_id or row["status"] in TERMINAL:
                 continue
-            other = Submit.model_validate(row["submit"])
-            if other.identity == submit.identity and other.conversation_id == submit.conversation_id:
+            other = Submit.from_record(row["submit"])
+            if other.identity == submit.identity and other.session_key == submit.session_key:
                 targets.append(row["request_id"])
         for request_id in targets:
             row = self.db.get("run", request_id)
@@ -113,24 +132,7 @@ class Runtime:
                 raise PermissionError("workspace root is a symlink")
             if parent == self.config.workspace_root:
                 break
-        created = not path.exists()
         path.mkdir(parents=True, exist_ok=True)
-        templates = self.config.workspace_template_root
-        if created and templates and templates.is_dir():
-            import shutil
-            # Optional administrator-managed templates, as in the original workspace manager.
-            # Never overwrite existing user files or follow template symlinks.
-            for item in templates.rglob("*"):
-                if item.is_symlink():
-                    raise PermissionError("workspace templates must not contain symbolic links")
-            for item in templates.iterdir():
-                target = path / item.name
-                if target.exists():
-                    continue
-                if item.is_dir():
-                    shutil.copytree(item, target)
-                else:
-                    shutil.copy2(item, target)
         for folder in ["output", "scratch"]:
             target = path / folder
             if target.is_symlink():
@@ -150,6 +152,8 @@ class Runtime:
             self.db.put("run", result.request_id, {**row, "status": result.status,
                          "result": result.model_dump(mode="json")})
             self.emit("request." + result.status, result.request_id, result.model_dump(mode="json"))
+        if completed := self.completions.get(result.request_id):
+            completed.set()
         log.info("request terminal bucket_id=%s request_id=%s status=%s attachments=%d",
                  self.config.bucket_id, result.request_id, result.status, len(result.attachments))
         for intent in self.db.records("intent"):
@@ -166,7 +170,15 @@ class Runtime:
             row = self.db.get("run", submit.request_id)
             if row:
                 if row["hash"] != digest(event.payload):
-                    raise ValueError("request content changed")
+                    stored = dict(row["submit"])
+                    legacy_key = stored.pop("conversation_id", None)
+                    if legacy_key != submit.session_key:
+                        raise ValueError("request content changed")
+                    stored["chat_id"] = submit.chat_id
+                    if Submit.model_validate(stored) != submit:
+                        raise ValueError("request content changed")
+                    self.db.put("run", submit.request_id, {**row,
+                        "submit": submit.model_dump(mode="json"), "hash": digest(event.payload)})
                 self.workspace(submit)
                 return
             with self.db.transaction():
@@ -222,7 +234,7 @@ class Runtime:
             if row.get("cancel_requested"):
                 self.finish(Result(request_id=row["request_id"], status="cancelled"))
             elif row["status"] == "queued":
-                submit = Submit.model_validate(row["submit"])
+                submit = Submit.from_record(row["submit"])
                 if submit.content.strip().lower() == "/cancel":
                     await self.cancel_conversation(submit)
                 else:
@@ -230,46 +242,48 @@ class Runtime:
             else:
                 # A new supervisor process cannot prove prior side effects did not happen.
                 if row.get("session_id"):
-                    await self.client.abort(row["session_id"])
-                    messages = await self.client.messages(row["session_id"])
-                    final = final_message(messages, row.get("message_id", ""))
-                    if final and not final[1]:
-                        self.finish(Result(request_id=row["request_id"], status="completed",
-                            content=final[0], attachments=row["artifacts"], usage=usage_for(messages, row["message_id"])))
-                        continue
+                    client = self.run_client(row)
+                    await client.abort(row["session_id"])
                 self.finish(Result(request_id=row["request_id"], status="failed",
                     error="EXECUTION_INTERRUPTED", partial=bool(row["artifacts"]), attachments=row["artifacts"]))
 
     async def run(self, request_id: str) -> None:
         row = self.db.get("run", request_id)
-        submit = Submit.model_validate(row["submit"])
+        submit = Submit.from_record(row["submit"])
         session_id = None
         try:
             async with asyncio.timeout(max(0.01, submit.deadline_at - time.time())):
-                async with self.request_locks.setdefault(submit.identity.key, asyncio.Lock()):
+                async with self.request_locks.setdefault(submit.identity.identity_id, asyncio.Lock()):
                     async with self.capacity:
                         if self.draining or self.db.get("run", request_id).get("cancel_requested"):
                             raise asyncio.CancelledError()
                         workspace = self.workspace(submit)
+                        client = self.client.for_directory(workspace)
                         profile = self.config.profiles[submit.profile_id]
-                        self.opencode_worktree = Path((await self.client.paths())["worktree"])
-                        session = self.db.get("session", submit.conversation_id)
+                        self.opencode_worktrees[workspace] = Path((await client.paths())["worktree"])
+                        session = self.db.get("session", submit.session_key)
+                        message_id = uid("msg_")
+                        context = self.session_context(submit, message_id)
                         if session and session.get("epoch", "") != submit.session_epoch:
                             session = None
                         if session:
-                            if session["user_key"] != submit.identity.key or session["profile"] != submit.profile_id:
+                            if session["identity_id"] != submit.identity.identity_id or session["profile_id"] != submit.profile_id:
                                 raise PermissionError("conversation ownership/profile mismatch")
                             session_id = session["session_id"]
-                            await self.client.set_permissions(session_id, self.session_permissions(submit))
+                            info = await client.session(session_id)
+                            if Path(info["directory"]).resolve() != workspace:
+                                session_id = None
+                                raise RuntimeError("SESSION_WORKSPACE_MISMATCH: existing chat belongs to another directory; start a new chat")
+                            await client.set_permissions(session_id, self.session_permissions(submit))
+                            await client.set_context(session_id, context)
                         else:
-                            session_id = await self.client.create_session(self.session_permissions(submit))
-                            self.db.put("session", submit.conversation_id, {"session_id": session_id,
-                                "user_key": submit.identity.key, "profile": submit.profile_id,
-                                "epoch": submit.session_epoch})
+                            session_id = await client.create_session(self.session_permissions(submit), context)
+                            self.db.put("session", submit.session_key, {"session_id": session_id,
+                                "identity_id": submit.identity.identity_id, "profile_id": submit.profile_id,
+                                "epoch": submit.session_epoch, "directory": str(workspace)})
                         row = self.db.get("run", request_id)
-                        message_id = uid("msg_")
                         self.db.put("run", request_id, {**row, "status": "preparing",
-                                    "session_id": session_id, "message_id": message_id})
+                                    "session_id": session_id, "message_id": message_id, "directory": str(workspace)})
                         references = []
                         image_index = 0
                         for attachment in submit.attachments:
@@ -295,29 +309,19 @@ class Runtime:
                         with self.db.transaction():
                             self.db.put("run", request_id, {**row, "status": "running"})
                             self.emit("request.started", request_id)
+                        completed = self.completions.setdefault(request_id, asyncio.Event())
                         try:
-                            await self.client.submit(session_id, message_id, text, profile.model)
-                        except Exception:
-                            # Submission may have reached OpenCode. Never automatically re-execute it.
-                            messages = await self.client.messages(session_id)
-                            if not any(m["info"]["id"] == message_id for m in messages):
-                                raise RuntimeError("EXECUTION_INTERRUPTED") from None
-                        while True:
-                            messages = await self.client.messages(session_id)
-                            final = final_message(messages, message_id)
-                            if final:
-                                artifacts = self.db.get("run", request_id)["artifacts"]
-                                error = final[1] or (None if final[0] or artifacts else "EMPTY_RESULT")
-                                self.finish(Result(request_id=request_id, status="failed" if error else "completed",
-                                    content=final[0], attachments=artifacts, error=error,
-                                    partial=bool(error and artifacts), usage=usage_for(messages, message_id)))
-                                return
-                            await asyncio.sleep(0.5)
+                            await client.submit(session_id, message_id, text, profile.model)
+                        except httpx.TransportError:
+                            # Submission may have reached OpenCode. Await the plugin;
+                            # never query messages or resubmit an uncertain request.
+                            log.warning("prompt submission uncertain request_id=%s; awaiting plugin", request_id)
+                        await completed.wait()
         except asyncio.CancelledError:
             await self.executor.kill(request_id)
             if session_id:
                 try:
-                    await self.client.abort(session_id)
+                    await client.abort(session_id)
                 except Exception:
                     # Fail closed: no new request may use a possibly still running server.
                     self.draining = True
@@ -331,7 +335,7 @@ class Runtime:
             await self.executor.kill(request_id)
             try:
                 if session_id:
-                    await self.client.abort(session_id)
+                    await client.abort(session_id)
             except Exception:
                 self.draining = True
             finally:
@@ -341,61 +345,141 @@ class Runtime:
                     if not isinstance(exc, (RuntimeError, TimeoutError)) else str(exc) or "REQUEST_TIMEOUT",
                     attachments=row["artifacts"], partial=bool(row["artifacts"])))
 
-    async def events(self) -> None:
-        async for event in self.client.events():
-            properties = event.get("properties") or {}
-            session_id = (properties.get("sessionID") or properties.get("part", {}).get("sessionID")
-                          or properties.get("info", {}).get("sessionID"))
-            if not session_id:
-                continue
-            row = next((r for r in self.db.records("run") if r.get("session_id") == session_id
-                        and r["status"] == "running"), None)
-            if row is None:
-                continue
-            # Raw events never reach a frontend. Only mapped, bounded tool progress is emitted.
-            part = properties.get("part") or {}
-            if event.get("type") == "message.part.updated" and part.get("type") == "tool":
-                self.emit("tool.progress", row["request_id"], {"call_id": part.get("callID"),
-                    "tool": part.get("tool"), "status": part.get("state", {}).get("status")})
-            is_text = (event.get("type") == "message.part.updated" and part.get("type") == "text"
-                       or event.get("type") == "message.part.delta" and properties.get("field") == "text")
-            if is_text and time.monotonic() - self.last_text_event.get(row["request_id"], 0) >= 0.5:
-                self.last_text_event[row["request_id"]] = time.monotonic()
-                messages = await self.client.messages(session_id)
-                texts = [p["text"] for m in messages if m["info"].get("parentID") == row["message_id"]
-                         and m["info"].get("role") == "assistant" for p in m.get("parts", [])
-                         if p.get("type") == "text" and p.get("text") and not p.get("ignored")]
-                latest = self.db.get("run", row["request_id"])
-                if latest["status"] == "running" and texts:
-                    revision = latest.get("text_revision", 0) + 1
-                    with self.db.transaction():
-                        self.db.put("run", row["request_id"], {**latest, "text_revision": revision})
-                        self.emit("response.delta", row["request_id"], {"revision": revision,
-                            "content": "\n".join(texts)[-200000:], "mode": "snapshot"})
+        finally:
+            self.completions.pop(request_id, None)
 
-    async def bind_tool_session(self, session_id: str) -> None:
+    def plugin_event(self, body: dict) -> dict:
+        if body.get("type") == "opencode.event":
+            return self.forward_plugin_event(body)
+        from agent_backend.models import PluginEvent
+        event = PluginEvent.model_validate(body)
+        row = self.db.get("run", event.request_id)
+        if not row:
+            raise PermissionError("unknown plugin request")
+        if row.get("session_id") != event.session_id or row.get("message_id") != event.input_message_id:
+            raise PermissionError("plugin request/session/message mismatch")
+        if Path(event.directory).resolve() != Path(row["directory"]).resolve():
+            raise PermissionError("plugin workspace mismatch")
+        if row["status"] in TERMINAL or row.get("cancel_requested"):
+            return {"ok": True, "ignored": True}
+        if row["status"] != "running":
+            raise PermissionError("plugin request is not running")
+        if event.revision <= row.get("plugin_revision", 0):
+            return {"ok": True, "duplicate": True}
+        result = None
+        if event.type == "result":
+            for message in event.messages:
+                info = message.get("info", {})
+                if (info.get("sessionID") != event.session_id or info.get("role") != "assistant"
+                        or info.get("parentID") != event.input_message_id):
+                    raise PermissionError("plugin response contains an unrelated message")
+            try:
+                final = final_message(event.messages, event.input_message_id)
+                if final is None:
+                    raise ValueError("plugin response is not a completed assistant reply")
+                content, error = final
+                artifacts = row["artifacts"]
+                error = error or (None if content or artifacts else "EMPTY_RESULT")
+                result = Result(request_id=event.request_id, status="failed" if error else "completed",
+                    content=content, error=error, attachments=artifacts, partial=bool(error and artifacts),
+                    usage=usage_for(event.messages, event.input_message_id))
+            except (KeyError, TypeError) as exc:
+                raise ValueError("invalid plugin reply snapshot") from exc
+        elif event.type == "error":
+            result = Result(request_id=event.request_id, status="failed", error=event.error or "MODEL_ERROR",
+                            attachments=row["artifacts"], partial=bool(row["artifacts"]))
+        if result:
+            self.finish(result)
+            return {"ok": True}
+        with self.db.transaction():
+            updated = {**row, "plugin_revision": event.revision}
+            if event.type == "response.delta":
+                revision = row.get("text_revision", 0) + 1
+                updated["text_revision"] = revision
+                self.emit("response.delta", event.request_id, {"revision": revision,
+                    "content": event.content, "mode": "snapshot"})
+            elif event.type == "tool.progress":
+                self.emit("tool.progress", event.request_id, {"call_id": event.call_id,
+                    "tool": event.tool, "status": event.status})
+            self.db.put("run", event.request_id, updated)
+        return {"ok": True}
+
+    def forward_plugin_event(self, body: dict) -> dict:
+        from agent_backend.models import OpenCodeEvent
+        event = OpenCodeEvent.model_validate(body)
+        payload = event.model_dump(mode="json")
+        if event.request_id:
+            row = self.db.get("run", event.request_id)
+            if not row or row.get("session_id") != event.session_id or row.get("message_id") != event.input_message_id:
+                raise PermissionError("plugin event request/session/message mismatch")
+            if Path(event.directory).resolve() != Path(row["directory"]).resolve():
+                raise PermissionError("plugin event workspace mismatch")
+            submit = Submit.from_record(row["submit"])
+            payload.update(submit.identity.model_dump())
+            if submit.has_chat_id:
+                payload["chat_id"] = submit.chat_id
+        # Raw events remain observable after completion/cancellation, and events
+        # without a request (startup, session lifecycle, child sessions) also pass.
+        with self.db.transaction():
+            if self.db.seen("plugin", event.event_id):
+                return {"ok": True, "duplicate": True}
+            envelope = Envelope(type="opencode.event",
+                event_id=event.event_id, bucket_id=self.config.bucket_id,
+                request_id=event.request_id, payload=payload)
+            encoded = envelope.model_dump_json().encode()
+            if len(encoded) <= CHUNK_SIZE * 2:
+                self.db.enqueue(self.config.bucket_id, envelope)
+            else:
+                # Keep the existing bounded WS frames without truncating large
+                # tool outputs, file parts or future event payloads.
+                count = (len(encoded) + CHUNK_SIZE - 1) // CHUNK_SIZE
+                for index in range(count):
+                    data = encoded[index * CHUNK_SIZE:(index + 1) * CHUNK_SIZE]
+                    self.db.enqueue(self.config.bucket_id, Envelope(type="opencode.event.chunk",
+                        bucket_id=self.config.bucket_id, request_id=event.request_id, payload={
+                            "event_id": event.event_id, "index": index, "count": count,
+                            "data": base64.b64encode(data).decode("ascii")}))
+            self.db.accept("plugin", event.event_id)
+        return {"ok": True}
+
+    async def bind_tool_session(self, session_id: str, directory: str) -> None:
         # Task tools create child sessions. Resolve ancestry from the trusted server,
         # never from model-provided user IDs, before issuing a sandbox/publication ticket.
+        requested = Path(directory).resolve()
+
+        def check_directory(submit: Submit) -> None:
+            if requested != self.workspace(submit):
+                raise PermissionError("tool session workspace mismatch")
+
         try:
-            self.active_session(session_id)
-            return
+            _, submit = self.active_session(session_id)
         except PermissionError:
             if self.db.get("child_session", session_id):
                 raise
+        else:
+            check_directory(submit)
+            return
+        if not any(r["status"] == "running" and self.workspace(Submit.from_record(r["submit"])) == requested
+                   for r in self.db.records("run")):
+            raise PermissionError("session has no active authorized workspace")
+        client = self.client.for_directory(requested)
         parent = session_id
         seen = set()
         for _ in range(64):
             if parent in seen:
                 break
             seen.add(parent)
-            info = await self.client.session(parent)
+            info = await client.session(parent)
+            if Path(info["directory"]).resolve() != requested:
+                raise PermissionError("tool session workspace mismatch")
             parent = info.get("parentID")
             if not parent:
                 break
             try:
-                row, _ = self.active_session(parent)
+                row, submit = self.active_session(parent)
             except PermissionError:
                 continue
+            check_directory(submit)
             self.db.put("child_session", session_id, {"request_id": row["request_id"]})
             return
         raise PermissionError("session has no active managed ancestor")
@@ -410,7 +494,7 @@ class Runtime:
                 row = candidate
         if not row:
             raise PermissionError("session has no active authorized request")
-        return row, Submit.model_validate(row["submit"])
+        return row, Submit.from_record(row["submit"])
 
     async def connected(self, deadline: float) -> Peer:
         while not self.peer or self.peer.closed:
@@ -432,14 +516,14 @@ class Runtime:
         if old:
             if old["tool"] != tool or old["args"] != args or old["request_id"] != submit.request_id:
                 raise PermissionError("tool call identity changed")
-            return {"ticket": old["ticket"], "host_workdir": str(self.config.opencode.context_root)}
+            return {"ticket": old["ticket"], "host_workdir": str(self.workspace(submit))}
         ticket = secrets.token_urlsafe(32)
         call = {"ticket": ticket, "request_id": submit.request_id, "session_id": session_id,
                 "call_id": call_id, "tool": tool, "args": args, "status": "authorized"}
         with self.db.transaction():
             self.db.put("call", call_key, call)
             self.db.put("ticket", ticket, {"call_key": call_key})
-        return {"ticket": ticket, "host_workdir": str(self.config.opencode.context_root)}
+        return {"ticket": ticket, "host_workdir": str(self.workspace(submit))}
 
     def ticket(self, ticket: str, tool: str) -> tuple[str, dict, Submit]:
         ref = self.db.get("ticket", ticket)
@@ -455,7 +539,7 @@ class Runtime:
 
     async def execute(self, ticket: str) -> dict:
         key, call, submit = self.ticket(ticket, "bash")
-        async with self.file_locks.setdefault(submit.identity.key, asyncio.Lock()):
+        async with self.file_locks.setdefault(submit.identity.identity_id, asyncio.Lock()):
             key, call, submit = self.ticket(ticket, "bash")
             if call["status"] == "completed":
                 return call["result"]
@@ -477,7 +561,7 @@ class Runtime:
 
     async def publish(self, ticket: str) -> dict:
         key, call, submit = self.ticket(ticket, "publish_attachment")
-        async with self.file_locks.setdefault(submit.identity.key, asyncio.Lock()):
+        async with self.file_locks.setdefault(submit.identity.identity_id, asyncio.Lock()):
             key, call, submit = self.ticket(ticket, "publish_attachment")
             if call["status"] == "completed":
                 return call["result"]
@@ -486,9 +570,9 @@ class Runtime:
                 raise ValueError("publish requires 1..32 files")
             published = []
             for index, item in enumerate(files):
-                artifact_id = "att_" + digest([key, index])
-                intent = self.db.get("intent", artifact_id)
-                snapshot = self.config.state_root / "snapshots" / artifact_id
+                attachment_id = "att_" + digest([key, index])
+                intent = self.db.get("intent", attachment_id)
+                snapshot = self.config.state_root / "snapshots" / attachment_id
                 if not intent:
                     source = contained(item["path"], self.workspace(submit))
                     if source.stat().st_size > self.config.limits.file_bytes:
@@ -509,19 +593,19 @@ class Runtime:
                         shutil.copyfileobj(src, dst, 256 * 1024)
                         dst.flush()
                         os.fsync(dst.fileno())
-                    attachment = Attachment(attachment_id=artifact_id,
+                    attachment = Attachment(attachment_id=attachment_id,
                         filename=item.get("filename") or source.name, size=snapshot.stat().st_size,
                         sha256=file_hash(snapshot), content_type=mimetypes.guess_type(source.name)[0]
                         or "application/octet-stream")
                     intent = {"attachment": attachment.model_dump(mode="json"), "request_id": submit.request_id}
-                    self.db.put("intent", artifact_id, intent)
+                    self.db.put("intent", attachment_id, intent)
                 attachment = Attachment.model_validate(intent["attachment"])
-                published_attachment = await self.artifacts.upload(submit.identity, artifact_id, snapshot, attachment)
+                published_attachment = await self.artifacts.upload(submit.identity, attachment_id, snapshot, attachment)
                 result = published_attachment.model_dump(mode="json")
                 # Cancellation may have raced with an awaited transfer.
                 self.active_session(call["session_id"])
                 row = self.db.get("run", submit.request_id)
-                if not any(a["attachment_id"] == artifact_id for a in row["artifacts"]):
+                if not any(a["attachment_id"] == attachment_id for a in row["artifacts"]):
                     self.db.put("run", submit.request_id, {**row, "artifacts": [*row["artifacts"], result]})
                 published.append(result)
                 snapshot.unlink(missing_ok=True)

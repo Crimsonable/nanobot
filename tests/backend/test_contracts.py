@@ -6,12 +6,12 @@ from pydantic import ValidationError
 from agent_backend.journal import Journal
 from agent_backend.models import Attachment, Envelope, Identity
 from agent_backend.wire import Peer
-from bucket_runtime.opencode_client import final_message
+from bucket_runtime.session_results import final_message
 from bucket_runtime.sandbox_executor import contained
 
 
 def test_identity_and_filename_boundaries():
-    assert Identity(frontend_id="a/b", user_id="c").key != Identity(frontend_id="a-b", user_id="c").key
+    assert Identity(frontend_id="a/b", user_id="c").identity_id != Identity(frontend_id="a-b", user_id="c").identity_id
     for name in ["../x", "a/b", "a\\b", "..", "bad\n.txt"]:
         with pytest.raises(ValidationError):
             Attachment(filename=name)
@@ -47,6 +47,9 @@ def test_final_requires_correlated_finished_answer():
                          "finish": finish, "time": {"created": 1, "completed": completed}}, "parts": parts}
     unrelated = answer("a", "other", "stop", [{"type": "text", "text": "wrong"}])
     assert final_message([unrelated], "input") is None
+    summary = answer("summary", "input", "stop", [{"type": "text", "text": "internal summary"}])
+    summary["info"]["summary"] = True
+    assert final_message([summary], "input") is None
     tool = answer("b", "input", "tool-calls", [{"type": "tool", "state": {"status": "completed"}}])
     assert final_message([unrelated, tool], "input") is None
     final = answer("c", "input", "stop", [{"type": "text", "text": "done"}])

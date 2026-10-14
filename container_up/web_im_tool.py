@@ -7,6 +7,7 @@ from typing import Any
 from aiohttp import ClientError
 
 from container_up.http_state import get_dispatch_session
+
 SEND_MSG_RETRY_BACKOFF = 1.0
 SEND_MSG_RETRY_COUNT = 3
 
@@ -58,7 +59,7 @@ class WebIMParser:
 
         metadata = dict(payload.get("metadata") or {})
         frontend_id = str(metadata.get("frontend_id") or self.frontend_id).strip() or self.frontend_id
-        user_id = str(metadata.get("usr_id") or "").strip()
+        user_id = str(metadata.get("user_id") or "").strip()
         attachments = list(payload.get("attachments") or [])
         outbound_payload = {
             "frontend_id": frontend_id,

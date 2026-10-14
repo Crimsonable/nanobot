@@ -435,12 +435,12 @@ class FeishuIMParser:
             return reply_target
 
         receive_id = str(metadata.get("chat_id") or chat_id or "").strip()
-        usr_id = str(metadata.get("usr_id") or "").strip()
+        user_id = str(metadata.get("user_id") or "").strip()
         chat_type = str(metadata.get("chat_type") or "").strip()
         message_id = str(metadata.get("message_id") or "").strip()
         thread_id = str(metadata.get("thread_id") or "").strip()
 
-        if not receive_id and not usr_id:
+        if not receive_id and not user_id:
             return {}
 
         if chat_type == "group":
@@ -448,7 +448,7 @@ class FeishuIMParser:
             target_receive_id = receive_id
         else:
             receive_id_type = "open_id"
-            target_receive_id = usr_id or receive_id
+            target_receive_id = user_id or receive_id
 
         if not target_receive_id:
             return {}
@@ -518,9 +518,9 @@ class FeishuIMParser:
                 self._ws_loop = None
 
     async def _run_ws_client_async(self) -> None:
+        import lark_oapi.ws.client as ws_client_module
         from lark_oapi.core.enum import LogLevel
         from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-        import lark_oapi.ws.client as ws_client_module
 
         if not isinstance(getattr(ws_client_module, "loop", None), _EventLoopProxy):
             ws_client_module.loop = _EventLoopProxy()
@@ -595,14 +595,14 @@ class FeishuIMParser:
         if message is None or sender is None or sender_id is None:
             raise RuntimeError("incomplete feishu event")
 
-        usr_id = str(
+        user_id = str(
             getattr(sender_id, "open_id", "")
             or getattr(sender_id, "user_id", "")
             or getattr(sender_id, "union_id", "")
             or ""
         ).strip()
-        if not usr_id:
-            raise RuntimeError("missing feishu usr_id")
+        if not user_id:
+            raise RuntimeError("missing feishu user_id")
 
         chat_type = str(getattr(message, "chat_type", "") or "")
         chat_id = str(getattr(message, "chat_id", "") or "")
@@ -623,20 +623,20 @@ class FeishuIMParser:
             )
 
         attachments, content = self._extract_inbound_content(
-            user_id=usr_id,
-            attachment_group=inbound_chat_id or message_id or usr_id,
+            user_id=user_id,
+            attachment_group=inbound_chat_id or message_id or user_id,
             message=message,
         )
         content = self._resolve_mentions(content, mentions)
 
         receive_id_type = "chat_id" if chat_type == "group" else "open_id"
-        receive_id = chat_id if receive_id_type == "chat_id" else usr_id
+        receive_id = chat_id if receive_id_type == "chat_id" else user_id
 
         return {
             "event_type": "im_message_receive",
             "event": {
                 "chat_id": inbound_chat_id,
-                "usr_id": usr_id,
+                "user_id": user_id,
                 "content": content,
                 "attachments": attachments,
                 "metadata": {

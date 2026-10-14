@@ -57,7 +57,7 @@ class BucketScheduler:
     def reserve(self, identity: Identity) -> dict:
         """Called under lock; mapping and capacity reservation commit together."""
         with self.db.transaction():
-            existing = self.db.get("binding", identity.key)
+            existing = self.db.get("binding", identity.identity_id)
             if existing and existing.get("bucket_id"):
                 bucket = self.db.get("bucket", existing["bucket_id"])
                 if bucket and bucket["status"] in {"creating", "running"}:
@@ -71,9 +71,9 @@ class BucketScheduler:
             workspace = str(workspace_path(runtime.workspace_root, identity, runtime.workspace_layout))
             # The original sanitizer can collide. Never grant two identities the same directory.
             owner = self.db.get("workspace_owner", workspace)
-            if owner and owner["user_key"] != identity.key:
+            if owner and owner["identity_id"] != identity.identity_id:
                 raise ValueError("workspace path collides with another user")
-            self.db.put("workspace_owner", workspace, {"user_key": identity.key})
+            self.db.put("workspace_owner", workspace, {"identity_id": identity.identity_id})
             candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
                           and self.frontend_for(b) == identity.frontend_id
                           and len(self.bindings(b["bucket_id"])) < self.config.max_users_per_bucket]
@@ -91,9 +91,9 @@ class BucketScheduler:
             bucket_id = bucket["bucket_id"]
             self.db.put("bucket", bucket_id, {**bucket, "frontend_id": identity.frontend_id,
                                               "last_active_at": time.time()})
-            binding = {"bucket_id": bucket_id, "user_key": identity.key, "identity": identity.model_dump(),
+            binding = {"bucket_id": bucket_id, "identity_id": identity.identity_id, "identity": identity.model_dump(),
                        "workspace_path": workspace, "generation": uuid4().hex, "status": "assigned"}
-            self.db.put("binding", identity.key, binding)
+            self.db.put("binding", identity.identity_id, binding)
             return binding
 
     async def ready(self, bucket_id: str):
@@ -124,9 +124,9 @@ class BucketScheduler:
             async with self.lock:
                 outstanding = any(r["submit"]["identity"] == identity.model_dump() and not r.get("result")
                                   for r in self.db.records("request"))
-                current = self.db.get("binding", identity.key)
+                current = self.db.get("binding", identity.identity_id)
                 if not outstanding and current and current.get("generation") == binding["generation"]:
-                    self.db.put("binding", identity.key, {**current, "bucket_id": None, "status": "released"})
+                    self.db.put("binding", identity.identity_id, {**current, "bucket_id": None, "status": "released"})
             raise
         finally:
             self.pins[bucket_id] -= 1
@@ -158,7 +158,7 @@ class BucketScheduler:
                 self.service.sockets.pop(bucket_id, None)
                 with self.db.transaction():
                     for binding in self.bindings(bucket_id):
-                        self.db.put("binding", binding["user_key"],
+                        self.db.put("binding", binding["identity_id"],
                                     {**binding, "bucket_id": None, "status": "released"})
                     self.db.put("bucket", bucket_id, {**bucket, "status": "idle"})
 

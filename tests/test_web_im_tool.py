@@ -52,7 +52,7 @@ async def test_web_im_parser_posts_normalized_outbound_payload(monkeypatch: pyte
             "chat_id": "chat-1",
             "content": "hello",
             "attachments": [{"url": "https://files.example.com/demo.png"}],
-            "metadata": {"usr_id": "user-1", "frontend_id": "web-main"},
+            "metadata": {"user_id": "user-1", "frontend_id": "web-main"},
         }
     )
 
@@ -66,7 +66,7 @@ async def test_web_im_parser_posts_normalized_outbound_payload(monkeypatch: pyte
                 "chat_id": "chat-1",
                 "content": "hello",
                 "attachments": [{"url": "https://files.example.com/demo.png"}],
-                "metadata": {"usr_id": "user-1", "frontend_id": "web-main"},
+                "metadata": {"user_id": "user-1", "frontend_id": "web-main"},
             },
         )
     ]
@@ -110,7 +110,7 @@ async def test_web_im_parser_retries_transient_server_errors(
             "chat_id": "chat-1",
             "content": "hello",
             "attachments": [],
-            "metadata": {"usr_id": "user-1", "frontend_id": "web-main"},
+            "metadata": {"user_id": "user-1", "frontend_id": "web-main"},
         }
     )
 

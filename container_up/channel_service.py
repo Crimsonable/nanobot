@@ -47,7 +47,8 @@ class ChannelService:
         identity = record["submit"]["identity"]
         # Routing metadata comes from the inbound request, never the model.
         metadata = {**record["metadata"], "frontend_id": identity["frontend_id"],
-                    "usr_id": identity["user_id"], "request_id": result.request_id}
+                    "user_id": identity["user_id"], "request_id": result.request_id}
+        metadata.pop("usr_id", None)
         if result.usage:
             metadata["usage"] = result.usage.model_dump()
         content = result.content

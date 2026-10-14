@@ -10,7 +10,8 @@
 container_up.server                 用户→bucket、渠道投递
   ↕ /internal/buckets/ws            双向控制 / 事件 / 附件引用
 bucket_runtime.runtime              用户→conversation→session、状态、权限、附件发布
-  ├─ OpenCodeClient ↔ opencode serve  回环 HTTP / SSE，一个 bucket 一个实例
+  ├─ OpenCodeClient → opencode serve  回环 HTTP 提交/控制，一个 bucket 一个实例
+  ├─ OpenCode 插件 → runtime → CU  全量事件与最终回复回调
   ├─ 可信插件 → 私有 runtime RPC       before hook / publish_attachment
   └─ SandboxExecutor → bwrap         被 hook 包装的 bash 在这里执行
 ```
@@ -40,7 +41,7 @@ python -m agent_backend control --config /mnt/common/frontends.json
 - CU 与每个 bucket 使用独立 SQLite。状态和 outbox 原子提交，ACK 后删除待发送记录，inbox 去重；数据库文件有进程级单写锁。断线重放消息，重复 request_id 校验请求 hash。
 - WS 每个已登记的连接绑定一个 bucket，新连接关闭旧连接，旧 handler 拒绝继续处理。bucket 回收后释放用户映射，下次重新分配；带未完成任务时不迁移。
 - 一个接收循环分发消息和 RPC；不再提供 input.fetch、input.begin/chunk/commit 或 attachment.begin/chunk/commit 文件传输。
-- SSE 事件经过 session 映射后转为进度/正文快照；终态通过该轮 input message ID 对应的 assistant 快照核实。工具消息和 idle 事件不提前结束同步请求。
+- 事件只走 OpenCode 插件 → runtime → CU。插件通过带鉴权的 /plugin/event 将 event hook 收到的全部原始事件逐条推送，包括思考、正文增量、工具、会话状态、未知类型及终态之后的事件；工具执行前还推送原始参数。runtime 将这些事件写入可靠 outbox，CU 完整保存为 opencode_event 记录。原始事件不节流、不截断，不因缺少 request_id 而丢弃；确定请求归属时核对 session_id、input_message_id、directory 并附加可信用户与 chat_id。插件另行汇总最终助手正文、附件和用量，CU 仅根据最终结果向渠道回复，思考和工具中间内容不进入渠道消息。工具消息和 idle 不提前结束请求。runtime 不订阅 SSE，不轮询或补查消息；提交连接结果不确定时只等待插件回调至截止时间，重启前未持久化终态的执行中请求标记 EXECUTION_INTERRUPTED。
 - 取消会终止沙箱进程树，已完成终态不可覆盖。提交结果不确定或进程崩溃时查询已持久化消息；不能确认结果就返回 `EXECUTION_INTERRUPTED`，不自动重跑有副作用的任务。
 - 执行完成与渠道交付分开记录。外部发送状态不确定时记录 `unknown`，不盲目重试。
 
@@ -64,9 +65,10 @@ MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，支�
 
 `common/frontends.json` 是统一入口总表，`frontends` 数组中每项定义一个 frontend，`control` 是 CU/集群的公共基础设施参数。一个 CU 接入多个 frontend，按 frontend 创建独立桶，不同 frontend 的模型、权限或模板不会混用。
 
-- `config/opencode/frontends.json`：每项保留 id、provider、send_msg_url、attachment_storage、instance_idle_ttl_seconds、profile_id、channel 和 runtime。runtime.profiles 选择该 frontend 使用的模型及指令；渠道凭据放在自己的 channel 中。
+- `config/opencode/frontends.json`：每项使用 frontend_id、provider、send_msg_url、attachment_storage、instance_idle_ttl_seconds、profile_id、channel 和 runtime。runtime.profiles 选择该 frontend 使用的模型及指令；渠道凭据放在自己的 channel 中。
 - `config/opencode/web-yk/config/opencode-server.json`：部署到 common/web-yk/config/，包含仅该 frontend 生效的模型 provider、API key、MCP、LSP、formatter、skills 等原生配置。自动更新关闭，二进制统一从服务器目录更新。
 - `config/opencode/web-yk/config/user-permissions.yaml`：部署到 common/web-yk/config/，defaults 仅作用于该 frontend 的用户，users 可只写 user_id。显式 frontend_id 不匹配时启动失败。修改 session 权限时先回收该 frontend 的桶并释放映射，再更新配置，以新 session 加载策略。
+- `config/opencode/web-yk/config/session-logging.json`：部署到该 frontend 的 config/，由 runtime.logging_file 指定，控制插件向 bucket stdout 输出思考、回复和工具过程。身份来自 OpenCode 会话 metadata，详见 [日志与 ID 约定](SESSION_LOGGING.md)。
 - `common/<id>/app/templates/` 与 `app/skills/`：该 frontend 自己的模板和技能，不再从全局 source/templates 复制业务模板。
 
 CU 的入站、查询、取消和附件引用接口不需要 API key；Web 代理及隐患专家调用 CU 不发送 Authorization。保留 frontend 注册校验和请求/bucket 归属检查。模型、MinIO、渠道凭据，以及桶内部自动生成的插件调用凭据仍属于各自用途。
@@ -95,7 +97,7 @@ users:
 ```
 
 - `filesystem.workspace`：`read_write` / `read_only` / `none`。目录始终由 runtime 按用户身份映射，不允许把其他用户的目录作为自己的工作目录。
-- `filesystem.public_roots`：公共只读目录的完整清单；`null` 继承当前 profile 的公共目录，`[]` 表示不授予任何公共目录。用户配置清单替换默认清单，不叠加；common 范围只能在 /mnt/common/<当前 frontend_id>/app 内，config、frontend 根、父目录和其他 frontend 均被拒绝。服务状态、凭据和整个用户根目录不能配置为公共目录。
+- `filesystem.public_roots`：额外公共只读目录的清单；`null` 继承当前 profile 的公共目录，`[]` 不授予额外目录。本 frontend 的整个 app 始终自动提供只读访问，无需另行配置。用户配置清单替换默认的额外清单；common 范围只能在 /mnt/common/<当前 frontend_id>/app 内，config、frontend 根、父目录和其他 frontend 均被拒绝。服务状态、凭据和整个用户根目录不能配置为公共目录。
 - `sandbox.enabled`：是否将该用户的 bash 放入 bwrap；启用时工作目录分别使用读写挂载、只读挂载或不挂载。基础运行库仍由 frontends.json 中该 frontend 的 runtime.sandbox.readonly_roots 提供，它们不是用户公共资料目录。frontend 桶必须保持 true，默认或用户覆盖设置 false 都会拒绝启动。
 - `sandbox.network`：bwrap 是否共享宿主网络；只在 sandbox.enabled=true 时生效。
 - `session.enabled`：是否安装用户 session 权限及启用 native 工具路径 hook；frontend 桶必须保持 true，不能关闭目录检查。
@@ -141,7 +143,9 @@ K8s 示例：k8s/opencode/backend.yaml。CU 的 ServiceAccount 只授予当前�
 
 frontends.json 的 control.bucket_pool 配置镜像、命名空间、max_users_per_bucket、启动超时、扫描间隔、PVC 名称与节点选择器。两种服务挂载同一份 frontends.json，不生成独立 runtime 配置。配置更改需要重启 CU，并在 bucket 重建时生效。
 
-服务器存储由 k8s/opencode/storage.yaml 提供：data PVC 在 CU 挂载 /mnt/env，在 bucket 仅挂载 workspaces/<frontend_id> 子目录到 /mnt/env/workspaces/<frontend_id>；source PVC → /mnt/source（只读），common PVC 在 CU 挂载 /mnt/common，在 bucket 分别挂载 /mnt/common/<frontend_id>/app、/mnt/common/<frontend_id>/config 和单独的 frontends.json（只读）。物理目录统一为 /data/opencode_backend_k8s/{data,source,common}，默认用户工作目录为 /mnt/env/workspaces/<frontend>/<user>，identity_hash 布局为 /mnt/env/workspaces/<frontend>/<identity_hash>。storage.yaml 通过 storage_backend 选择 local 或 NFS；服务 SQLite/OpenCode 状态另用本地 state PVC → /data。每次收到请求和真正开始执行前均检查工作目录，缺失时重建，并补齐 output/scratch；可选模板来自 /mnt/common/<frontend_id>/app/templates，不覆盖已有文件。公共目录同时列入用户默认权限和 bwrap 只读挂载。
+服务器存储由 k8s/opencode/storage.yaml 提供：data PVC 在 CU 挂载 /mnt/env，在 bucket 仅挂载 workspaces/<frontend_id> 子目录到 /mnt/env/workspaces/<frontend_id>；source PVC → /mnt/source（只读），common PVC 在 CU 挂载 /mnt/common，在 bucket 分别挂载 /mnt/common/<frontend_id>/app、/mnt/common/<frontend_id>/config 和单独的 frontends.json（只读）。物理目录统一为 /data/opencode_backend_k8s/{data,source,common}，默认用户工作目录为 /mnt/env/workspaces/<frontend>/<user>，identity_hash 布局为 /mnt/env/workspaces/<frontend>/<identity_hash>。storage.yaml 通过 storage_backend 选择 local 或 NFS；服务 SQLite/OpenCode 状态另用本地 state PVC → /data。每次收到请求和真正开始执行前均检查工作目录，缺失时重建，并补齐 output/scratch；不再复制模板；在各 frontend 的 opencode-server.json 中用 instructions 指定容器内绝对路径 /mnt/common/<frontend_id>/app/templates/AGENTS.md。OpenCode server 在 context_root 启动，但每个会话的创建、消息、取消等请求都显式使用该用户工作目录作为 directory，按用户与 chat_id 创建或复用 session；共享规则从 instructions 指定文件加载；用户目录已有的 AGENTS.md 仍由 OpenCode 额外加载。公共目录同时列入用户默认权限和 bwrap 只读挂载。
+
+升级前在固定 context_root 中创建的旧原生会话不能直接当作用户目录会话复用。复用时会核对 OpenCode 返回的 directory，不匹配则返回 SESSION_WORKSPACE_MISMATCH；旧记录保留，客户端需使用新 chat_id 创建正确目录下的会话。
 
 完整部署步骤、节点权限、配置文件、NodePort 与 local/NFS 切换见 [Kubernetes 部署说明](../k8s/opencode/README.md)。
 
@@ -181,6 +185,6 @@ source 在每个服务中统一只读挂载为 /mnt/source；CU/runtime/Web 在�
 
 ## 按 frontend 隔离业务公共资料
 
-默认业务公共目录为 `/mnt/common/{frontend_id}/app`，由当前请求身份展开。运行配置由 frontends.json 注入绑定 ID，错误 frontend 的请求在建工作区/登记任务前被拒绝。用户权限和 profile 可以缩小本 frontend 的 app 范围，不能扩展到 config、frontend 根、common 根目录、父目录或其他 frontend。系统通用脚本 `/mnt/source/public` 保持只读，禁止在其中放 frontend 私有资料。
+默认业务公共目录为 `/mnt/common/{frontend_id}/app`，由当前请求身份展开。运行配置由 frontends.json 注入绑定 ID，错误 frontend 的请求在建工作区/登记任务前被拒绝。本 frontend 的 app 始终整棵共享给所属 bucket；用户权限和 profile 仅控制额外公共目录，不能扩展到 config、frontend 根、common 根目录、父目录或其他 frontend。系统通用脚本 `/mnt/source/public` 保持只读，禁止在其中放 frontend 私有资料。
 
 OpenCode skills.paths 中的 `/mnt/common/{frontend_id}/app/skills` 在启动时展开，越界路径拒绝启动，避免全局技能扫描读到其他 frontend 的说明。动态 bucket 分开挂载本 frontend 的 app 和 config，不挂载 frontend 根或整个 common；服务配置 frontends.json 使用独立的只读文件挂载。原生文件工具、session 路径规则和 bwrap 使用同一公共范围。相关部署准备与旧 session/挂载迁移步骤见 Kubernetes 部署说明。

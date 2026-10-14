@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -24,9 +25,13 @@ def control(tmp_path):
 async def test_keyless_routing_idempotency_and_result_ownership(control):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
         body = {"user_id": "u", "content": "hello", "request_id": "r",
-                "metadata": {"frontend_id": "forged", "usr_id": "someone-else"}}
+                "metadata": {"frontend_id": "forged", "user_id": "someone-else"}}
         first = await client.post("/inbound/web", json=body)
         assert first.status_code == 200
+        assert first.json()["identity_id"]
+        assert "instance_id" not in first.json()
+        assert "conversation_id" not in first.json()
+        assert first.json()["chat_id"] == "default"
         again = await client.post("/inbound/web", json=body)
         assert again.json() == first.json()
         assert len(control.state.service.db.pending("b")) == 1
@@ -34,6 +39,8 @@ async def test_keyless_routing_idempotency_and_result_ownership(control):
         assert changed.status_code == 409
         row = control.state.service.db.get("request", "r")
         assert row["submit"]["identity"] == {"frontend_id": "web", "user_id": "u"}
+        assert row["submit"]["chat_id"] == "default"
+        assert "conversation_id" not in row["submit"]
         with pytest.raises(PermissionError):
             await control.state.service.on_event("wrong-bucket", Envelope(type="request.completed",
                 bucket_id="wrong-bucket", request_id="r", payload={"request_id": "r", "status": "completed"}))
@@ -42,6 +49,20 @@ async def test_keyless_routing_idempotency_and_result_ownership(control):
         response = await client.get("/requests/web/r")
         assert response.json()["content"] == "done"
         assert (await client.get("/requests/other/r")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_legacy_user_id_is_only_an_input_alias(control):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
+        body = {"frontend_id": "web", "usr_id": "alice", "content": "hello", "request_id": "legacy"}
+        result = await client.post("/api/message", json=body)
+        assert result.status_code == 200
+        assert result.json()["user_id"] == "alice"
+        assert "usr_id" not in result.json()
+        conflict = await client.post("/api/message", json={**body, "user_id": "bob"})
+        assert conflict.status_code == 400
+        cancelled = await client.post("/api/cancel", json={"frontend_id": "web", "usr_id": "alice"})
+        assert cancelled.json()["request_ids"] == ["legacy"]
 
 
 @pytest.mark.asyncio
@@ -94,7 +115,7 @@ async def test_qxt_input_does_not_use_unguarded_legacy_download(control):
         raise AssertionError("Inbound references must not be downloaded")
 
     service.channels.parsers["web"] = SimpleNamespace(prepare_inbound_event=forbidden_legacy_helper)
-    await service.dispatch_channel("web", {"event": {"usr_id": "alice", "content": "file",
+    await service.dispatch_channel("web", {"event": {"user_id": "alice", "content": "file",
         "attachments": [{"url": "https://storage.example/file.txt", "filename": "file.txt"}]}})
     assert service.db.records("request")[0]["submit"]["attachments"][0]["filename"] == "file.txt"
 
@@ -160,3 +181,42 @@ async def test_im_delivery_sends_object_links_without_file_reupload(control):
     await channels.deliver(row, result)
     assert delivered[0]["attachments"] == []
     assert "https://objects.example/report.pdf" in delivered[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cu_keeps_all_events_but_delivers_only_final_message(control):
+    service = control.state.service
+    await service.submit("web", Inbound(user_id="alice", chat_id="alice-chat", content="hello", request_id="r"))
+    delivered, completed = [], asyncio.Event()
+
+    async def deliver(row, result):
+        delivered.append((row["chat_id"], result.content))
+        completed.set()
+
+    service.channels.deliver = deliver
+    task = asyncio.create_task(service.deliveries())
+    try:
+        for i, kind in enumerate(["message.part.delta", "session.idle", "tool.execute.before", "future.event"]):
+            raw = Envelope(type="opencode.event", bucket_id="b", request_id="r" if i < 3 else "",
+                payload={"event": {"type": kind, "properties": {"text": "intermediate reasoning/tool output"}}})
+            await service.on_event("b", raw)
+            await service.on_event("b", raw)  # Replay does not duplicate the record.
+        await service.on_event("b", Envelope(type="response.delta", bucket_id="b", request_id="r",
+            payload={"revision": 1, "content": "partial response"}))
+        await asyncio.sleep(0.25)
+        assert delivered == []
+        assert not service.db.get("request", "r").get("result")
+        assert len(service.db.records("opencode_event")) == 4
+        await service.on_event("b", Envelope(type="request.completed", bucket_id="b", request_id="r",
+            payload={"request_id": "r", "status": "completed", "content": "final answer"}))
+        await asyncio.wait_for(completed.wait(), 2)
+        await service.on_event("b", Envelope(type="opencode.event", bucket_id="b", request_id="r",
+            payload={"event": {"type": "session.idle"}}))
+        await asyncio.sleep(0.25)
+        assert delivered == [("alice-chat", "final answer")]
+        assert len(service.db.records("opencode_event")) == 5
+        with pytest.raises(PermissionError):
+            await service.on_event("other", Envelope(type="opencode.event", bucket_id="other", request_id="r"))
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

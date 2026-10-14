@@ -89,6 +89,16 @@ class OpenCodeConfig(StrictModel):
     dependency_dir: Path = Path("/mnt/source/opencode_plugin")
 
 
+class SessionLoggingConfig(StrictModel):
+    enabled: bool = True
+    text: bool = True
+    reasoning: bool = True
+    tools: bool = True
+    tool_arguments: bool = True
+    tool_output: bool = True
+    max_chars: int = Field(default=16000, ge=256, le=200000)
+
+
 class SandboxConfig(StrictModel):
     binary: Path = Path("/usr/bin/bwrap")
     readonly_roots: list[Path] = Field(default_factory=lambda: [
@@ -130,12 +140,12 @@ class RuntimeSettings(StrictModel):
     state_root: Path = Path("/data/runtime")
     workspace_root: Path = Path("/mnt/env/workspaces")
     workspace_layout: Literal["identity_hash", "frontend_user"] = "identity_hash"
-    workspace_template_root: Path | None = None
     common_root: Path = Path("/mnt/common")
     rpc_port: int = Field(default=4097, ge=1024, le=65535)
     health_port: int = Field(default=8090, ge=1024, le=65535)
     opencode: OpenCodeConfig = Field(default_factory=OpenCodeConfig)
     permissions_file: Path | None = None
+    logging_file: Path | None = None
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     limits: Limits = Field(default_factory=Limits)
     profiles: dict[str, Profile] = Field(min_length=1)
@@ -159,7 +169,7 @@ class RuntimeConfig(RuntimeSettings):
         if self.frontend_id:
             frontend_segment(self.frontend_id)
             for obj, name in [(self.opencode, "config_file"), (self, "permissions_file"),
-                              (self, "workspace_template_root")]:
+                              (self, "logging_file")]:
                 value = getattr(obj, name)
                 if value is not None:
                     setattr(obj, name, Path(value.as_posix().replace("{frontend_id}", self.frontend_id)))
@@ -168,6 +178,8 @@ class RuntimeConfig(RuntimeSettings):
                      self.opencode.plugin_file, self.opencode.dependency_dir]
         if self.permissions_file:
             protected.append(self.permissions_file)
+        if self.logging_file:
+            protected.append(self.logging_file)
         if self.frontend_config_file and self.frontend_config_file.resolve().is_relative_to(workspace):
             raise ValueError("frontend config must not be inside workspace_root")
         if self.storage:
@@ -253,7 +265,6 @@ class DeploymentProfile(Profile):
 
 class DeploymentRuntimeSettings(RuntimeSettings):
     workspace_layout: Literal["identity_hash", "frontend_user"] = "frontend_user"
-    workspace_template_root: Path | None = Path("/mnt/common/{frontend_id}/app/templates")
     permissions_file: Path | None = Path("/mnt/common/{frontend_id}/config/user-permissions.yaml")
     profiles: dict[str, DeploymentProfile] = Field(min_length=1)
 
@@ -261,7 +272,7 @@ class DeploymentRuntimeSettings(RuntimeSettings):
 class FrontendSettings(StrictModel):
     """Routing and runtime settings belonging to one frontend registry entry."""
 
-    id: str = Field(min_length=1)
+    frontend_id: str = Field(min_length=1, validation_alias=AliasChoices("frontend_id", "id"))
     provider: Literal["web", "qxt", "feishu"]
     send_msg_url: str = ""
     attachment_storage: StorageConfig | None = None
@@ -273,7 +284,7 @@ class FrontendSettings(StrictModel):
 
     @model_validator(mode="after")
     def profile_exists(self) -> FrontendSettings:
-        frontend_segment(self.id)
+        frontend_segment(self.frontend_id)
         if self.profile_id not in self.runtime.profiles:
             raise ValueError("profile_id must exist in runtime.profiles")
         return self
@@ -292,7 +303,7 @@ class FrontendConfig(FrontendSettings):
                 raise ValueError("host-mounted buckets require node_selector for the storage node")
             if not self.runtime.state_root.is_relative_to(Path("/data")) or self.runtime.state_root == Path("/data"):
                 raise ValueError("dynamic runtime state_root must be below /data")
-            workspace_volume_subpath(self.runtime.workspace_root, self.id)
+            workspace_volume_subpath(self.runtime.workspace_root, self.frontend_id)
             if self.control.bucket_ids:
                 raise ValueError("dynamic pool does not use static bucket_ids")
         return self
@@ -302,18 +313,18 @@ class FrontendConfig(FrontendSettings):
         frontend = Frontend(provider=self.provider, profile_id=self.profile_id,
                             channel_config=channel,
                             attachment_url_prefix=self.attachment_url_prefix)
-        return ControlConfig(**self.control.model_dump(), frontends={self.id: frontend},
+        return ControlConfig(**self.control.model_dump(), frontends={self.frontend_id: frontend},
                              runtime_template=self.runtime,
                              instance_idle_ttl_seconds=self.instance_idle_ttl_seconds)
 
     def runtime_config(self, path: Path, bucket_id: str | None = None) -> RuntimeConfig:
         values = self.runtime.model_dump()
-        own_root = frontend_common_root(self.runtime.common_root, self.id)
+        own_root = frontend_common_root(self.runtime.common_root, self.frontend_id)
 
         def frontend_path(value: Path | None, directory: str) -> Path | None:
             if value is None:
                 return None
-            text = value.as_posix().replace("{frontend_id}", self.id)
+            text = value.as_posix().replace("{frontend_id}", self.frontend_id)
             if value.as_posix().startswith("/mnt/common/{frontend_id}/") or value.as_posix() == "/mnt/common/{frontend_id}":
                 text = self.runtime.common_root.as_posix() + text[len("/mnt/common"):]
             target = Path(text)
@@ -329,7 +340,7 @@ class FrontendConfig(FrontendSettings):
 
         values["opencode"]["config_file"] = frontend_path(self.runtime.opencode.config_file, "config")
         values["permissions_file"] = frontend_path(self.runtime.permissions_file, "config")
-        values["workspace_template_root"] = frontend_path(self.runtime.workspace_template_root, "app")
+        values["logging_file"] = frontend_path(self.runtime.logging_file, "config")
         storage = self.attachment_storage
         if storage:
             storage = storage.model_copy(update={name: frontend_path(getattr(storage, name), "config")
@@ -344,8 +355,8 @@ class FrontendConfig(FrontendSettings):
             pool = self.control.bucket_pool
             if not bucket_id or not re.fullmatch(re.escape(pool.name_prefix) + r"-[0-9a-f]{12}", bucket_id):
                 raise ValueError("dynamic runtime requires a scheduler-issued --bucket-id")
-            values["state_root"] = self.runtime.state_root / self.id / bucket_id
-            return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.id, storage=storage,
+            values["state_root"] = self.runtime.state_root / self.frontend_id / bucket_id
+            return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id, storage=storage,
                                  frontend_config_file=path.resolve())
         buckets = self.control.bucket_ids
         if bucket_id is None:
@@ -354,7 +365,7 @@ class FrontendConfig(FrontendSettings):
             bucket_id = next(iter(buckets))
         if bucket_id not in buckets:
             raise ValueError("bucket ID is not registered in control.bucket_ids")
-        return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.id,
+        return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id,
                              storage=storage,
                              frontend_config_file=path.resolve())
 
@@ -367,7 +378,7 @@ class FrontendsConfig(StrictModel):
 
     @model_validator(mode="after")
     def unique_frontends(self) -> FrontendsConfig:
-        ids = [frontend.id for frontend in self.frontends]
+        ids = [frontend.frontend_id for frontend in self.frontends]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate frontend id")
         if len(ids) > 1 and not self.control.bucket_pool:
@@ -376,18 +387,18 @@ class FrontendsConfig(StrictModel):
 
     def frontend(self, frontend_id: str | None) -> FrontendConfig:
         if frontend_id is None and len(self.frontends) == 1:
-            frontend_id = self.frontends[0].id
-        entry = next((frontend for frontend in self.frontends if frontend.id == frontend_id), None)
+            frontend_id = self.frontends[0].frontend_id
+        entry = next((frontend for frontend in self.frontends if frontend.frontend_id == frontend_id), None)
         if entry is None:
             raise ValueError("--frontend-id must identify a registered frontend")
         return FrontendConfig.model_validate({**entry.model_dump(), "control": self.control.model_dump()})
 
     def control_config(self) -> ControlConfig:
-        selected = [self.frontend(f.id) for f in self.frontends]
+        selected = [self.frontend(f.frontend_id) for f in self.frontends]
         config = selected[0].control_config()
-        config.frontends = {f.id: f.control_config().frontends[f.id] for f in selected}
-        config.runtime_templates = {f.id: f.runtime for f in selected}
-        config.frontend_idle_ttl_seconds = {f.id: f.instance_idle_ttl_seconds for f in selected}
+        config.frontends = {f.frontend_id: f.control_config().frontends[f.frontend_id] for f in selected}
+        config.runtime_templates = {f.frontend_id: f.runtime for f in selected}
+        config.frontend_idle_ttl_seconds = {f.frontend_id: f.instance_idle_ttl_seconds for f in selected}
         return config
 
     def runtime_config(self, path: Path, bucket_id: str | None = None,

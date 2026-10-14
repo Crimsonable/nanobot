@@ -25,10 +25,10 @@ def workspaces(tmp_path, request):
         runtime = Runtime(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
         for user in ["alice", "bob"]:
             identity = Identity(frontend_id=frontend, user_id=user)
-            submit = Submit(identity=identity, request_id=identity.key, conversation_id=identity.key,
+            submit = Submit(identity=identity, request_id=identity.identity_id, chat_id="default",
                 profile_id="p", content="hello", deadline_at=time.time() + 60)
             runtime.db.put("run", submit.request_id, {"request_id": submit.request_id,
-                "status": "running", "session_id": identity.key,
+                "status": "running", "session_id": identity.identity_id,
                 "submit": submit.model_dump(mode="json"), "artifacts": []})
             workspace = runtime.workspace(submit)
             assert workspace.parent == tmp_path / "workspaces" / frontend
@@ -44,7 +44,7 @@ def test_workspace_scope_is_frontend_and_user(workspaces):
     for runtime, submit, workspace in workspaces:
         own_file = workspace / "output/report.txt"
         for tool in ["read", "write"]:
-            result = runtime.authorize(submit.identity.key, tool, tool, {"filePath": str(own_file)})
+            result = runtime.authorize(submit.identity.identity_id, tool, tool, {"filePath": str(own_file)})
             assert result["args"]["filePath"] == str(own_file)
         for _, other, other_workspace in workspaces:
             if other.identity == submit.identity:
@@ -56,7 +56,7 @@ def test_workspace_scope_is_frontend_and_user(workspaces):
                 ("list", {"path": str(workspace.parent)}),
             ]:
                 with pytest.raises(PermissionError):
-                    runtime.authorize(submit.identity.key, "other", tool, args)
+                    runtime.authorize(submit.identity.identity_id, "other", tool, args)
             if other.identity.frontend_id != submit.identity.frontend_id:
                 with pytest.raises(PermissionError, match="another frontend"):
                     runtime.workspace(other)
@@ -67,7 +67,7 @@ async def test_attachment_publication_cannot_use_other_frontend_workspace(worksp
     for runtime, submit, workspace in workspaces:
         uploads = []
 
-        async def upload(identity, upload_id, path, attachment):
+        async def upload(identity, attachment_id, path, attachment):
             uploads.append((identity, path.read_text()))
             return attachment.model_copy(update={"url": "https://files.test/report.txt"})
 
@@ -75,12 +75,12 @@ async def test_attachment_publication_cannot_use_other_frontend_workspace(worksp
         foreign = next(path for _, other, path in workspaces
                        if other.identity.frontend_id != submit.identity.frontend_id
                        and other.identity.user_id == submit.identity.user_id)
-        ticket = runtime.authorize(submit.identity.key, "foreign", "publish_attachment",
+        ticket = runtime.authorize(submit.identity.identity_id, "foreign", "publish_attachment",
             {"files": [{"path": str(foreign / "output/report.txt")}]})
         with pytest.raises(PermissionError):
             await runtime.publish(ticket["ticket"])
         assert uploads == []
-        ticket = runtime.authorize(submit.identity.key, "own", "publish_attachment",
+        ticket = runtime.authorize(submit.identity.identity_id, "own", "publish_attachment",
             {"files": [{"path": "output/report.txt"}]})
         result = await runtime.publish(ticket["ticket"])
         assert result["status"] == "queued_for_reply"
