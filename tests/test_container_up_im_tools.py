@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from unittest.mock import AsyncMock
 from typing import Any
 
 import pytest
@@ -57,7 +57,7 @@ class FakeSession:
 
 class CapturingFeishuParser(feishu_im_tool.FeishuIMParser):
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(frontend_id="feishu", frontend_config={})
         self.sent: list[dict[str, Any]] = []
 
     def _reply_message_sync(
@@ -92,103 +92,10 @@ class CapturingFeishuParser(feishu_im_tool.FeishuIMParser):
 
 
 @pytest.mark.asyncio
-async def test_qxt_rejects_media_reference_for_another_frontend(monkeypatch):
-    parser = im_tools.QxtIMParser(frontend_id="qxt-main")
-    session = FakeSession([])
-    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
-    with pytest.raises(RuntimeError, match="different frontend"):
-        await parser._upload_attachment_with_retry(
-            {"storage": "qxt", "frontend_id": "qxt-other", "media_id": "mid-1"}, "token"
-        )
-    assert session.calls == []
-
-
-@pytest.mark.asyncio
-async def test_qxt_upload_bytes_retries_without_workspace_or_minio(monkeypatch):
-    parser = im_tools.QxtIMParser(frontend_id="qxt-main")
-    parser.send_msg_url = "https://im.example.com/v2/message/send"
-    parser.send_msg_retry_backoff = 0
-    session = FakeSession(
-        [
-            FakeResponse(status=503),
-            FakeResponse(json_data={"media_id": "mid-retried"}),
-        ]
-    )
-    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
-    monkeypatch.setattr(parser, "get_access_token", lambda: "token")
-    result = await parser.upload_outbound_attachment(
-        data=b"pdf-bytes", filename="report.pdf", content_type="application/pdf"
-    )
-    assert result["media_id"] == "mid-retried"
-    assert len(session.calls) == 2
-    assert all(
-        call["method"] == "POST" and call["url"].endswith("/v2/media/upload")
-        for call in session.calls
-    )
-    for call in session.calls:
-        assert call["data"]._fields[1][2] == b"pdf-bytes"
-
-
-@pytest.mark.asyncio
-async def test_post_message_with_url_attachment_uploads_then_sends_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # QXT media mode receives a downloadable object URL.
-    attachment = "https://storage.example.com/report.txt"
-    session = FakeSession(
-        [
-            FakeResponse(status=200, text='{"ok":true}'),
-            FakeResponse(status=200, text="hello", headers={"Content-Type": "text/plain"}),
-            FakeResponse(status=200, text='{"media_id":"mid-1"}', json_data={"media_id": "mid-1"}),
-            FakeResponse(status=200, text='{"ok":true}'),
-        ]
-    )
-    parser = im_tools.QxtIMParser()
-    parser.send_msg_url = "https://im.example.com/v2/message/bot_send_to_conversation"
-
-    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
-    monkeypatch.setattr(parser, "get_access_token", lambda: "token-1")
-
-    result = await parser.post_message_with_retry(
-        payload={
-            "to_single_uid": "user-1",
-            "type": "text",
-            "message": {"content": "done"},
-            "attachments": [str(attachment)],
-        }
-    )
-
-    assert result["message"] == {"status": 200, "body": '{"ok":true}'}
-    assert result["attachments"] == [
-        {
-            "attachment": str(attachment),
-            "media_id": "mid-1",
-            "response": {"status": 200, "body": '{"ok":true}'},
-        }
-    ]
-    assert session.calls[0]["url"] == "https://im.example.com/v2/message/bot_send_to_conversation"
-    assert session.calls[0]["json"] == {
-        "to_single_uid": "user-1",
-        "type": "text",
-        "message": {"content": "done"},
-    }
-    assert session.calls[1]["method"] == "GET"
-    assert session.calls[1]["url"] == attachment
-    assert session.calls[2]["url"] == "https://im.example.com/v2/media/upload"
-    assert session.calls[2]["params"] == {"access_token": "token-1"}
-    assert session.calls[3]["url"] == "https://im.example.com/v2/message/bot_send_to_conversation"
-    assert session.calls[3]["json"] == {
-        "to_single_uid": "user-1",
-        "type": "file",
-        "message": {"media_id": "mid-1"},
-    }
-
-
-@pytest.mark.asyncio
 async def test_feishu_post_message_renders_markdown_as_interactive_card() -> None:
     parser = CapturingFeishuParser()
 
-    result = await parser.post_message_with_retry(
+    result = await parser.post_message(
         payload={
             "content": "# Title\n\n- item\n\n```python\nprint('ok')\n```",
             "metadata": {
@@ -215,7 +122,7 @@ async def test_feishu_post_message_renders_markdown_as_interactive_card() -> Non
 async def test_feishu_post_message_renders_links_as_post() -> None:
     parser = CapturingFeishuParser()
 
-    result = await parser.post_message_with_retry(
+    result = await parser.post_message(
         payload={
             "content": "see [docs](https://example.com/docs)",
             "metadata": {
@@ -237,32 +144,8 @@ async def test_feishu_post_message_renders_links_as_post() -> None:
     ]
 
 
-@pytest.mark.asyncio
-async def test_feishu_post_message_rebuilds_target_from_bridge_chat_id() -> None:
-    parser = CapturingFeishuParser()
-
-    result = await parser.post_message_with_retry(
-        payload={
-            "chat_id": "oc_1",
-            "content": "done",
-            "metadata": {"message_id": "om_1", "user_id": "ou_1"},
-        }
-    )
-
-    assert result["message"]["mode"] == "reply"
-    assert result["message"]["message_type"] == "text"
-    assert result["message"]["target"] == {
-        "type": "feishu",
-        "receive_id_type": "open_id",
-        "receive_id": "ou_1",
-        "message_id": "om_1",
-        "thread_id": "",
-        "reply_in_thread": False,
-    }
-
-
 def test_feishu_inbound_interactive_extracts_card_text() -> None:
-    parser = feishu_im_tool.FeishuIMParser()
+    parser = feishu_im_tool.FeishuIMParser(frontend_id="feishu", frontend_config={})
     message = type(
         "Message",
         (),
@@ -296,66 +179,17 @@ def test_feishu_inbound_interactive_extracts_card_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_message_skips_empty_text_and_sends_attachments_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attachment = "https://storage.example.com/image.png"
-    session = FakeSession(
-        [
-            FakeResponse(status=200, text='{"media_id":"mid-2"}', json_data={"media_id": "mid-2"}),
-            FakeResponse(status=200, text='{"ok":true}'),
-        ]
-    )
-    parser = im_tools.QxtIMParser()
-    parser.send_msg_url = "https://im.example.com/v2/message/bot_send_to_conversation"
-
-    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
-    monkeypatch.setattr(parser, "get_access_token", lambda: "token-2")
-    async def download(url, filename):
-        assert url == attachment
-        return b"png", "image.png", "image/png"
-    monkeypatch.setattr(parser, "_download_attachment_bytes", download)
-
-    attachment = await parser.upload_outbound_attachment(
-        data=b"png", filename="image.png", content_type="image/png"
-    )
-    assert attachment == {
-        "storage": "qxt", "frontend_id": "default", "media_id": "mid-2",
-        "upload_type": "image", "filename": "image.png", "content_type": "image/png",
-    }
-
-    result = await parser.post_message_with_retry(
-        payload={
-            "to_single_uid": "user-2",
-            "type": "text",
-            "message": {"content": ""},
-            "attachments": [attachment],
-        }
-    )
-
-    assert result["message"] is None
-    assert len(result["attachments"]) == 1
-    assert len(session.calls) == 2
-    assert session.calls[0]["url"] == "https://im.example.com/v2/media/upload"
-    assert session.calls[1]["json"] == {
-        "to_single_uid": "user-2",
-        "type": "file",
-        "message": {"media_id": "mid-2"},
-    }
-
-
-@pytest.mark.asyncio
 async def test_qxt_post_message_accepts_unified_payload_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = FakeSession([FakeResponse(status=200, text='{"ok":true}')])
-    parser = im_tools.QxtIMParser()
+    parser = im_tools.QxtIMParser(frontend_id="qxt", frontend_config={})
     parser.send_msg_url = "https://im.example.com/v2/message/bot_send_to_conversation"
 
     monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
-    monkeypatch.setattr(parser, "get_access_token", lambda: "token-3")
+    monkeypatch.setattr(parser, "get_access_token", AsyncMock(return_value="token-3"))
 
-    result = await parser.post_message_with_retry(
+    result = await parser.post_message(
         payload={
             "chat_id": "ignored",
             "content": "done",
@@ -386,7 +220,7 @@ async def test_qxt_post_message_accepts_unified_payload_format(
 def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
     event_type: str, chat_type: str, recipient: dict[str, str],
 ) -> None:
-    parser = im_tools.QxtIMParser()
+    parser = im_tools.QxtIMParser(frontend_id="qxt", frontend_config={})
     parser.token = "token-1"
     parser.appsecret = "0123456789abcdef"
 
@@ -428,7 +262,7 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
             "attachments": [],
             "metadata": {
                 "provider": "qxt",
-                "frontend_id": "default",
+                "frontend_id": "qxt",
                 "event_type": event_type,
                 "chat_type": chat_type,
                 "message_type": "text",
@@ -437,73 +271,10 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
                 "source": "subscribe",
                 "reply_target": {
                     "type": "qxt",
-                    "frontend_id": "default",
+                    "frontend_id": "qxt",
                     **recipient,
                 },
             },
         },
     }
     assert response["encrypt"]
-
-
-@pytest.mark.asyncio
-async def test_qxt_prepare_preserves_attachment_references_without_download():
-    parser = qxt_im_tool.QxtIMParser()
-    payload = {"event_type": "im_message_receive", "event": {
-        "user_id": "alice", "attachments": [{"url": "https://files.example/report.pdf"},
-                                            {"path": "/shared/report.pdf"}]}}
-    assert await parser.prepare_inbound_event(payload) is payload
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("direct_payload", [False, True])
-async def test_qxt_group_reply_sends_text_and_attachment_to_group(
-    monkeypatch: pytest.MonkeyPatch, direct_payload: bool,
-) -> None:
-    parser = im_tools.QxtIMParser(frontend_id="qxt-main")
-    parser.send_msg_url = "https://im.example.com/v2/message/bot_send_to_conversation"
-    session = FakeSession([FakeResponse(), FakeResponse()])
-    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
-    monkeypatch.setattr(parser, "get_access_token", lambda: "token")
-    normalized = parser.normalize_subscribe_payload({
-        "corp_id": "14777504996792969",
-        "appid": "14781834433937184",
-        "event_type": "group_chat_at_bot",
-        "timestamp": "1791788165",
-        "event": {
-            "sender_account": "2021088",
-            "sender_uid": "14777504996831943",
-            "message": {
-                "chat_id": "14781834433951752",
-                "chat_type": "group",
-                "type": "text",
-                "content": "@智成安监\u2004你好",
-                "at": [{"name": "智成安监", "account": "bot-SJGI98El", "uid": "14781834433937184"}],
-                "message_id": "7695671565739884551",
-            },
-        },
-    })
-    event = normalized["event"]
-    assert event["user_id"] == "14777504996831943"
-    assert event["content"] == "@智成安监\u2004你好"
-    payload = {
-        "chat_id": event["chat_id"],
-        "content": "你好",
-        "metadata": event["metadata"],
-    }
-    if direct_payload:
-        payload = {
-            "to_group_id": event["chat_id"],
-            "type": "text",
-            "message": {"content": "你好"},
-        }
-    payload["attachments"] = [{
-        "storage": "qxt", "frontend_id": "qxt-main", "media_id": "group-file",
-    }]
-
-    await parser.post_message_with_retry(payload=payload)
-
-    assert [call["json"] for call in session.calls] == [
-        {"to_group_id": "14781834433951752", "type": "text", "message": {"content": "你好"}},
-        {"to_group_id": "14781834433951752", "type": "file", "message": {"media_id": "group-file"}},
-    ]

@@ -22,13 +22,7 @@
       },
       "instance_idle_ttl_seconds": 3600,
       "runtime": {
-        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json",
-        "profiles": {
-          "reports": {
-            "model": "intranet/your-model",
-            "instructions": "Read the relevant SKILL.md in the public directories before generating reports. Save generated files in output and publish them with publish_attachment."
-          }
-        }
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
       }
     }
   ]

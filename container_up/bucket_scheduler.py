@@ -1,7 +1,4 @@
-"""Database-backed bucket pool, adapted from the original reservation/release mechanism.
-
-Capacity counts distinct users, but only whole buckets have a lifecycle.
-"""
+"""Capacity-based placement with bindings only while a user has outstanding work."""
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +22,9 @@ class BucketScheduler:
         self.lock = asyncio.Lock()
         self.start_locks: dict[str, asyncio.Lock] = {}
         self.pins: dict[str, int] = {}
+        self.reservations: dict[str, int] = {}
         self.task = None
+        self.stopped: dict[str, asyncio.Event] = {}
 
     def connected(self, bucket_id: str) -> bool:
         peer = self.service.peers.get(bucket_id)
@@ -33,17 +32,6 @@ class BucketScheduler:
 
     def bindings(self, bucket_id: str) -> list[dict]:
         return [b for b in self.db.records("binding") if b.get("bucket_id") == bucket_id]
-
-    def frontend_for(self, bucket: dict) -> str | None:
-        if bucket.get("frontend_id"):
-            return bucket["frontend_id"]
-        # Old single-frontend buckets can be identified from their durable bindings.
-        owners = {b["identity"]["frontend_id"] for b in self.bindings(bucket["bucket_id"])}
-        if len(owners) == 1:
-            return next(iter(owners))
-        if not owners and len(self.service.config.frontends) == 1:
-            return next(iter(self.service.config.frontends))
-        return None
 
     def busy(self, bucket_id: str) -> bool:
         return bool(self.pins.get(bucket_id) or any(
@@ -54,59 +42,65 @@ class BucketScheduler:
         if bucket:
             self.db.put("bucket", bucket_id, {**bucket, "last_active_at": time.time()})
 
+    def release(self, identity_id: str) -> None:
+        if self.reservations.get(identity_id):
+            return
+        if any(not row.get("result") and
+               Identity.model_validate(row["submit"]["identity"]).identity_id == identity_id
+               for row in self.db.records("request")):
+            return
+        self.db.delete("binding", identity_id)
+
     def reserve(self, identity: Identity) -> dict:
         """Called under lock; mapping and capacity reservation commit together."""
         with self.db.transaction():
+            for binding in self.db.records("binding"):
+                self.release(binding["identity_id"])
             existing = self.db.get("binding", identity.identity_id)
-            if existing and existing.get("bucket_id"):
+            if existing:
                 bucket = self.db.get("bucket", existing["bucket_id"])
-                if bucket and bucket["status"] in {"creating", "running"}:
-                    if self.frontend_for(bucket) != identity.frontend_id:
-                        raise ValueError("bucket frontend ownership mismatch")
-                    self.touch(bucket["bucket_id"])
-                    return existing
-                if self.busy(existing["bucket_id"]):
-                    raise RuntimeError("previous bucket still has unfinished requests")
+                if not bucket or bucket["frontend_id"] != identity.frontend_id:
+                    raise ValueError("bucket frontend ownership mismatch")
+                self.touch(bucket["bucket_id"])
+                return existing
             runtime = self.service.config.runtime_for(identity.frontend_id)
-            workspace = str(workspace_path(runtime.workspace_root, identity, runtime.workspace_layout))
+            workspace = str(workspace_path(runtime.workspace_root, identity))
             # The original sanitizer can collide. Never grant two identities the same directory.
             owner = self.db.get("workspace_owner", workspace)
             if owner and owner["identity_id"] != identity.identity_id:
                 raise ValueError("workspace path collides with another user")
             self.db.put("workspace_owner", workspace, {"identity_id": identity.identity_id})
             candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
-                          and self.frontend_for(b) == identity.frontend_id
+                          and (b["status"] == "creating" or self.connected(b["bucket_id"]))
+                          and b["frontend_id"] == identity.frontend_id
                           and len(self.bindings(b["bucket_id"])) < self.config.max_users_per_bucket]
             if candidates:
                 bucket = min(candidates, key=lambda b: (not self.connected(b["bucket_id"]),
                                                         len(self.bindings(b["bucket_id"]))))
             else:
-                # Reuse an empty, scaled-down workload before allocating another one.
-                bucket = next((b for b in self.db.records("bucket") if b["status"] == "idle"
-                               and self.frontend_for(b) == identity.frontend_id), None)
-                if bucket is None:
-                    bucket_id = self.config.name_prefix + "-" + uuid4().hex[:12]
-                    bucket = {"bucket_id": bucket_id, "created_at": time.time()}
-                bucket = {**bucket, "status": "creating"}
+                bucket_id = self.config.name_prefix + "-" + uuid4().hex[:12]
+                bucket = {"bucket_id": bucket_id, "created_at": time.time(), "status": "creating"}
             bucket_id = bucket["bucket_id"]
             self.db.put("bucket", bucket_id, {**bucket, "frontend_id": identity.frontend_id,
                                               "last_active_at": time.time()})
             binding = {"bucket_id": bucket_id, "identity_id": identity.identity_id, "identity": identity.model_dump(),
-                       "workspace_path": workspace, "generation": uuid4().hex, "status": "assigned"}
+                       "workspace_path": workspace}
             self.db.put("binding", identity.identity_id, binding)
             return binding
 
     async def ready(self, bucket_id: str):
-        async with self.start_locks.setdefault(bucket_id, asyncio.Lock()):
+        async with self.start_locks.setdefault(bucket_id, asyncio.Lock()), asyncio.timeout(self.config.ready_timeout_seconds):
+            bucket = self.db.get("bucket", bucket_id)
+            if bucket["status"] == "draining":
+                await self.stopped.setdefault(bucket_id, asyncio.Event()).wait()
             if not self.connected(bucket_id):
-                async with asyncio.timeout(self.config.ready_timeout_seconds):
-                    bucket = self.db.get("bucket", bucket_id)
-                    frontend_id = self.frontend_for(bucket)
-                    if frontend_id is None:
-                        raise RuntimeError("legacy bucket frontend is ambiguous; retire it before migration")
-                    await self.manager.ensure(bucket_id, frontend_id=frontend_id)
-                    while not self.connected(bucket_id):
-                        await asyncio.sleep(0.1)
+                bucket = self.db.get("bucket", bucket_id)
+                self.db.put("bucket", bucket_id, {**bucket, "status": "creating"})
+                connected = self.service.bucket_connected.setdefault(bucket_id, asyncio.Event())
+                connected.clear()
+                await self.manager.ensure(bucket_id, frontend_id=bucket["frontend_id"])
+                if not self.connected(bucket_id):
+                    await connected.wait()
             bucket = self.db.get("bucket", bucket_id)
             self.db.put("bucket", bucket_id, {**bucket, "status": "running"})
 
@@ -116,20 +110,14 @@ class BucketScheduler:
             binding = self.reserve(identity)
             bucket_id = binding["bucket_id"]
             self.pins[bucket_id] = self.pins.get(bucket_id, 0) + 1
+            self.reservations[identity.identity_id] = self.reservations.get(identity.identity_id, 0) + 1
         try:
             await self.ready(bucket_id)
             yield binding
-        except BaseException:
-            # Keep durable mappings for accepted work; release failed pre-dispatch reservations.
-            async with self.lock:
-                outstanding = any(r["submit"]["identity"] == identity.model_dump() and not r.get("result")
-                                  for r in self.db.records("request"))
-                current = self.db.get("binding", identity.identity_id)
-                if not outstanding and current and current.get("generation") == binding["generation"]:
-                    self.db.put("binding", identity.identity_id, {**current, "bucket_id": None, "status": "released"})
-            raise
         finally:
             self.pins[bucket_id] -= 1
+            self.reservations[identity.identity_id] -= 1
+            self.release(identity.identity_id)
             self.touch(bucket_id)
 
     async def sweep(self):
@@ -137,15 +125,15 @@ class BucketScheduler:
             bucket_id = bucket["bucket_id"]
             async with self.lock:
                 bucket = self.db.get("bucket", bucket_id)
-                if bucket["status"] == "idle" or self.busy(bucket_id):
+                if bucket["status"] == "idle" or (bucket["status"] != "draining" and self.busy(bucket_id)):
                     continue
                 if bucket["status"] != "draining":
-                    ttl = self.service.config.frontend_idle_ttl_seconds.get(
-                        self.frontend_for(bucket), self.service.config.instance_idle_ttl_seconds)
+                    ttl = self.service.config.frontend_idle_ttl_seconds[bucket["frontend_id"]]
                     if ttl == 0 or time.time() - bucket["last_active_at"] < ttl:
                         continue
                     if self.db.pending(bucket_id):
                         continue  # Never discard an unacknowledged command.
+                    self.stopped.setdefault(bucket_id, asyncio.Event()).clear()
                     self.db.put("bucket", bucket_id, {**bucket, "status": "draining"})
             # Draining is durable and excludes allocations while Kubernetes shuts down.
             # Other buckets must remain schedulable during a slow scale operation.
@@ -156,20 +144,19 @@ class BucketScheduler:
             async with self.lock:
                 self.service.peers.pop(bucket_id, None)
                 self.service.sockets.pop(bucket_id, None)
-                with self.db.transaction():
-                    for binding in self.bindings(bucket_id):
-                        self.db.put("binding", binding["identity_id"],
-                                    {**binding, "bucket_id": None, "status": "released"})
-                    self.db.put("bucket", bucket_id, {**bucket, "status": "idle"})
+                bucket = self.db.get("bucket", bucket_id)
+                self.db.put("bucket", bucket_id, {**bucket, "status": "idle"})
+                self.stopped.setdefault(bucket_id, asyncio.Event()).set()
 
     async def run(self):
         while True:
             try:
+                # Finish an interrupted shutdown before waking the same bucket.
+                await self.sweep()
                 # Recover accepted work after a CU restart or missing workload. Do not reassign it.
                 for bucket in self.db.records("bucket"):
                     if bucket["status"] in {"creating", "running"} and self.busy(bucket["bucket_id"]):
                         await self.ready(bucket["bucket_id"])
-                await self.sweep()
             except Exception:
                 log.exception("bucket pool reconciliation failed; will retry")
             await asyncio.sleep(self.config.sweep_interval_seconds)

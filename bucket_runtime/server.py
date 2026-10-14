@@ -29,7 +29,7 @@ def rpc_app(runtime: Runtime, token: str) -> FastAPI:
 
     @app.post("/plugin/ready")
     async def plugin_ready(request: Request):
-        if (await request.json()).get("version") != "3":
+        if (await request.json()).get("version") != "4":
             raise HTTPException(409, "plugin protocol mismatch")
         runtime.plugin_ready = True
         return {"ok": True}
@@ -104,7 +104,8 @@ async def serve(config: RuntimeConfig) -> None:
                 async with connect(config.control_url, additional_headers={
                     "X-Bucket-ID": config.bucket_id}, max_size=1024 * 1024,
                     ping_interval=20, ping_timeout=20, proxy=None) as socket:
-                    peer = Peer(socket, runtime.db, config.bucket_id, runtime.on_command, runtime.rpc)
+                    peer = Peer(socket, runtime.db, config.bucket_id, runtime.on_command,
+                                runtime.session_operation)
                     runtime.peer = peer
                     await peer.run()
             except asyncio.CancelledError:
@@ -122,10 +123,7 @@ async def serve(config: RuntimeConfig) -> None:
             if any(t.done() for t in tasks):
                 raise RuntimeError("runtime listener failed")
             await asyncio.sleep(0.05)
-        if (runtime.permissions.defaults.sandbox.enabled or any(
-                runtime.permissions.for_user(u.frontend_id, u.user_id).sandbox.enabled
-                for u in runtime.permissions.users)):
-            await executor.probe(config.state_root / "sandbox-probe")
+        await executor.probe(config.state_root / "sandbox-probe")
         await supervisor.start()
         # Force trusted instance initialization and therefore plugin loading before readiness.
         response = await supervisor.client.http.get("/config")

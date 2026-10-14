@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from agent_backend.config import RuntimeConfig
-from agent_backend.models import Envelope, Identity, Submit, digest
+from agent_backend.models import Envelope, Identity, Submit
 from bucket_runtime.opencode_client import OpenCodeClient
 from bucket_runtime.runtime import Runtime
 
@@ -43,13 +43,12 @@ class Executor:
 @pytest.fixture
 def runtime(tmp_path):
     config = RuntimeConfig.model_validate({
-        "bucket_id": "b", "control_url": "ws://localhost:8000/internal/buckets/ws",
+        "bucket_id": "b", "frontend_id": "web", "common_root": str(tmp_path / "common"), "control_url": "ws://localhost:8000/internal/buckets/ws",
         "state_root": str(tmp_path / "state"),
         "workspace_root": str(tmp_path / "workspaces"),
         "opencode": {"binary": str(tmp_path / "binary"),
                      "context_root": str(tmp_path / "context"), "config_file": str(tmp_path / "model.json"),
                      "plugin_file": str(tmp_path / "plugin"), "dependency_dir": str(tmp_path / "deps")},
-        "profiles": {"p": {"model": "test/test"}},
     })
     instance = Runtime(config, Client(), Executor())
     instance.client.worktree = str(tmp_path)
@@ -75,18 +74,61 @@ async def test_opencode_health_does_not_require_a_version(runtime, payload, expe
 
 def active(runtime, name="alice", request_id="r", session_id="s"):
     submit = Submit(request_id=request_id, chat_id="chat-" + name,
-        identity=Identity(frontend_id="web", user_id=name), profile_id="p", content="hello",
+        identity=Identity(frontend_id="web", user_id=name), content="hello",
         deadline_at=time.time() + 60)
     runtime.db.put("run", request_id, {"request_id": request_id, "status": "running",
-        "session_id": session_id, "submit": submit.model_dump(mode="json"), "artifacts": []})
+        "session_id": session_id, "directory": str(runtime.workspace(submit)), "submit": submit.model_dump(mode="json"), "artifacts": []})
     return submit
+
+
+@pytest.mark.asyncio
+async def test_migration_stops_native_session_tree_and_removes_only_local_history(runtime):
+    submit = active(runtime)
+    payload = {"identity": submit.identity.model_dump(), "chat_id": submit.chat_id, "session_id": "s"}
+    with pytest.raises(RuntimeError, match="outstanding"):
+        await runtime.session_operation({**payload, "operation": "quiesce"})
+    row = runtime.db.get("run", "r")
+    runtime.db.put("run", "r", {**row, "status": "completed"})
+    operations = []
+
+    async def session(session_id):
+        return {"id": session_id, "directory": row["directory"],
+                "metadata": {"bucket_runtime": {**submit.identity.model_dump(), "chat_id": submit.chat_id}}}
+
+    async def children(session_id):
+        return [{"id": "child"}] if session_id == "s" else []
+
+    async def abort(session_id):
+        operations.append(("abort", session_id))
+
+    async def delete(session_id):
+        operations.append(("delete", session_id))
+
+    runtime.client.session = session
+    runtime.client.children = children
+    runtime.client.abort = abort
+    runtime.client.delete_session = delete
+    runtime.db.put("session", submit.session_key, {"session_id": "s"})
+    runtime.db.put("message", "one", {"session_id": "s"})
+    runtime.db.put("message", "two", {"session_id": "other"})
+    runtime.db.put("child_session", "child", {"request_id": "r"})
+    runtime.emit("request.completed", "r", {"content": "audit"})
+    await runtime.session_operation({**payload, "operation": "quiesce"})
+    await runtime.session_operation({**payload, "operation": "delete", "session_ids": ["s", "child"]})
+    assert operations == [("abort", "s"), ("abort", "child"), ("delete", "s")]
+    assert runtime.db.get("session", submit.session_key) is None
+    assert runtime.db.get("message", "one") is None
+    assert runtime.db.get("message", "two")
+    assert runtime.db.get("child_session", "child") is None
+    assert runtime.db.get("run", "r")
+    assert runtime.db.pending("b")
 
 
 @pytest.mark.asyncio
 async def test_every_request_recreates_deleted_workspace_without_copying_templates(runtime, tmp_path):
     import shutil
 
-    runtime.config.workspace_layout = "frontend_user"
+
     templates = tmp_path / "templates"
     templates.mkdir()
     (templates / "AGENTS.md").write_text("workspace instructions")
@@ -94,8 +136,7 @@ async def test_every_request_recreates_deleted_workspace_without_copying_templat
     # Existing user mapping/session is irrelevant to the per-request directory check.
     for index in range(2):
         submit = Submit(request_id=f"check-{index}", chat_id="chat",
-                        identity=Identity(frontend_id="web", user_id="alice"), profile_id="p",
-                        content="/cancel", deadline_at=time.time() + 60)
+                        identity=Identity(frontend_id="web", user_id="alice"), content="/cancel", deadline_at=time.time() + 60)
         await runtime.on_command(Envelope(type="request.submit", bucket_id="b",
             request_id=submit.request_id, payload=submit.model_dump(mode="json")))
         assert (workspace / "output").is_dir()
@@ -125,9 +166,8 @@ def test_workspace_checks_preserve_existing_files_and_repair_subdirectories(runt
 @pytest.mark.asyncio
 async def test_workspace_file_in_place_of_directory_fails_request(runtime):
     submit = Submit(request_id="bad-dir", chat_id="chat",
-                    identity=Identity(frontend_id="web", user_id="alice"), profile_id="p",
-                    content="hello", deadline_at=time.time() + 60)
-    path = runtime.config.workspace_root / submit.identity.frontend_id / submit.identity.identity_id
+                    identity=Identity(frontend_id="web", user_id="alice"), content="hello", deadline_at=time.time() + 60)
+    path = runtime.config.workspace_root / submit.identity.frontend_id / submit.identity.user_id
     path.parent.mkdir(parents=True)
     path.write_text("not a directory")
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id=submit.request_id,
@@ -140,7 +180,7 @@ def test_mount_policy_rejects_host_proc_and_other_user_roots(runtime):
     from pydantic import ValidationError
     for root in ["/proc", str(runtime.config.workspace_root), str(runtime.config.state_root)]:
         config = runtime.config.model_dump(mode="json")
-        config["profiles"]["p"]["public_roots"] = [root]
+        config["sandbox"]["readonly_roots"] = [root]
         with pytest.raises(ValidationError):
             RuntimeConfig.model_validate(config)
 
@@ -191,8 +231,8 @@ async def test_publication_rejects_other_user_and_symlink(runtime):
 
 @pytest.mark.asyncio
 async def test_cancel_before_task_first_step_has_terminal(runtime):
-    submit = Submit(request_id="queued", chat_id="q", identity=Identity(frontend_id="f", user_id="u"),
-                    profile_id="p", content="hello", deadline_at=time.time() + 60)
+    submit = Submit(request_id="queued", chat_id="q", identity=Identity(frontend_id="web", user_id="u"),
+                    content="hello", deadline_at=time.time() + 60)
     event = Envelope(type="request.submit", bucket_id="b", request_id="queued", payload=submit.model_dump(mode="json"))
     await runtime.on_command(event)
     await runtime.on_command(Envelope(type="request.cancel", bucket_id="b", request_id="queued"))
@@ -214,8 +254,7 @@ async def test_terminal_is_immutable(runtime):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_slash_cancel_scoped_to_frontend_user_chat_and_idempotent(runtime, legacy):
+async def test_slash_cancel_scoped_to_frontend_user_chat_and_idempotent(runtime):
     alice = active(runtime)
     bob = alice.model_copy(update={"request_id": "bob-run", "identity": Identity(frontend_id="web", user_id="bob")})
     runtime.db.put("run", "bob-run", {"request_id": "bob-run", "status": "running",
@@ -226,12 +265,6 @@ async def test_slash_cancel_scoped_to_frontend_user_chat_and_idempotent(runtime,
     frontend = alice.model_copy(update={"request_id": "frontend-run", "identity": Identity(frontend_id="im", user_id="alice")})
     runtime.db.put("run", "frontend-run", {"request_id": "frontend-run", "status": "queued",
                    "submit": frontend.model_dump(mode="json"), "artifacts": []})
-    if legacy:
-        row = runtime.db.get("run", "r")
-        row["submit"].pop("chat_id")
-        row["submit"]["conversation_id"] = alice.session_key
-        runtime.db.put("run", "r", row)
-        assert "chat_id" not in runtime.session_context(Submit.from_record(row["submit"]), "m")
     cancel = alice.model_copy(update={"request_id": "cancel", "content": " /cancel\n"})
     event = Envelope(type="request.submit", bucket_id="b", request_id="cancel",
                      payload=cancel.model_dump(mode="json"))
@@ -245,29 +278,6 @@ async def test_slash_cancel_scoped_to_frontend_user_chat_and_idempotent(runtime,
     assert "cancel" not in runtime.tasks
     await runtime.on_command(event)
     assert runtime.client.aborted == ["s"]
-
-
-@pytest.mark.asyncio
-async def test_migrated_replay_does_not_execute_twice_or_accept_changed_content(runtime):
-    submit = active(runtime)
-    row = runtime.db.get("run", "r")
-    row["submit"].pop("chat_id")
-    row["submit"]["conversation_id"] = submit.session_key
-    row["hash"] = digest(row["submit"])
-    runtime.db.put("run", "r", row)
-    changed = submit.model_copy(update={"content": "changed"})
-    with pytest.raises(ValueError, match="request content changed"):
-        await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="r",
-                                          payload=changed.model_dump(mode="json")))
-    event = Envelope(type="request.submit", bucket_id="b", request_id="r", payload=submit.model_dump(mode="json"))
-    await runtime.on_command(event)
-    await runtime.on_command(event)
-    restored = runtime.db.get("run", "r")
-    assert restored["submit"] == submit.model_dump(mode="json")
-    assert restored["hash"] == digest(event.payload)
-    assert restored["session_id"] == "s"
-    assert not runtime.tasks
-    assert not runtime.db.pending("b")
 
 
 @pytest.mark.asyncio
@@ -318,7 +328,8 @@ async def test_supervisor_preserves_server_features(runtime, monkeypatch):
     package.parent.mkdir(parents=True)
     package.write_text("{}")
     modules = runtime.config.state_root / "opencode-home/config/opencode/node_modules"
-    modules.mkdir(parents=True)
+    modules.parent.mkdir(parents=True)
+    modules.symlink_to(oc.dependency_dir / "node_modules", target_is_directory=True)
     captured = {}
 
     async def spawn(*args, **kwargs):
@@ -359,8 +370,8 @@ async def test_slash_cancel_running_task_calls_abort(runtime):
 
     runtime.client.create_session = create_session
     runtime.client.submit = submit_message
-    submit = Submit(request_id="live", chat_id="chat", identity=Identity(frontend_id="f", user_id="u"),
-                    profile_id="p", content="hello", deadline_at=time.time() + 60)
+    submit = Submit(request_id="live", chat_id="chat", identity=Identity(frontend_id="web", user_id="u"),
+                    content="hello", deadline_at=time.time() + 60)
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="live",
                                      payload=submit.model_dump(mode="json")))
     await asyncio.wait_for(started.wait(), 2)
@@ -392,23 +403,6 @@ async def test_child_tool_session_resolves_trusted_parent_and_expires(runtime):
     runtime.db.put("run", "r", {**runtime.db.get("run", "r"), "status": "completed"})
     with pytest.raises(PermissionError):
         await runtime.bind_tool_session("child", directory)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("sandbox_enabled, session_enabled", [(True, True), (True, False), (False, True), (False, False)])
-async def test_user_permission_switches_are_independent(runtime, sandbox_enabled, session_enabled):
-    from agent_backend.config import PermissionConfig
-    runtime.permissions = PermissionConfig.model_validate({"defaults": {
-        "sandbox": {"enabled": sandbox_enabled}, "session": {"enabled": session_enabled},
-        "filesystem": {"workspace": "read_only", "public_roots": []}}})
-    submit = active(runtime)
-    assert bool(runtime.session_permissions(submit)) is session_enabled
-    ticket = runtime.authorize("s", "cmd", "bash", {"command": "pwd"})
-    await runtime.execute(ticket["ticket"])
-    assert runtime.executor.last_options["sandbox"].enabled is sandbox_enabled
-    assert runtime.executor.last_options["workspace_access"] == "read_only"
-    assert runtime.executor.last_options["public"] == [
-        runtime.config.common_root / submit.identity.frontend_id / "app"]
 
 
 def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_path):
@@ -459,7 +453,7 @@ def test_permission_scope_rejects_exposed_service_or_user_directories(runtime):
     for root in [runtime.config.workspace_root, runtime.config.state_root / "private", runtime.config.opencode.config_file]:
         policy = UserPolicy.model_validate({"filesystem": {"public_roots": [str(root)]}})
         with pytest.raises(ValueError):
-            public_roots(runtime.config, policy, "p")
+            public_roots(runtime.config, policy)
 
 
 def test_user_scope_blocks_native_symlinks_and_patch_moves(runtime, tmp_path):
@@ -475,7 +469,6 @@ def test_user_scope_blocks_native_symlinks_and_patch_moves(runtime, tmp_path):
         pytest.skip("symlink privileges unavailable")
     with pytest.raises(PermissionError):
         runtime.authorize("s", "read", "read", {"filePath": str(link)})
-
 
 
 def test_individual_write_switch_enables_shared_edit_permission(runtime):

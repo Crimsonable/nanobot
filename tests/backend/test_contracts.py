@@ -92,7 +92,41 @@ class QueueSocket:
 
 
 @pytest.mark.asyncio
-async def test_duplex_rpc_does_not_block_receiver_and_durable_dedup(tmp_path):
+async def test_session_controls_are_memory_only_and_errors_return_to_caller(tmp_path):
+    a, b = QueueSocket(), QueueSocket()
+    a.other, b.other = b, a
+    db_a, db_b = Journal(tmp_path / "a.db"), Journal(tmp_path / "b.db")
+    operations = []
+
+    async def handler(event):
+        raise AssertionError("session operations must not enter the durable handler")
+
+    async def session_handler(payload):
+        operations.append(payload["operation"])
+        if payload["operation"] == "delete":
+            raise RuntimeError("busy session")
+
+    peer_a = Peer(a, db_a, "b", handler)
+    peer_b = Peer(b, db_b, "b", handler, session_handler)
+    tasks = [asyncio.create_task(peer_a.run()), asyncio.create_task(peer_b.run())]
+    try:
+        await peer_a.session_call({"session_id": "ses_one", "operation": "quiesce"})
+        with pytest.raises(RuntimeError, match="busy session"):
+            await peer_a.session_call({"session_id": "ses_one", "operation": "delete"})
+        assert operations == ["quiesce", "delete"]
+        assert not db_a.pending("b") and not db_b.pending("b")
+        assert db_a.db.execute("SELECT COUNT(*) FROM inbox").fetchone()[0] == 0
+        assert db_b.db.execute("SELECT COUNT(*) FROM inbox").fetchone()[0] == 0
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        db_a.close()
+        db_b.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_events_are_deduplicated(tmp_path):
     a, b = QueueSocket(), QueueSocket()
     a.other, b.other = b, a
     db_a, db_b = Journal(tmp_path / "a.db"), Journal(tmp_path / "b.db")
@@ -101,16 +135,9 @@ async def test_duplex_rpc_does_not_block_receiver_and_durable_dedup(tmp_path):
     async def handler(event):
         delivered.append(event.event_id)
 
-    async def rpc_a(method, args, data):
-        return {"length": len(data or b"")}
-
-    async def rpc_b(method, args, data):
-        return await peer_b.call("reverse", {}, b"binary")
-
-    peer_a, peer_b = Peer(a, db_a, "b", handler, rpc_a), Peer(b, db_b, "b", handler, rpc_b)
+    peer_a, peer_b = Peer(a, db_a, "b", handler), Peer(b, db_b, "b", handler)
     tasks = [asyncio.create_task(peer_a.run()), asyncio.create_task(peer_b.run())]
     try:
-        assert await peer_a.call("nested", {}, timeout=2) == {"length": 6}
         event = Envelope(type="request.submit", bucket_id="b", seq=12)
         await peer_a.send(event)
         await peer_a.send(event)
@@ -132,14 +159,11 @@ async def test_reconnect_replays_unacked_event_without_reexecution(tmp_path):
     async def handler(event):
         delivered.append(event.event_id)
 
-    async def rpc(method, args, data):
-        return {}
-
     db_a.enqueue("b", Envelope(type="request.submit", bucket_id="b", request_id="r"))
     for drop_ack in [True, False]:
         a, b = QueueSocket(), QueueSocket()
         a.other, b.other, b.drop_ack = b, a, drop_ack
-        peers = [Peer(a, db_a, "b", handler, rpc), Peer(b, db_b, "b", handler, rpc)]
+        peers = [Peer(a, db_a, "b", handler), Peer(b, db_b, "b", handler)]
         tasks = [asyncio.create_task(peer.run()) for peer in peers]
         try:
             await asyncio.sleep(0.1)
@@ -151,3 +175,34 @@ async def test_reconnect_replays_unacked_event_without_reexecution(tmp_path):
             await asyncio.gather(*tasks, return_exceptions=True)
     db_a.close()
     db_b.close()
+
+
+@pytest.mark.asyncio
+async def test_outbox_notifications_drain_multiple_batches_without_waiting_for_ack(tmp_path):
+    db = Journal(tmp_path / "sender.db")
+    sent = asyncio.Queue()
+
+    class Socket:
+        async def send(self, data):
+            sent.put_nowait(Envelope.model_validate_json(data))
+
+    async def unused(event):
+        raise AssertionError("pump does not receive")
+
+    for index in range(300):
+        db.enqueue("b", Envelope(type="opencode.event", bucket_id="b", request_id=str(index)))
+    pump = asyncio.create_task(Peer(Socket(), db, "b", unused).pump())
+    try:
+        async with asyncio.timeout(2):
+            received = [await sent.get() for _ in range(300)]
+            assert [e.request_id for e in received] == [str(i) for i in range(300)]
+            assert len({e.seq for e in received}) == 300
+            db.enqueue("b", Envelope(type="request.completed", bucket_id="b", request_id="next"))
+            assert (await sent.get()).request_id == "next"
+        # Unacknowledged events remain durable; no duplicate timer sends them on this connection.
+        await asyncio.sleep(0)
+        assert sent.empty()
+    finally:
+        pump.cancel()
+        await asyncio.gather(pump, return_exceptions=True)
+        db.close()

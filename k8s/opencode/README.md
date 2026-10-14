@@ -12,7 +12,7 @@ CU 入站、查询、取消、附件引用接口和 Web 代理不需要 API key�
 
 ```text
 /data/opencode_backend_k8s/
-├── source/                         # 全部源码、public、opencode_plugin
+├── source/                         # 服务源码、opencode_plugin 及其构建产物和依赖
 ├── opencode/opencode               # 全部桶共用的一份程序
 ├── common/
 │   ├── frontends.json              # 入口总表；一个 CU 接入全部注册项
@@ -40,7 +40,7 @@ CU 入站、查询、取消、附件引用接口和 Web 代理不需要 API key�
 | control | CU 监听、状态根、bucket_pool 镜像、namespace、PVC、节点、单桶容量 |
 | frontends[].id / provider / channel | 该 frontend 的 ID、渠道、渠道凭据与参数 |
 | frontends[].send_msg_url / attachment_storage | 该 frontend 的回调及附件存储 |
-| frontends[].profile_id / runtime.profiles | 该 frontend 选择的模型 profile、指令与公共目录 |
+| common/<id>/config/opencode-server.json 的 model / instructions | 该 frontend 使用的模型与规则文件 |
 | frontends[].instance_idle_ttl_seconds | 该 frontend 桶的闲置回收时间，0 禁用回收 |
 | common/<id>/config/opencode-server.json | 该 frontend 的 provider、模型连接/API key、MCP、LSP、skills 等原生配置 |
 | common/<id>/config/user-permissions.yaml | 该 frontend 的默认用户权限及逐用户覆盖 |
@@ -51,16 +51,16 @@ CU 入站、查询、取消、附件引用接口和 Web 代理不需要 API key�
 {
   "control": {"bucket_pool": {"image": "agent-bucket-runtime:opencode-1.18.31", "max_users_per_bucket": 16}},
   "frontends": [
-    {"id": "web-yk", "provider": "web", "runtime": {"profiles": {"reports": {"model": "intranet/model-a"}}}},
+    {"id": "web-yk", "provider": "web", "runtime": {}},
     {"id": "qxt-main", "provider": "qxt", "channel": {"app_id": "REPLACE", "app_secret": "REPLACE"},
-     "runtime": {"profiles": {"reports": {"model": "intranet/model-b"}}}}
+     "runtime": {}}
   ]
 }
 ```
 
-两个 frontend 可以使用相同的 provider/profile 名称，读取的原生配置文件不同。模型服务凭据填写在各自 `config/opencode-server.json` 的 provider.options.apiKey 中；MinIO 使用凭据文件时也必须放在该 frontend 的 config 内。配置路径不能改到 app，模板路径不能改到 config，符号链接别名被拒绝。
+两个 frontend 可以使用相同的 provider/model 名称，读取的原生配置文件不同。模型服务凭据填写在各自 `config/opencode-server.json` 的 provider.options.apiKey 中；MinIO 使用凭据文件时也必须放在该 frontend 的 config 内。配置路径不能改到 app，模板路径不能改到 config，符号链接别名被拒绝。
 
-用户文件工具与 skills 只能访问当前 frontend 的 app 子树，Bash 沙箱完全不挂载 config 目录；新增配置文件也不会暴露。可以递归搜索整个 app，但不能读取或搜索 frontend 根目录、config 或其他 frontend。用户自己的工作空间继续按权限开放，系统通用脚本 /mnt/source/public 继续只读。frontend 桶要求 sandbox.enabled 和 session.enabled 均为 true，关闭任一项会拒绝启动。服务进程仍需加载 config；这一边界约束模型的文件工具和 Bash，管理员配置的原生插件/MCP 应视作受信服务代码。
+用户文件工具与 skills 只能访问当前 frontend 的 app 子树，Bash 沙箱完全不挂载 config 目录；新增配置文件也不会暴露。可以递归搜索整个 app，但不能读取或搜索 frontend 根目录、config 或其他 frontend。用户自己的工作空间继续按权限开放。frontend 桶要求 sandbox.enabled 和 session.enabled 均为 true，关闭任一项会拒绝启动。服务进程仍需加载 config；这一边界约束模型的文件工具和 Bash，管理员配置的原生插件/MCP 应视作受信服务代码。
 
 权限文件中的 `defaults` 只影响当前 frontend，`users` 可只填写 user_id；若显式提供 frontend_id，必须与当前目录的 frontend 一致。完整开关见 [实现说明](../../docs/OPENCODE_BACKEND_IMPLEMENTATION.md)。
 
@@ -74,13 +74,13 @@ CU 入站、查询、取消、附件引用接口和 Web 代理不需要 API key�
 | bucket_pool.node_selector | opencode-runtime=true |
 | 启动等待 / 扫描间隔 | 120 秒 / 10 秒 |
 | runtime.control_url | ws://container-up:8000/internal/buckets/ws |
-| runtime.workspace_root / workspace_layout | /mnt/env/workspaces / frontend_user |
+| runtime.workspace_root | /mnt/env/workspaces |
 | OpenCode / 插件 RPC / 健康端口 | 4096 / 4097 / 8090 |
 | OpenCode 二进制 / 插件 | /opt/opencode/opencode / /mnt/source/opencode_plugin/dist/index.mjs |
 | bucket_pool.opencode_host_path | /data/opencode_backend_k8s/opencode |
 | 配置 / 用户权限 | /mnt/common/<id>/config/opencode-server.json / /mnt/common/<id>/config/user-permissions.yaml |
 | 模板 / skills | /mnt/common/<id>/app/templates / /mnt/common/<id>/app/skills |
-| 公共目录 | /mnt/common/<id>/app、/mnt/source/public（只读） |
+| 公共目录 | /mnt/common/<id>/app（只读） |
 | 单桶 CPU request / limit | 1 / 4 |
 | 单桶内存 request / limit | 1Gi / 4Gi |
 | 执行并发 / 额外排队容量 | 4 / 64 |
@@ -101,7 +101,7 @@ OpenCode 与插件 RPC 只监听桶内回环地址，不需要为每桶创建 Se
 
 选择一个存储节点，只给它设置 `opencode-runtime=true` 标签。UID/GID 10001 必须能读取 source/common、执行共享二进制、写入 state 和用户目录。所有 hostPath/subPath 目录都要预先准备，已有用户目录也要检查权限。
 
-每个 frontend ID 必须是单个有效目录名，禁止路径分隔符、点开头以及保留名 frontend.json/frontends.json，不进行有损清洗。用户目录默认为 workspaces/<frontend>/<user>，user 名称清洗导致碰撞时 CU 拒绝共用目录。identity_hash 布局也保留 frontend 层。
+每个 frontend ID 必须是单个有效目录名，禁止路径分隔符、点开头以及保留名 frontend.json/frontends.json，不进行有损清洗。用户目录默认为 workspaces/<frontend>/<user>，user 名称清洗导致碰撞时 CU 拒绝共用目录。
 
 runtime 每次收到请求以及执行前检查用户目录，缺失时重建并补齐 output/scratch。不再复制 templates；各 frontend 的 config/opencode-server.json 用 instructions 引用 /mnt/common/<id>/app/templates/AGENTS.md（容器内挂载路径，不能填写服务器 /data/opencode_backend_k8s/common 路径）。一个 bucket 只运行一个 OpenCode server；每个会话的 API 请求 directory 指向对应用户工作目录，相同用户和 chat_id 复用会话，不同 chat_id 使用不同会话但共用该用户目录。context_root 仅用于服务启动和初始化。原生文件工具与 Bash 进一步限定到当前用户目录；其他 frontend 的资料和工作区不会挂入当前桶。
 
@@ -134,14 +134,14 @@ install -m 0555 vendor/opencode "$DEPLOY_ROOT/opencode/opencode.new"
 mv -f "$DEPLOY_ROOT/opencode/opencode.new" "$DEPLOY_ROOT/opencode/opencode"
 ```
 
-新增 frontend 时，在总表添加一项并准备其 common/<id>/config、common/<id>/app 和 data/workspaces/<id> 目录；无需再部署一个 CU。两个 common 子目录都必须在建桶前存在，Kubernetes subPath 不负责初始化。把模型、回调、渠道和 MinIO 占位值替换为实际值。每份模型 profile 的 provider/model 名称须与对应的 OpenCode 原生配置一致。
+新增 frontend 时，在总表添加一项并准备其 common/<id>/config、common/<id>/app 和 data/workspaces/<id> 目录；无需再部署一个 CU。两个 common 子目录都必须在建桶前存在，Kubernetes subPath 不负责初始化。把模型、回调、渠道和 MinIO 占位值替换为实际值。各自原生配置中的 model 使用 provider/model 格式，runtime 不覆盖该选择。
 
-MinIO bucket 需提前创建并授予必要权限。public_base_url 非空时返回拼接的未签名链接，须保证可下载；为空时生成基于 endpoint 的预签名链接，endpoint 也须对下载方可达。需要在 Bash 下载附件时，按该 frontend 的需求设置 sandbox.network；默认 false，模型请求和 runtime 上传 MinIO 不经过 Bash 网络开关。
+MinIO bucket 需提前创建并授予必要权限。public_base_url 非空时返回拼接的未签名链接，须保证可下载；为空时生成基于 endpoint 的预签名链接，endpoint 也须对下载方可达。需要在 Bash 下载附件时，按该 frontend 的需求设置 sandbox.network；默认 true，Bash 沙箱共享 bucket 的网络；模型请求和 runtime 上传 MinIO 不经过 Bash 网络开关。
 
 检查配置并部署：
 
 ```bash
-python -m agent_backend check --config config/opencode/frontends.json
+python -m container_up --check-config --config config/opencode/frontends.json
 kubectl label node 实际节点名 opencode-runtime=true
 kubectl apply -f k8s/opencode/storage.yaml
 kubectl apply -f k8s/opencode/backend.yaml
@@ -153,11 +153,13 @@ schema 检查不验证模型连通性、文件权限或 bwrap 能力。节点需
 
 ## 源码与二进制更新
 
-所有服务源码统一挂载到 /mnt/source：CU/runtime/Web 在该目录启动，MCP 在对应项目子目录启动。保留 opencode_plugin/dist/index.mjs、package.json、package-lock.json、node_modules；插件修改后重新构建。public 仅存系统通用脚本；各 frontend 的业务资料、模板和配置留在 common/<id>。
+所有服务源码统一挂载到 /mnt/source：CU/runtime/Web 在该目录启动，MCP 在对应项目子目录启动。保留 opencode_plugin/dist/index.mjs、package.json、package-lock.json、node_modules；插件修改后重新构建。各 frontend 的资料、脚本、skills、模板和配置均放在 common/<id>；部署时将仓库 config/opencode/<id>/app 与 config 分别同步到该 frontend 的 app 与 config。
 
 镜像只保留 Python、基础依赖和系统工具。同步源码或插件不需要重建镜像；依赖变化才更新镜像。二进制放在独立 opencode 目录，先写新文件再同目录 rename，避免覆盖运行中的程序；示例原生配置 autoupdate=false。
 
 在无执行中任务时同步文件并重启受影响服务。修改单个 frontend 的 OpenCode/权限配置只需重启属于它的桶；修改入口总表需重启 CU 和相关桶。Deployment 的 `opencode.io/frontend-id` annotation 标识归属；session 权限变化时应先完成该 frontend 的整桶回收再更新配置，下一次分配创建新 session；仅重启并复用旧 session 会因权限回读不匹配而拒绝执行。
+
+CU 的启动命令是 `python -m container_up --config /mnt/common/frontends.json`；CU 创建的 bucket 使用 `python -m bucket_runtime` 并传入配置、bucket ID 和 frontend ID。`agent_backend` 仅为公共库，不提供启动器。升级旧统一启动入口时，需重新应用 `k8s/opencode/backend.yaml`，并使用下文的 `scripts.render_bucket_updates` 更新已有 bucket 的 Deployment 启动参数；仅 rollout restart 不会更新旧命令。直接使用镜像默认 CMD 的部署需要采用更新后的镜像或显式指定新启动命令。
 
 ```bash
 kubectl -n opencode-sv rollout restart deployment/container-up
@@ -165,24 +167,16 @@ kubectl -n opencode-sv rollout restart deployment/container-up
 kubectl -n opencode-sv rollout restart deployment -l app=opencode-bucket
 ```
 
-## 从旧目录布局迁移
+## 更新 bucket Deployment
 
-先停止新入站并等待任务完成，在旧代码仍运行时让 CU 按闲置 TTL 回收整桶、释放映射；不要只手动 scale，0 表示禁用回收。备份 common、data、state 后再同步新源码。旧单 frontend.json 的渠道/runtime/MinIO 字段放进 frontends 数组的一项，control 提到总表顶层；保存为 common/frontends.json，删除已取消的 api_key_file、config_host_path、runtime_credentials_host_path 字段。
-
-将旧全局或平铺在 common/<id>/ 下的 OpenCode/权限/凭据文件迁到对应 common/<id>/config/，业务资料、skills、模板迁到 common/<id>/app/；已有目标不能覆盖，迁移后不保留 app 指向配置的符号链接。旧 source/templates 按需要放入各 frontend 的 app/templates/。代码不会自动搬移服务器文件。
-
-总表中显式配置的 runtime.opencode.config_file、runtime.permissions_file、attachment_storage 的凭据文件路径改为 config 下；删除旧 runtime.workspace_template_root 配置，改在原生 OpenCode 配置中设置 instructions 为容器内 /mnt/common/<id>/app/templates/AGENTS.md。profile 和用户权限的 public_roots 从 frontend 根改到 app，原生 skills.paths 从 skills 改为 app/skills；自定义 runtime.sandbox.readonly_roots 也不能包含 frontend 根或 config。没有显式覆盖时使用新默认值。保留 sandbox.enabled=true、session.enabled=true；旧模型凭据填写到各自原生配置，移除 /run/secrets 的旧引用。
-
-默认 frontend_user 且 frontend ID 未被旧规则清洗时，用户路径不变；旧平铺 identity_hash 目录需按 CU 的 identity/归属记录迁到 workspaces/<frontend>/<hash>。不覆盖已有目标，不通过符号链接指向旧目录。桶状态现在按 frontend/bucket 存放，旧运行态目录保留但不自动复用；新分配从 CU 保存的历史恢复最近上下文。
-
-现有桶必须更新 Deployment 模板，单纯 rollout restart 不会更改挂载。在有 Python 依赖和 kubectl 的管理环境执行：
+用户全部请求结束后释放 bucket 容量，再次请求按本 frontend 活跃桶容量分配。CU 在 control.sqlite 持久化 frontend/user/chat 到 session_id、bucket_id 的会话位置；换桶时经内存迁移原生历史并删除旧桶会话副本，已停止旧桶直接从 state PVC 恢复，无需唤醒。未访问的历史仍可能保存在旧桶目录中，不要删除状态目录来更新源码。迁移过程不落中间文件，接受删除源历史后 CU 崩溃导致历史丢失的窗口，详见 [日志与会话说明](../../docs/SESSION_LOGGING.md)。
 
 ```bash
 python -m scripts.render_bucket_updates --config /data/opencode_backend_k8s/common/frontends.json > /tmp/opencode-bucket-updates.yaml
 kubectl apply -f /tmp/opencode-bucket-updates.yaml
 ```
 
-工具依据 Deployment 的 frontend annotation 生成对应配置，保留副本数。旧桶没有 annotation 且总表存在多个 frontend 时会拒绝猜测归属：只在确认这一批旧桶均属于某个 frontend 后添加 `--frontend-id <原frontend>`。恢复流量前确认目录迁移、配置和模板更新完成。
+更新工具要求每个 bucket 有明确的 frontend annotation，保留当前副本数，不推断归属。启动时不执行旧数据或配置迁移。
 
 ## 可选服务
 

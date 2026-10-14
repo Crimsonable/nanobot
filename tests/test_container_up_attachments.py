@@ -8,7 +8,7 @@ def test_reference_from_content_url():
 
 
 def test_feishu_private_resource_remains_reference():
-    parser = FeishuIMParser(frontend_config={"app_id": "test", "app_secret": "test"})
+    parser = FeishuIMParser(frontend_id="feishu", frontend_config={"app_id": "test", "app_secret": "test"})
     ref = parser._resource_reference(user_id="alice", attachment_group="chat", message_id="message",
         file_key="file", resource_type="file", fallback_filename="report.pdf")
     assert ref["url"].endswith("/messages/message/resources/file?type=file")

@@ -1,3 +1,4 @@
+from support import emit_answer
 import asyncio
 import json
 import time
@@ -18,10 +19,9 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
     templates = tmp_path / "templates"
     templates.mkdir()
     (templates / "AGENTS.md").write_text("managed rules")
-    config = RuntimeConfig(bucket_id="b", state_root=tmp_path / "state",
-        workspace_root=tmp_path / "users", workspace_layout="frontend_user",
-        opencode={"context_root": tmp_path / "server"},
-        profiles={"p": {"model": "test/model"}})
+    config = RuntimeConfig(frontend_id="web", common_root=tmp_path / "common", bucket_id="b", state_root=tmp_path / "state",
+        workspace_root=tmp_path / "users",
+        opencode={"context_root": tmp_path / "server"})
     sessions, messages, calls = {}, {}, []
     both_users = asyncio.Event()
     path_directories = set()
@@ -50,14 +50,14 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
         info = sessions[session_id]
         assert directory == info["directory"], (path, directory, info)
         if path.endswith("/prompt_async"):
+            assert "model" not in body and "agent" not in body
             messages[session_id].append({"info": {"id": body["messageID"], "role": "user"}})
             messages[session_id].append({"info": {"id": "answer_" + body["messageID"],
                 "role": "assistant", "sessionID": session_id, "parentID": body["messageID"], "time": {"completed": 1},
                 "finish": "stop"}, "parts": [{"type": "text", "text": "done"}]})
             context = info["metadata"]["bucket_runtime"]
-            runtime.plugin_event({"type": "result", "session_id": session_id, "directory": directory,
-                "request_id": context["requests"][body["messageID"]], "input_message_id": body["messageID"],
-                "revision": 1, "messages": [messages[session_id][-1]]})
+            emit_answer(runtime, session_id, context["requests"][body["messageID"]],
+                        body["messageID"], directory, messages[session_id][-1])
             return httpx.Response(200, json={})
         if path.endswith("/message"):
             pytest.fail("reply polling is forbidden")
@@ -77,8 +77,7 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
 
         async def send(user, chat, request_id):
             submit = Submit(request_id=request_id, chat_id=chat,
-                identity=Identity(frontend_id="web", user_id=user), profile_id="p",
-                content="hello", deadline_at=time.time() + 30)
+                identity=Identity(frontend_id="web", user_id=user), content="hello", deadline_at=time.time() + 30)
             runtime.db.put("run", request_id, {"request_id": request_id, "status": "queued",
                 "submit": submit.model_dump(mode="json"), "artifacts": []})
             await runtime.run(request_id)
@@ -98,12 +97,17 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
             assert client.directory == config.opencode.context_root.resolve()
             for row in [alice, bob]:
                 await runtime.run_client(row).abort(row["session_id"])
-                assert runtime.worktree(Submit.from_record(row["submit"])) == Path(row["directory"])
+                assert runtime.worktree(Submit.model_validate(row["submit"])) == Path(row["directory"])
             assert {directory for _, _, directory in calls} == {alice["directory"], bob["directory"]}
+            runtime.db.close()
+            runtime = Runtime(config, client, SimpleNamespace(kill=kill))
+            resumed = await send("alice", "chat-1", "after-restart")
+            assert resumed["session_id"] == alice["session_id"]
+            assert len(sessions) == 3
             # A native session created by the old global-directory implementation
             # must never be silently reused as though it belonged to this workspace.
             sessions[alice["session_id"]]["directory"] = str(config.opencode.context_root)
-            stale = Submit.from_record(alice["submit"]).model_copy(update={"request_id": "stale"})
+            stale = Submit.model_validate(alice["submit"]).model_copy(update={"request_id": "stale"})
             runtime.db.put("run", "stale", {"request_id": "stale", "status": "queued",
                 "submit": stale.model_dump(mode="json"), "artifacts": []})
             # Session GET is globally addressable; simulate a returned legacy directory.
@@ -128,8 +132,8 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
 
 @pytest.mark.asyncio
 async def test_recovery_and_cancellation_use_persisted_request_directory(tmp_path):
-    config = RuntimeConfig(bucket_id="b", state_root=tmp_path / "state", workspace_root=tmp_path / "users",
-        opencode={"context_root": tmp_path / "server"}, profiles={"p": {"model": "test/model"}})
+    config = RuntimeConfig(frontend_id="web", common_root=tmp_path / "common", bucket_id="b", state_root=tmp_path / "state", workspace_root=tmp_path / "users",
+        opencode={"context_root": tmp_path / "server"})
     calls = []
 
     async def handle(request):
@@ -146,7 +150,7 @@ async def test_recovery_and_cancellation_use_persisted_request_directory(tmp_pat
         try:
             for user in ["alice", "bob"]:
                 submit = Submit(request_id=user, chat_id="same", identity=Identity(frontend_id="web", user_id=user),
-                                profile_id="p", content="hello", deadline_at=time.time() + 30)
+                                content="hello", deadline_at=time.time() + 30)
                 directory = str(runtime.workspace(submit))
                 runtime.db.put("run", user, {"request_id": user, "status": "running", "directory": directory,
                     "submit": submit.model_dump(mode="json"), "session_id": user, "artifacts": []})

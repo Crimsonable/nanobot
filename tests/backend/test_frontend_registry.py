@@ -29,6 +29,7 @@ def registry(tmp_path):
         (own / "config").mkdir()
         (own / "config/future-secret.txt").write_text("not-a-known-config-file")
         (own / "config/opencode-server.json").write_text(json.dumps({
+            "model": "local/" + frontend,
             "instructions": [str(own / "app/templates/AGENTS.md")],
             "provider": {"local": {"options": {"apiKey": "model-secret-" + frontend}}},
             "skills": {"paths": [str(common / "{frontend_id}/app/skills")]}}))
@@ -36,10 +37,9 @@ def registry(tmp_path):
             "defaults": {"filesystem": {"workspace": "read_only" if frontend == "web-a" else "read_write"}},
             "users": [{"user_id": "alice", "session": {"tools": {"bash": frontend == "web-b"}}}]}))
         (own / "config/session-logging.json").write_text(json.dumps({"enabled": frontend == "web-a"}))
-        entries.append({"id": frontend, "provider": "web", "instance_idle_ttl_seconds": 1 if frontend == "web-a" else 0,
+        entries.append({"frontend_id": frontend, "provider": "web", "instance_idle_ttl_seconds": 1 if frontend == "web-a" else 0,
             "runtime": {"common_root": str(common),
-                        "logging_file": str(common / "{frontend_id}/config/session-logging.json"), "profiles": {"reports": {
-                "model": "local/" + frontend, "public_roots": [str(common / "{frontend_id}/app")]}}}})
+                        "logging_file": str(common / "{frontend_id}/config/session-logging.json")}})
     path = common / "frontends.json"
     path.write_text(json.dumps({"frontends": entries}))
     return path, load_frontends(path)
@@ -52,7 +52,7 @@ def runtime_for(path, registry, frontend, tmp_path):
     config.opencode.context_root = tmp_path / "context"
     runtime = Runtime(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
     submit = Submit(request_id=frontend, chat_id=frontend,
-        identity=Identity(frontend_id=frontend, user_id="alice"), profile_id="reports", content="hello",
+        identity=Identity(frontend_id=frontend, user_id="alice"), content="hello",
         deadline_at=time.time() + 60)
     runtime.db.put("run", frontend, {"request_id": frontend, "status": "running", "session_id": frontend,
         "submit": submit.model_dump(mode="json"), "artifacts": []})
@@ -66,8 +66,8 @@ async def test_models_permissions_and_templates_are_selected_per_frontend(regist
         runtime, submit = runtime_for(path, config, frontend, tmp_path)
         supervisor = Supervisor(runtime.config)
         try:
-            assert runtime.config.profiles["reports"].model == "local/" + frontend
             native = supervisor.server_config()
+            assert native["model"] == "local/" + frontend
             assert native["provider"]["local"]["options"]["apiKey"] == "model-secret-" + frontend
             assert native["skills"]["paths"] == [str(path.parent / frontend / "app/skills")]
             from agent_backend.config import SessionLoggingConfig, load_config
@@ -179,8 +179,8 @@ async def test_one_cu_keeps_bucket_pools_and_retirement_frontend_scoped(registry
 
     service.pool.manager = SimpleNamespace(ensure=ensure, scale=scale)
     try:
-        first = await service.submit("web-a", Inbound(user_id="alice", content="hello"))
-        second = await service.submit("web-b", Inbound(user_id="alice", content="hello"))
+        first = await service.submit("web-a", Inbound(chat_id="chat", user_id="alice", content="hello"))
+        second = await service.submit("web-b", Inbound(chat_id="chat", user_id="alice", content="hello"))
         assert first["bucket_id"] != second["bucket_id"]
         assert started == [(first["bucket_id"], "web-a"), (second["bucket_id"], "web-b")]
         assert {b["frontend_id"] for b in service.db.records("bucket")} == {"web-a", "web-b"}
@@ -192,7 +192,7 @@ async def test_one_cu_keeps_bucket_pools_and_retirement_frontend_scoped(registry
                 service.db.ack(bucket["bucket_id"], event.seq, event.event_id)
         await service.pool.sweep()
         assert scaled == [(first["bucket_id"], 0)]
-        other = await service.submit("web-b", Inbound(user_id="bob", content="hi"))
+        other = await service.submit("web-b", Inbound(chat_id="chat", user_id="bob", content="hi"))
         assert other["bucket_id"] == second["bucket_id"]
         assert service.db.get("bucket", first["bucket_id"])["status"] == "idle"
     finally:
@@ -233,7 +233,7 @@ def test_registry_rejects_duplicate_ids_and_global_frontend_credentials(registry
     raw["frontends"][0]["api_key_file"] = "/old/web-api-key"
     with pytest.raises(ValueError, match="Extra inputs"):
         FrontendsConfig.model_validate(raw)
-    path.write_text(json.dumps({"id": "web-a", "provider": "web",
-        "runtime": {"profiles": {"reports": {"model": "local/test"}}}}))
+    path.write_text(json.dumps({"frontend_id": "web-a", "provider": "web",
+        "runtime": {}}))
     with pytest.raises(ValueError, match="frontends"):
         load_frontends(path)

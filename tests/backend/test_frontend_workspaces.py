@@ -14,19 +14,18 @@ from bucket_runtime.sandbox_executor import SandboxExecutor
 from container_up.bucket_manager import BucketManager
 
 
-@pytest.fixture(params=["frontend_user", "identity_hash"])
-def workspaces(tmp_path, request):
+@pytest.fixture
+def workspaces(tmp_path):
     pairs = []
     for frontend in ["web-a", "web-b"]:
-        config = RuntimeConfig(bucket_id=frontend, frontend_id=frontend,
+        config = RuntimeConfig(common_root=tmp_path / "common", bucket_id=frontend, frontend_id=frontend,
             state_root=tmp_path / frontend / "state", workspace_root=tmp_path / "workspaces",
-            workspace_layout=request.param, opencode={"context_root": tmp_path / "context"},
-            profiles={"p": {"model": "test/model"}})
+             opencode={"context_root": tmp_path / "context"})
         runtime = Runtime(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
         for user in ["alice", "bob"]:
             identity = Identity(frontend_id=frontend, user_id=user)
             submit = Submit(identity=identity, request_id=identity.identity_id, chat_id="default",
-                profile_id="p", content="hello", deadline_at=time.time() + 60)
+                content="hello", deadline_at=time.time() + 60)
             runtime.db.put("run", submit.request_id, {"request_id": submit.request_id,
                 "status": "running", "session_id": identity.identity_id,
                 "submit": submit.model_dump(mode="json"), "artifacts": []})
@@ -99,20 +98,18 @@ async def test_bash_mounts_only_the_current_frontend_user_workspace(workspaces):
 
 
 def test_frontend_name_is_used_without_lossy_rewriting(tmp_path):
-    for layout in ["frontend_user", "identity_hash"]:
-        for frontend in ["web", "-web", "业务前端"]:
-            identity = Identity(frontend_id=frontend, user_id="alice")
-            assert workspace_path(tmp_path, identity, layout).parent == tmp_path / frontend
-        with pytest.raises(ValueError):
-            workspace_path(tmp_path, Identity(frontend_id="../web", user_id="alice"), layout)
+    for frontend in ["web", "-web", "业务前端"]:
+        identity = Identity(frontend_id=frontend, user_id="alice")
+        assert workspace_path(tmp_path, identity).parent == tmp_path / frontend
+    with pytest.raises(ValueError):
+        workspace_path(tmp_path, Identity(frontend_id="../web", user_id="alice"))
 
 
 def test_custom_workspace_root_is_scoped_in_bucket_manifest():
-    raw = {"id": "web-a", "provider": "web", "runtime": {
-        "workspace_root": "/mnt/env/workspaces/custom",
-        "profiles": {"reports": {"model": "test/model"}}}}
+    raw = {"frontend_id": "web-a", "provider": "web", "runtime": {
+        "workspace_root": "/mnt/env/workspaces/custom"}}
     config = FrontendConfig.model_validate(raw)
-    deployment = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
+    deployment = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     mounts = deployment["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert [m for m in mounts if m["name"] == "workspace"] == [{"name": "workspace",
         "mountPath": "/mnt/env/workspaces/custom/web-a", "subPath": "workspaces/custom/web-a"}]

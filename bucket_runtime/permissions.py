@@ -8,16 +8,13 @@ from agent_backend.common import frontend_app_root, scoped_public_path
 from agent_backend.config import RuntimeConfig, UserPolicy
 
 
-def public_roots(config: RuntimeConfig, policy: UserPolicy, profile_id: str,
-                 frontend_id: str | None = None) -> list[Path]:
-    if config.frontend_id and (not policy.sandbox.enabled or not policy.session.enabled):
+def public_roots(config: RuntimeConfig, policy: UserPolicy) -> list[Path]:
+    if not policy.sandbox.enabled or not policy.session.enabled:
         raise ValueError("frontend isolation requires sandbox.enabled=true and session.enabled=true")
-    configured = policy.filesystem.public_roots
-    roots = configured if configured is not None else config.profiles[profile_id].public_roots
+    roots = policy.filesystem.public_roots or []
     # The frontend app tree is shared by every bucket/user of this frontend.
     # Policy overrides select additional public directories, never remove app.
-    owner = config.frontend_id or frontend_id
-    roots = [*roots, *([frontend_app_root(config.common_root, owner)] if owner else [])]
+    roots = [*roots, frontend_app_root(config.common_root, config.frontend_id)]
     protected = [config.workspace_root, config.state_root,
                  config.opencode.context_root, config.opencode.plugin_file,
                  config.opencode.dependency_dir]
@@ -26,7 +23,7 @@ def public_roots(config: RuntimeConfig, policy: UserPolicy, profile_id: str,
         private.extend([config.storage.access_key_file, config.storage.secret_key_file])
     result = []
     for root in roots:
-        resolved = scoped_public_path(root, config.common_root, frontend_id or config.frontend_id)
+        resolved = scoped_public_path(root, config.common_root, config.frontend_id)
         if resolved == Path(resolved.anchor):
             raise ValueError("filesystem root cannot be public")
         if any(resolved.is_relative_to(Path(p).resolve()) for p in ["/proc", "/sys", "/dev"]):

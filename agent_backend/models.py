@@ -5,7 +5,7 @@ import json
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictModel(BaseModel):
@@ -52,40 +52,15 @@ class Attachment(StrictModel):
 
 class Submit(StrictModel):
     request_id: str = Field(min_length=1, max_length=100)
-    chat_id: str = "default"
+    chat_id: str = Field(min_length=1)
     identity: Identity
-    profile_id: str
     content: str = Field(max_length=200_000)
     attachments: list[Attachment] = Field(default_factory=list, max_length=32)
     deadline_at: float
-    session_epoch: str = ""
-    previous_turns: list[dict[str, Any]] = Field(default_factory=list)
-    _legacy_session_key: str | None = PrivateAttr(default=None)
-
+    session_id: str | None = None
     @property
     def session_key(self) -> str:
-        """Internal SQLite key, never a separate ID in the protocol or logs."""
-        return self._legacy_session_key or digest([self.identity.identity_id, self.chat_id])
-
-    @property
-    def has_chat_id(self) -> bool:
-        return self._legacy_session_key is None
-
-    @classmethod
-    def from_record(cls, value: dict) -> Submit:
-        """Read pre-upgrade runs whose original chat_id was stored only in CU."""
-        payload = dict(value)
-        legacy_key = payload.pop("conversation_id", None)
-        submit = cls.model_validate(payload)
-        if legacy_key is not None:
-            if "chat_id" in payload:
-                if legacy_key != submit.session_key:
-                    raise ValueError("persisted chat key mismatch")
-            else:
-                # Hashes cannot be reversed. Retain the old lookup key for recovery,
-                # and omit chat_id from legacy logs instead of inventing an identity.
-                submit._legacy_session_key = legacy_key
-        return submit
+        return digest([self.identity.identity_id, self.chat_id])
 
 
 class Usage(StrictModel):
@@ -114,21 +89,6 @@ class OpenCodeEventChunk(StrictModel):
     data: str
 
 
-class PluginEvent(StrictModel):
-    type: Literal["response.delta", "tool.progress", "result", "error"]
-    request_id: str
-    session_id: str
-    input_message_id: str
-    directory: str = Field(min_length=1)
-    revision: int = Field(ge=1)
-    content: str = Field(default="", max_length=200_000)
-    messages: list[dict[str, Any]] = Field(default_factory=list, max_length=4096)
-    error: str | None = Field(default=None, max_length=1000)
-    call_id: str | None = None
-    tool: str | None = None
-    status: str | None = None
-
-
 class Result(StrictModel):
     request_id: str
     status: Literal["completed", "failed", "cancelled"]
@@ -145,7 +105,6 @@ class Envelope(StrictModel):
     type: str
     bucket_id: str
     seq: int = Field(default=0, ge=0)
-    correlation_id: str = ""
     request_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
 

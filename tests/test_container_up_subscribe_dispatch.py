@@ -21,5 +21,5 @@ async def test_subscribe_cancellation_propagates(caplog):
     service = object.__new__(ControlService)
     service.submit = AsyncMock(side_effect=asyncio.CancelledError)
     with pytest.raises(asyncio.CancelledError):
-        await service.dispatch_channel("qxt-main", {"event": {"user_id": "alice"}})
+        await service.dispatch_channel("qxt-main", {"event": {"user_id": "alice", "chat_id": "chat"}})
     assert "subscribe dispatch failed" not in caplog.text

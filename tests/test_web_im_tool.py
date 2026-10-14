@@ -47,7 +47,7 @@ async def test_web_im_parser_posts_normalized_outbound_payload(monkeypatch: pyte
         frontend_config={"send_msg_url": "http://web-server:8090/outbound"},
     )
 
-    result = await parser.post_message_with_retry(
+    result = await parser.post_message(
         payload={
             "chat_id": "chat-1",
             "content": "hello",
@@ -74,45 +74,18 @@ async def test_web_im_parser_posts_normalized_outbound_payload(monkeypatch: pyte
 
 @pytest.mark.asyncio
 async def test_web_im_parser_requires_send_url() -> None:
-    parser = WebIMParser(frontend_id="web-main")
+    parser = WebIMParser(frontend_id="web-main", frontend_config={})
     with pytest.raises(RuntimeError, match="send_msg_url"):
-        await parser.post_message_with_retry(payload={"content": "hello"})
+        await parser.post_message(payload={"content": "hello"})
 
 
 @pytest.mark.asyncio
-async def test_web_im_parser_retries_transient_server_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_session = _FakeSession(
-        responses=[
-            _FakeResponse(status=503, text="temporarily unavailable"),
-            _FakeResponse(status=200, text='{"ok": true}'),
-        ]
-    )
+async def test_web_im_parser_does_not_repeat_uncertain_delivery(monkeypatch) -> None:
+    fake_session = _FakeSession(responses=[_FakeResponse(status=503, text="unavailable")])
     monkeypatch.setattr(http_state, "_dispatch_session", fake_session)
-
-    async def fake_sleep(_: float) -> None:
-        return None
-
-    monkeypatch.setattr("container_up.web_im_tool.asyncio.sleep", fake_sleep)
-
-    parser = WebIMParser(
-        frontend_id="web-main",
-        frontend_config={
-            "send_msg_url": "http://web-server:8090/outbound",
-            "send_msg_retry_count": 2,
-            "send_msg_retry_backoff": 0.01,
-        },
-    )
-
-    result = await parser.post_message_with_retry(
-        payload={
-            "chat_id": "chat-1",
-            "content": "hello",
-            "attachments": [],
-            "metadata": {"user_id": "user-1", "frontend_id": "web-main"},
-        }
-    )
-
-    assert result == {"ok": True}
-    assert len(fake_session.calls) == 2
+    parser = WebIMParser(frontend_id="web-main",
+        frontend_config={"send_msg_url": "http://web-server:8090/outbound"})
+    with pytest.raises(RuntimeError, match="503"):
+        await parser.post_message(payload={"chat_id": "chat", "content": "hello",
+            "metadata": {"user_id": "alice", "frontend_id": "web-main"}})
+    assert len(fake_session.calls) == 1

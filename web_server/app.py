@@ -1,32 +1,29 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
-from uuid import uuid4
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from web_server.settings import (
     APP_HOST,
     APP_PORT,
     CONTAINER_UP_BASE_URL,
-    DEFAULT_FRONTEND_ID,
     OUTBOUND_ECHO,
 )
 from web_server.uvicorn_logging import build_uvicorn_log_config
 
 
 class InboundRequest(BaseModel):
-    frontend_id: str = ""
+    model_config = ConfigDict(extra="forbid")
+    frontend_id: str = Field(min_length=1)
     user_id: str
-    chat_id: str = "default"
+    chat_id: str = Field(min_length=1)
     content: str
     attachments: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    raw: dict[str, Any] = Field(default_factory=dict)
 
 
 class OutboundRequest(BaseModel):
@@ -38,20 +35,7 @@ class OutboundRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class BatchInboundTestRequest(BaseModel):
-    frontend_id: str = ""
-    n: int = Field(..., ge=1, le=1000)
-    content: str = "ping"
-
-
 app = FastAPI(title="web-server", version="0.1.0")
-
-
-def _resolve_frontend_id(payload_frontend_id: str) -> str:
-    frontend_id = str(payload_frontend_id or DEFAULT_FRONTEND_ID).strip()
-    if frontend_id:
-        return frontend_id
-    raise RuntimeError("frontend_id is required")
 
 
 async def _forward_inbound(frontend_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -82,7 +66,7 @@ def health_ready() -> dict[str, str]:
 
 @app.post("/inbound")
 async def inbound(payload: InboundRequest, request: Request) -> dict[str, Any]:
-    frontend_id = _resolve_frontend_id(payload.frontend_id)
+    frontend_id = payload.frontend_id
     forwarded_payload = {
         "user_id": payload.user_id,
         "chat_id": payload.chat_id,
@@ -91,69 +75,6 @@ async def inbound(payload: InboundRequest, request: Request) -> dict[str, Any]:
         "metadata": dict(payload.metadata),
     }
     return await _forward_inbound(frontend_id, forwarded_payload)
-
-
-@app.post("/test/create-instances")
-async def create_instances_for_test(payload: BatchInboundTestRequest, request: Request) -> dict[str, Any]:
-    frontend_id = _resolve_frontend_id(payload.frontend_id)
-    batch_id = uuid4().hex[:8]
-    requests: list[dict[str, str]] = []
-    tasks = []
-    for index in range(payload.n):
-        user_id = f"test-user-{batch_id}-{index + 1}"
-        chat_id = f"test-chat-{batch_id}-{index + 1}"
-        forwarded_payload = {
-            "user_id": user_id,
-            "chat_id": chat_id,
-            "content": payload.content,
-            "attachments": [],
-            "metadata": {
-                "test_batch": True,
-                "batch_id": batch_id,
-                "batch_index": index + 1,
-            },
-        }
-        requests.append({"user_id": user_id, "chat_id": chat_id})
-        tasks.append(_forward_inbound(frontend_id, forwarded_payload))
-    responses = await asyncio.gather(*tasks, return_exceptions=True)
-    results: list[dict[str, Any]] = []
-    success_count = 0
-    failure_count = 0
-    for request, response in zip(requests, responses):
-        if isinstance(response, Exception):
-            failure_count += 1
-            detail = response.detail if isinstance(response, HTTPException) else str(response)
-            results.append(
-                {
-                    **request,
-                    "status": "failed",
-                    "error": detail,
-                }
-            )
-            continue
-        success_count += 1
-        results.append(
-            {
-                **request,
-                "status": "accepted",
-                "response": response,
-            }
-        )
-    status = "accepted"
-    if failure_count and success_count:
-        status = "partial_success"
-    elif failure_count:
-        status = "failed"
-    return {
-        "status": status,
-        "frontend_id": frontend_id,
-        "batch_id": batch_id,
-        "count": payload.n,
-        "success_count": success_count,
-        "failure_count": failure_count,
-        "requests": requests,
-        "responses": results,
-    }
 
 
 @app.post("/outbound")

@@ -32,11 +32,10 @@ def tenants(tmp_path):
         cfg = RuntimeConfig(bucket_id=frontend, frontend_id=frontend, common_root=common,
             state_root=tmp_path / frontend / "state", workspace_root=tmp_path / "users",
             opencode={"context_root": tmp_path / "context"},
-            frontend_config_file=common / "frontend.json",
-            profiles={"p": {"model": "test/model", "public_roots": [common / "{frontend_id}/app"]}})
+            frontend_config_file=common / "frontend.json")
         runtime = Runtime(cfg, SimpleNamespace(), SandboxExecutor(cfg.sandbox, 4096))
         submit = Submit(request_id=frontend, chat_id=frontend,
-            identity=Identity(frontend_id=frontend, user_id="alice"), profile_id="p", content="test",
+            identity=Identity(frontend_id=frontend, user_id="alice"), content="test",
             deadline_at=time.time()+60)
         runtime.db.put("run", frontend, {"request_id": frontend, "status": "running",
             "session_id": frontend, "submit": submit.model_dump(mode="json"), "artifacts": []})
@@ -95,10 +94,10 @@ def test_user_override_cannot_grant_other_frontend_or_parent(tenants):
                  common / "web-a/config/future-secret.txt", common / "web-b/app", common / "web-b/app/manual.txt"]:
         policy = UserPolicy.model_validate({"filesystem": {"public_roots": [path]}})
         with pytest.raises(ValueError, match="current frontend"):
-            public_roots(runtime.config, policy, "p", "web-a")
+            public_roots(runtime.config, policy)
     assert public_roots(runtime.config, UserPolicy.model_validate({"filesystem": {
-        "public_roots": [common / "web-a/app/skills"]}}), "p", "web-a") == [common / "web-a/app/skills", common / "web-a/app"]
-    assert public_roots(runtime.config, UserPolicy.model_validate({"filesystem": {"public_roots": []}}), "p", "web-a") == [common / "web-a/app"]
+        "public_roots": [common / "web-a/app/skills"]}})) == [common / "web-a/app/skills", common / "web-a/app"]
+    assert public_roots(runtime.config, UserPolicy.model_validate({"filesystem": {"public_roots": []}})) == [common / "web-a/app"]
 
 
 @pytest.mark.parametrize("suffix", ["", "web-a", "web-a/config", "web-b/app"])
@@ -121,7 +120,7 @@ def test_symlink_cannot_redirect_frontend_public_directory(tenants, destination)
         pytest.skip("symlink creation unavailable")
     policy = UserPolicy.model_validate({"filesystem": {"public_roots": [link]}})
     with pytest.raises(ValueError):
-        public_roots(runtime.config, policy, "p", "web-a")
+        public_roots(runtime.config, policy)
     with pytest.raises(PermissionError):
         runtime.authorize("web-a", "link", "read", {"filePath": str(link / "future-secret.txt")})
 
@@ -129,7 +128,7 @@ def test_symlink_cannot_redirect_frontend_public_directory(tenants, destination)
     outside_link.symlink_to(common / destination, target_is_directory=True)
     policy.filesystem.public_roots = [outside_link]
     with pytest.raises(ValueError):
-        public_roots(runtime.config, policy, "p", "web-a")
+        public_roots(runtime.config, policy)
 
 
 @pytest.mark.asyncio

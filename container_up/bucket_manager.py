@@ -29,9 +29,7 @@ class BucketManager:
             response.raise_for_status()
         return response
 
-    def deployment(self, bucket_id: str, frontend_id: str | None = None) -> dict:
-        if frontend_id is None and len(self.config.frontends) == 1:
-            frontend_id = next(iter(self.config.frontends))
+    def deployment(self, bucket_id: str, frontend_id: str) -> dict:
         if frontend_id not in self.config.frontends:
             raise ValueError("bucket requires a registered frontend_id")
         frontend_id = frontend_segment(frontend_id)
@@ -42,7 +40,7 @@ class BucketManager:
         annotations = {"opencode.io/frontend-id": frontend_id}
         container = {
             "name": "runtime", "workingDir": "/mnt/source", "image": pool.image, "imagePullPolicy": pool.image_pull_policy,
-            "args": ["python", "-m", "agent_backend", "runtime", "--config",
+            "args": ["python", "-m", "bucket_runtime", "--config",
                      self.config.frontend_config_path.as_posix(), "--frontend-id", frontend_id,
                      "--bucket-id", bucket_id],
             "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
@@ -86,7 +84,7 @@ class BucketManager:
                                      {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}},
                                  ]}}}}
 
-    async def ensure(self, bucket_id: str, frontend_id: str | None = None) -> None:
+    async def ensure(self, bucket_id: str, frontend_id: str) -> None:
         collection = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments"
         response = await self.request("GET", collection + "/" + bucket_id)
         if response.status_code == 404:
@@ -100,7 +98,7 @@ class BucketManager:
         if current.get("metadata", {}).get("labels", {}).get("bucket-id") != bucket_id:
             raise RuntimeError("existing Deployment is not owned by this bucket")
         owner = current.get("metadata", {}).get("annotations", {}).get("opencode.io/frontend-id")
-        if owner and frontend_id and owner != frontend_id:
+        if owner != frontend_id:
             raise RuntimeError("existing Deployment belongs to another frontend")
         desired = self.deployment(bucket_id, frontend_id)
         desired["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]

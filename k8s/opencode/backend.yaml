@@ -73,8 +73,7 @@ spec:
         args:
         - python
         - -m
-        - agent_backend
-        - control
+        - container_up
         - --config
         - /mnt/common/frontends.json
         image: agent-container-up:opencode-1.18.31

@@ -19,4 +19,4 @@ RUN mkdir -p /opt/runtime-context /opt/opencode /data \
     && useradd --uid 10001 --create-home agent && chown agent:agent /data
 USER 10001:10001
 EXPOSE 8090
-CMD ["python", "-m", "agent_backend", "runtime", "--config", "/mnt/common/frontends.json"]
+CMD ["python", "-m", "bucket_runtime", "--config", "/mnt/common/frontends.json"]

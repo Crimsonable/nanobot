@@ -56,9 +56,8 @@ class Supervisor:
         if not (oc.dependency_dir / "node_modules/@opencode-ai/plugin/package.json").is_file():
             raise RuntimeError("offline plugin dependencies missing")
         target = (oc.dependency_dir / "node_modules").resolve()
-        # Persistent homes may still point at the previous image-bundled plugin path.
-        if modules.is_symlink() and modules.resolve() != target:
-            modules.unlink()
+        if (modules.exists() or modules.is_symlink()) and modules.resolve() != target:
+            raise RuntimeError("plugin dependency directory does not match configured source")
         if not modules.exists():
             modules.symlink_to(target, target_is_directory=True)
         env = {key: os.environ[key] for key in ["PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"]
@@ -69,6 +68,7 @@ class Supervisor:
                     "OPENCODE_SERVER_PASSWORD": self.password, "OPENCODE_SERVER_USERNAME": "opencode",
                     "BUCKET_RPC_URL": f"http://127.0.0.1:{config.rpc_port}",
                     "BUCKET_RPC_TOKEN": self.rpc_token,
+                    "BUCKET_EVENT_ROOT": str(config.state_root / "plugin-events"),
                     "BUCKET_SESSION_LOGGING": logging_config.model_dump_json(),
                     "BUCKET_EXEC_PYTHON": sys.executable,
                     "BUCKET_EXEC_CLIENT": str(Path(__file__).with_name("exec_client.py").resolve())})

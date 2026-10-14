@@ -37,8 +37,8 @@
   "formatter": {},
   "skills": {
     "paths": [
-      "/mnt/common/{frontend_id}/app/skills",
-      "/mnt/source/public/skills"
+      "/mnt/common/web-yk/app/skills"
     ]
-  }
+  },
+  "model": "intranet/your-model"
 }

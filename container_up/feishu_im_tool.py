@@ -1,22 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
-import mimetypes
 import re
 import threading
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
-import httpx
 from loguru import logger
-
-FEISHU_APP_ID = ""
-FEISHU_APP_SECRET = ""
 
 DispatchCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -281,30 +273,14 @@ class FeishuIMParser:
     def __init__(
         self,
         *,
-        frontend_id: str = "default",
-        app_id: str | None = None,
-        app_secret: str | None = None,
-        frontend_config: dict[str, Any] | None = None,
+        frontend_id: str,
+        frontend_config: dict[str, Any],
         dispatch_event: DispatchCallback | None = None,
         main_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self.frontend_id = frontend_id
-        config = dict(frontend_config or {})
-        configured_app_id = (
-            app_id
-            or config.get("app_id")
-            or config.get("APP_ID")
-            or config.get("FEISHU_APP_ID")
-        )
-        configured_app_secret = (
-            app_secret
-            or config.get("app_secret")
-            or config.get("APP_SECRET")
-            or config.get("FEISHU_APP_SECRET")
-            or config.get("secret")
-        )
-        self.app_id = str(configured_app_id or FEISHU_APP_ID).strip()
-        self.app_secret = str(configured_app_secret or FEISHU_APP_SECRET).strip()
+        self.app_id = str(frontend_config.get("app_id", "")).strip()
+        self.app_secret = str(frontend_config.get("app_secret", "")).strip()
         self._dispatch_event = dispatch_event
         self._main_loop = main_loop
         self._thread: threading.Thread | None = None
@@ -329,8 +305,6 @@ class FeishuIMParser:
         )
         self._thread.start()
 
-    """def stop(self) -> None:
-        self._started = False"""
 
     def stop(self) -> None:
         self._started = False
@@ -376,19 +350,17 @@ class FeishuIMParser:
     def supports_subscribe(self) -> bool:
         return False
 
-    async def post_message_with_retry(
+    async def post_message(
         self, *, payload: dict[str, object]
     ) -> dict[str, object]:
         metadata = dict(payload.get("metadata") or {})
         reply_target = self._resolve_reply_target(
-            chat_id=str(payload.get("chat_id") or ""),
             metadata=metadata,
         )
-        if not reply_target:
-            raise RuntimeError("missing feishu reply target")
+        if payload.get("attachments"):
+            raise ValueError("channel attachments must be rendered as object URLs")
 
         content = str(payload.get("content") or "")
-        attachments = list(payload.get("attachments") or [])
         result: dict[str, object] = {"message": None, "attachments": []}
         first_send = True
 
@@ -413,83 +385,19 @@ class FeishuIMParser:
                 message_results[0] if len(message_results) == 1 else message_results
             )
 
-        for attachment in attachments:
-            target = (
-                reply_target if first_send else self._without_reply_target(reply_target)
-            )
-            result["attachments"].append(
-                await asyncio.to_thread(self._send_attachment_sync, target, attachment)
-            )
-            first_send = False
         return result
 
     @classmethod
     def _resolve_reply_target(
         cls,
         *,
-        chat_id: str,
         metadata: dict[str, Any],
     ) -> dict[str, Any]:
         reply_target = dict(metadata.get("reply_target") or {})
         if str(reply_target.get("type") or "") == "feishu":
             return reply_target
 
-        receive_id = str(metadata.get("chat_id") or chat_id or "").strip()
-        user_id = str(metadata.get("user_id") or "").strip()
-        chat_type = str(metadata.get("chat_type") or "").strip()
-        message_id = str(metadata.get("message_id") or "").strip()
-        thread_id = str(metadata.get("thread_id") or "").strip()
-
-        if not receive_id and not user_id:
-            return {}
-
-        if chat_type == "group":
-            receive_id_type = "chat_id"
-            target_receive_id = receive_id
-        else:
-            receive_id_type = "open_id"
-            target_receive_id = user_id or receive_id
-
-        if not target_receive_id:
-            return {}
-
-        target = {
-            "type": "feishu",
-            "receive_id_type": receive_id_type,
-            "receive_id": target_receive_id,
-            "message_id": message_id,
-            "thread_id": thread_id,
-            "reply_in_thread": bool(thread_id),
-        }
-        frontend_id = str(metadata.get("frontend_id") or "").strip()
-        if frontend_id:
-            target["frontend_id"] = frontend_id
-        return target
-
-    """def _run_ws_client(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            from lark_oapi.core.enum import LogLevel
-            from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-            import lark_oapi.ws.client as ws_client_module
-
-            ws_client_module.loop = loop
-
-            event_handler = (
-                EventDispatcherHandler.builder("", "")
-                .register_p2_im_message_receive_v1(self._on_message_receive)
-                .build()
-            )
-            self._ws_client = ws_client_module.Client(
-                self.app_id,
-                self.app_secret,
-                event_handler=event_handler,
-                log_level=LogLevel.INFO,
-            )
-            self._ws_client.start()
-        except Exception:
-            logger.exception("feishu ws listener exited unexpectedly")"""
+        raise ValueError("feishu reply_target is required")
 
     def _run_ws_client(self) -> None:
         loop = asyncio.new_event_loop()
@@ -547,10 +455,6 @@ class FeishuIMParser:
         while self._started:
             await asyncio.sleep(1)
 
-    """def _schedule_dispatch(self, data: Any) -> None:
-        if self._dispatch_event is None:
-            return
-        asyncio.create_task(self._normalize_and_dispatch(data))"""
 
     async def _normalize_and_dispatch(self, data: Any) -> None:
         if self._dispatch_event is None:
@@ -562,10 +466,6 @@ class FeishuIMParser:
             return
         await self._dispatch_event(payload)
 
-    """def _on_message_receive(self, data: Any) -> None:
-        if not self._started or self._main_loop is None:
-            return
-        self._main_loop.call_soon_threadsafe(self._schedule_dispatch, data)"""
 
     def _on_message_receive(self, data: Any) -> None:
         if not self._started or self._main_loop is None or self._dispatch_event is None:
@@ -595,12 +495,7 @@ class FeishuIMParser:
         if message is None or sender is None or sender_id is None:
             raise RuntimeError("incomplete feishu event")
 
-        user_id = str(
-            getattr(sender_id, "open_id", "")
-            or getattr(sender_id, "user_id", "")
-            or getattr(sender_id, "union_id", "")
-            or ""
-        ).strip()
+        user_id = str(getattr(sender_id, "open_id", "")).strip()
         if not user_id:
             raise RuntimeError("missing feishu user_id")
 
@@ -1046,133 +941,3 @@ class FeishuIMParser:
             "msg": response.msg,
             "message_id": getattr(getattr(response, "data", None), "message_id", None),
         }
-
-    def _send_attachment_sync(
-        self,
-        reply_target: dict[str, Any],
-        attachment: Any,
-    ) -> dict[str, Any]:
-        from lark_oapi.api.im.v1 import (
-            CreateFileRequest,
-            CreateFileRequestBody,
-            CreateImageRequest,
-            CreateImageRequestBody,
-        )
-
-        client = self._get_api_client()
-        ref, file_name = self._attachment_ref_and_name(attachment)
-        suffix = Path(file_name).suffix.lower()
-        content_type = ""
-
-        if ref.startswith(("http://", "https://")):
-            try:
-                response = httpx.get(ref, timeout=30.0, follow_redirects=True)
-                response.raise_for_status()
-            except Exception as exc:
-                raise RuntimeError(f"failed to download attachment from url: {ref}: {exc}") from exc
-            content_type = str(response.headers.get("content-type") or "").split(";")[0].strip()
-            upload_stream: Any = io.BytesIO(response.content)
-        else:
-            path = self._attachment_path(ref)
-            content_type = str(mimetypes.guess_type(path.name)[0] or "").strip()
-            upload_stream = path.open("rb")
-
-        is_image = suffix in self._IMAGE_SUFFIXES or content_type.startswith("image/")
-        with upload_stream as f:
-            if is_image:
-                upload_response = client.im.v1.image.create(
-                    CreateImageRequest.builder()
-                    .request_body(
-                        CreateImageRequestBody.builder()
-                        .image_type("message")
-                        .image(f)
-                        .build()
-                    )
-                    .build()
-                )
-                if not upload_response.success():
-                    raise RuntimeError(
-                        f"feishu image upload failed: {upload_response.code} {upload_response.msg}"
-                    )
-                content = json.dumps(
-                    {"image_key": upload_response.data.image_key}, ensure_ascii=False
-                )
-                send_type = "image"
-            else:
-                upload_response = client.im.v1.file.create(
-                    CreateFileRequest.builder()
-                    .request_body(
-                        CreateFileRequestBody.builder()
-                        .file_type(self._feishu_file_type(Path(file_name)))
-                        .file_name(file_name)
-                        .file(f)
-                        .build()
-                    )
-                    .build()
-                )
-                if not upload_response.success():
-                    raise RuntimeError(
-                        f"feishu file upload failed: {upload_response.code} {upload_response.msg}"
-                    )
-                content = json.dumps(
-                    {"file_key": upload_response.data.file_key}, ensure_ascii=False
-                )
-                if suffix in self._AUDIO_SUFFIXES:
-                    send_type = "audio"
-                elif suffix in self._VIDEO_SUFFIXES:
-                    send_type = "video"
-                else:
-                    send_type = "file"
-
-        if reply_target.get("message_id"):
-            response = self._reply_message_sync(reply_target, send_type, content)
-        else:
-            response = self._send_message_sync(reply_target, send_type, content)
-        return {"attachment": ref, "response": response}
-
-    @staticmethod
-    def _attachment_ref_and_name(attachment: Any) -> tuple[str, str]:
-        ref = ""
-        file_name = ""
-        if isinstance(attachment, dict):
-            ref = str(attachment.get("url") or "").strip()
-            file_name = str(attachment.get("filename") or "").strip()
-        else:
-            ref = str(attachment or "").strip()
-        if not ref:
-            raise RuntimeError("empty attachment")
-
-        if not file_name:
-            if ref.startswith(("http://", "https://")):
-                parsed = urlparse(ref)
-                file_name = Path(parsed.path).name or "attachment.bin"
-            else:
-                file_name = Path(ref).name or "attachment.bin"
-        return ref, file_name
-
-    @staticmethod
-    def _attachment_path(ref: str) -> Path:
-        if not ref:
-            raise RuntimeError("empty attachment")
-
-        path = Path(ref).expanduser()
-        if not path.is_absolute():
-            raise RuntimeError(f"attachment must be an absolute local path: {ref}")
-        if not path.is_file():
-            raise RuntimeError(f"attachment file not found: {ref}")
-        return path
-
-    @staticmethod
-    def _feishu_file_type(path: Path) -> str:
-        suffix = path.suffix.lower()
-        return {
-            ".opus": "opus",
-            ".mp4": "mp4",
-            ".pdf": "pdf",
-            ".doc": "doc",
-            ".docx": "doc",
-            ".xls": "xls",
-            ".xlsx": "xls",
-            ".ppt": "ppt",
-            ".pptx": "ppt",
-        }.get(suffix, "stream")

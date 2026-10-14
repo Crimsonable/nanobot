@@ -34,11 +34,10 @@ log = logging.getLogger(__name__)
 
 class Inbound(StrictModel):
     user_id: str
-    chat_id: str = "default"
+    chat_id: str = Field(min_length=1)
     content: str = Field(max_length=200_000)
     attachments: list[str | dict[str, Any]] = Field(default_factory=list, max_length=32)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    raw: dict[str, Any] = Field(default_factory=dict)
     request_id: str | None = None
 
 
@@ -46,17 +45,16 @@ class StarletteSocket:
     def __init__(self, socket: WebSocket):
         self.socket = socket
 
-    async def send(self, data: str | bytes):
-        if isinstance(data, bytes):
-            await self.socket.send_bytes(data)
-        else:
-            await self.socket.send_text(data)
+    async def send(self, data: str):
+        await self.socket.send_text(data)
 
-    async def recv(self) -> str | bytes:
+    async def recv(self) -> str:
         packet = await self.socket.receive()
         if packet["type"] == "websocket.disconnect":
             raise ConnectionError("bucket disconnected")
-        return packet.get("bytes") if packet.get("bytes") is not None else packet["text"]
+        if packet.get("text") is None:
+            raise ValueError("control protocol requires text frames")
+        return packet["text"]
 
 
 class ControlService:
@@ -68,10 +66,14 @@ class ControlService:
         self.sockets: dict[str, WebSocket] = {}
         self.delivery_task: asyncio.Task | None = None
         self.user_locks: dict[str, asyncio.Lock] = {}
-        self.pool = None
-        if config.bucket_pool:
-            from container_up.bucket_scheduler import BucketScheduler
-            self.pool = BucketScheduler(self)
+        from container_up.bucket_scheduler import BucketScheduler
+        self.pool = BucketScheduler(self)
+        from container_up.session_manager import SessionManager
+        self.sessions = SessionManager(self)
+        self.delivery_ready = asyncio.Event()
+        self.completed: dict[str, asyncio.Event] = {}
+        self.bucket_connected: dict[str, asyncio.Event] = {}
+        self.submission_tasks: set[asyncio.Task] = set()
 
     def request(self, bucket_id: str, request_id: str) -> dict:
         row = self.db.get("request", request_id)
@@ -83,7 +85,7 @@ class ControlService:
         if frontend_id not in self.config.frontends:
             raise HTTPException(404, "frontend is not registered")
 
-    async def normalize(self, identity: Identity, values: list, trusted_channel: bool) -> list[Attachment]:
+    async def normalize(self, values: list) -> list[Attachment]:
         result = []
         for value in values:
             raw = {"url": value} if isinstance(value, str) else value
@@ -98,20 +100,31 @@ class ControlService:
             result.append(item)
         return result
 
-    async def submit(self, frontend_id: str, inbound: Inbound, sync: bool = False,
-                     trusted_channel: bool = False) -> dict:
+    async def submit(self, frontend_id: str, inbound: Inbound, sync: bool = False) -> dict:
+        # A disconnected HTTP caller must not drop an in-memory history or release
+        # its lock halfway through a move. Process shutdown remains the accepted
+        # failure window for this deliberately memory-only transfer protocol.
+        task = asyncio.create_task(self._place(frontend_id, inbound, sync))
+        self.submission_tasks.add(task)
+
+        def finished(done):
+            self.submission_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    async def _place(self, frontend_id: str, inbound: Inbound, sync: bool = False) -> dict:
         self.require_frontend(frontend_id)
-        if not self.pool:
-            return await self._submit(frontend_id, inbound, sync, trusted_channel)
         identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
         async with self.user_locks.setdefault(identity.identity_id, asyncio.Lock()):
             if inbound.request_id and self.db.get("request", inbound.request_id):
-                return await self._submit(frontend_id, inbound, sync, trusted_channel)
+                return await self._submit(frontend_id, inbound, sync)
             async with self.pool.assignment(identity):
-                return await self._submit(frontend_id, inbound, sync, trusted_channel)
+                return await self._submit(frontend_id, inbound, sync)
 
-    async def _submit(self, frontend_id: str, inbound: Inbound, sync: bool = False,
-                      trusted_channel: bool = False) -> dict:
+    async def _submit(self, frontend_id: str, inbound: Inbound, sync: bool = False) -> dict:
         frontend = self.config.frontends[frontend_id]
         identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
         request_id = inbound.request_id or uid("req_")
@@ -124,37 +137,19 @@ class ControlService:
             return existing
         binding = self.db.get("binding", identity.identity_id)
         if binding is None:
-            available = [key for key, peer in self.peers.items() if not peer.closed]
-            if not available:
-                raise HTTPException(503, "no connected bucket")
-            counts = {key: sum(b["bucket_id"] == key for b in self.db.records("binding"))
-                      for key in available}
-            bucket_id = min(available, key=lambda k: (counts[k], k))
-            binding = {"bucket_id": bucket_id, "identity_id": identity.identity_id,
-                       "identity": identity.model_dump()}
+            raise RuntimeError("user has no assigned bucket")
         attachments_input = list(inbound.attachments)
         from container_up.attachments import attachment_from_content_url
         auto = attachment_from_content_url(inbound.content, frontend.attachment_url_prefix)
         if auto and not any((a.get("url") if isinstance(a, dict) else a) == auto["url"] for a in attachments_input):
             attachments_input.append(auto)
-        attachments = await self.normalize(identity, attachments_input, trusted_channel)
+        attachments = await self.normalize(attachments_input)
         submit = Submit(request_id=request_id, chat_id=inbound.chat_id,
-                        identity=identity, profile_id=frontend.profile_id, content=inbound.content,
+                        identity=identity, content=inbound.content,
                         attachments=attachments, deadline_at=time.time() + self.config.limits.request_seconds)
-        if self.pool:
-            submit.session_epoch = binding["generation"]
-            history = [r for r in self.db.records("request") if r.get("result")
-                       and r["chat_id"] == inbound.chat_id
-                       and r["submit"]["identity"] == identity.model_dump()]
-            submit.previous_turns = [{"user": r["submit"]["content"],
-                                      "input_attachments": r["submit"].get("attachments", []),
-                                      "assistant": r["result"]["content"],
-                                      "attachments": r["result"].get("attachments", [])}
-                                     for r in history[-32:]]
-            # Keep the metadata envelope bounded; full results remain queryable in CU's database.
-            import json
-            while submit.previous_turns and len(json.dumps(submit.previous_turns).encode()) > 128_000:
-                submit.previous_turns.pop(0)
+        if inbound.content.strip().lower() != "/cancel":
+            submit.session_id = await self.sessions.prepare(submit, binding["bucket_id"])
+            submit.deadline_at = time.time() + self.config.limits.request_seconds
         record = {"request_id": request_id, "hash": fingerprint, "bucket_id": binding["bucket_id"],
                   "chat_id": inbound.chat_id, "metadata": inbound.metadata, "sync": sync,
                   "submit": submit.model_dump(mode="json"), "status": "queued", "delivery": "pending"}
@@ -162,11 +157,8 @@ class ControlService:
             # There may have been an await during normalization.
             if self.db.get("request", request_id):
                 raise HTTPException(409, "concurrent duplicate request; query the existing request")
-            current = self.db.get("binding", identity.identity_id)
-            if current:
-                record["bucket_id"] = current["bucket_id"]
-            else:
-                self.db.put("binding", identity.identity_id, binding)
+            if self.db.get("binding", identity.identity_id) != binding:
+                raise RuntimeError("bucket binding changed during request submission")
             self.db.put("request", request_id, record)
             self.db.enqueue(record["bucket_id"], Envelope(type="request.submit",
                 bucket_id=record["bucket_id"], request_id=request_id, payload=submit.model_dump(mode="json")))
@@ -200,15 +192,19 @@ class ControlService:
                 return
             self.db.put("request", event.request_id, {**row, "status": result.status,
                         "result": result.model_dump(mode="json")})
-            if self.pool:
-                self.pool.touch(bucket_id)
-        elif event.type in {"request.accepted", "request.started", "request.recovering"}:
+            self.pool.touch(bucket_id)
+            self.pool.release(Identity.model_validate(row["submit"]["identity"]).identity_id)
+            self.delivery_ready.set()
+            if completed := self.completed.pop(event.request_id, None):
+                completed.set()
+        elif event.type in {"request.accepted", "request.started"}:
             if not row.get("result"):
+                if event.type == "request.started" and event.payload.get("session_id"):
+                    submit = Submit.model_validate(row["submit"])
+                    self.db.put("session", submit.session_key, {"identity": submit.identity.model_dump(),
+                        "chat_id": submit.chat_id, "session_id": event.payload["session_id"], "bucket_id": bucket_id})
                 self.db.put("request", event.request_id, {**row, "status": event.type.split(".")[1]})
-        elif event.type == "response.delta":
-            if not row.get("result") and event.payload.get("revision", 0) > row.get("progress", {}).get("revision", 0):
-                self.db.put("request", event.request_id, {**row, "progress": event.payload})
-        elif event.type != "tool.progress":
+        else:
             raise ValueError("unsupported bucket event")
 
     def receive_event_chunk(self, bucket_id: str, event: Envelope) -> None:
@@ -241,17 +237,12 @@ class ControlService:
             else:
                 self.db.put("opencode_event_chunks", key, state)
 
-    async def rpc(self, bucket_id: str, method: str, args: dict, data: bytes | None):
-        self.request(bucket_id, args.get("request_id", ""))
-        raise ValueError("file transfer RPC is not supported; pass attachment references")
-
     async def dispatch_channel(self, frontend_id: str, payload: dict) -> None:
         event = payload.get("event") or {}
         try:
             await self.submit(frontend_id, Inbound(user_id=event["user_id"],
-                chat_id=event.get("chat_id") or "default", content=event.get("content") or "",
-                attachments=event.get("attachments") or [], metadata=event.get("metadata") or {}),
-                trusted_channel=True)
+                chat_id=event["chat_id"], content=event.get("content") or "",
+                attachments=event.get("attachments") or [], metadata=event.get("metadata") or {}))
         except Exception:
             log.exception("subscribe dispatch failed frontend_id=%s chat_id=%s",
                           frontend_id, event.get("chat_id"))
@@ -264,12 +255,11 @@ class ControlService:
             if row["delivery"] == "sending":
                 self.db.put("request", row["request_id"], {**row, "delivery": "unknown"})
         while True:
+            self.delivery_ready.clear()
             for row in self.db.records("request"):
                 if row["sync"] or not row.get("result") or row["delivery"] != "pending":
                     continue
                 result = Result.model_validate(row["result"])
-                if result.status == "failed" and not result.content:
-                    result.content = f"任务执行未完成，请使用请求编号 {result.request_id} 查询详情。"
                 if result.status == "cancelled" or not (result.content or result.attachments):
                     self.db.put("request", row["request_id"], {**row, "delivery": "skipped"})
                     continue
@@ -282,7 +272,7 @@ class ControlService:
                     status = "unknown"
                 latest = self.db.get("request", row["request_id"])
                 self.db.put("request", row["request_id"], {**latest, "delivery": status})
-            await asyncio.sleep(0.2)
+            await self.delivery_ready.wait()
 
 
 def create_app(config: ControlConfig, channels: ChannelService | None = None) -> FastAPI:
@@ -292,13 +282,14 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     async def lifespan(app: FastAPI):
         await service.channels.start(service.dispatch_channel)
         service.delivery_task = asyncio.create_task(service.deliveries())
-        if service.pool:
-            service.pool.task = asyncio.create_task(service.pool.run())
+        service.pool.task = asyncio.create_task(service.pool.run())
         try:
             yield
         finally:
-            if service.pool:
-                await service.pool.stop()
+            await service.pool.stop()
+            for task in service.submission_tasks:
+                task.cancel()
+            await asyncio.gather(*service.submission_tasks, return_exceptions=True)
             service.delivery_task.cancel()
             await asyncio.gather(service.delivery_task, return_exceptions=True)
             for socket in list(service.sockets.values()):
@@ -330,10 +321,8 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     @app.websocket("/internal/buckets/ws")
     async def bucket_socket(socket: WebSocket):
         bucket_id = socket.headers.get("x-bucket-id", "")
-        registered = bucket_id in config.bucket_ids
-        if service.pool:
-            bucket = service.db.get("bucket", bucket_id)
-            registered = bool(bucket and bucket["status"] in {"creating", "running"})
+        bucket = service.db.get("bucket", bucket_id)
+        registered = bool(bucket and bucket["status"] in {"creating", "running"})
         if not registered:
             await socket.close(code=1008)
             return
@@ -348,19 +337,16 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
                 raise PermissionError("superseded bucket connection")
             await service.on_event(bucket_id, event)
 
-        async def rpc(method: str, args: dict, data: bytes | None):
-            if service.peers.get(bucket_id) is not peer:
-                raise PermissionError("superseded bucket connection")
-            return await service.rpc(bucket_id, method, args, data)
-
-        peer = Peer(StarletteSocket(socket), service.db, bucket_id, on_event, rpc)
+        peer = Peer(StarletteSocket(socket), service.db, bucket_id, on_event)
         service.peers[bucket_id], service.sockets[bucket_id] = peer, socket
+        service.bucket_connected.setdefault(bucket_id, asyncio.Event()).set()
         try:
             await peer.run()
         except (WebSocketDisconnect, ConnectionError, RuntimeError, ValueError, TimeoutError):
             log.info("bucket connection ended bucket_id=%s", bucket_id)
         finally:
             if service.peers.get(bucket_id) is peer:
+                service.bucket_connected[bucket_id].clear()
                 service.peers.pop(bucket_id, None)
                 service.sockets.pop(bucket_id, None)
 
@@ -371,7 +357,6 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
                 "chat_id": row["chat_id"], "bucket_id": row["bucket_id"],
                 "identity_id": Identity.model_validate(identity).identity_id,
                 "metadata": row["metadata"],
-                "progress": row.get("progress"),
                 "delivery_state": row["delivery"], **result}
 
     @app.post("/inbound/{frontend_id}")
@@ -383,12 +368,17 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
     async def inbound_sync(frontend_id: str, body: Inbound, request: Request):
         service.require_frontend(frontend_id)
         row = await service.submit(frontend_id, body, sync=True)
-        until = time.monotonic() + config.limits.request_seconds
-        while not row.get("result"):
-            if time.monotonic() >= until:
-                raise HTTPException(504, {"request_id": row["request_id"], "error": "reply timeout; query request"})
-            await asyncio.sleep(0.05)
+        completed = service.completed.setdefault(row["request_id"], asyncio.Event())
+        try:
             row = service.db.get("request", row["request_id"])
+            if not row.get("result"):
+                await asyncio.wait_for(completed.wait(), config.limits.request_seconds)
+            row = service.db.get("request", row["request_id"])
+        except TimeoutError:
+            raise HTTPException(504, {"request_id": row["request_id"], "error": "reply timeout"})
+        finally:
+            if completed.is_set() or row.get("result"):
+                service.completed.pop(row["request_id"], None)
         return await response(row)
 
     @app.get("/requests/{frontend_id}/{request_id}")
@@ -419,54 +409,5 @@ def create_app(config: ControlConfig, channels: ChannelService | None = None) ->
         if payload is not None:
             await service.dispatch_channel(frontend_id, payload)
         return response_value
-
-    @app.post("/api/message")
-    async def message_alias(request: Request):
-        body = await request.json()
-        frontend_id = body.pop("frontend_id", "")
-        if "usr_id" in body:
-            legacy_user_id = body.pop("usr_id")
-            if "user_id" in body and body["user_id"] != legacy_user_id:
-                raise HTTPException(400, "conflicting user_id and legacy usr_id")
-            body["user_id"] = legacy_user_id
-        return await inbound(frontend_id, Inbound.model_validate(body), request)
-
-    @app.post("/api/cancel")
-    async def cancel_alias(request: Request):
-        body = await request.json()
-        if "usr_id" in body:
-            legacy_user_id = body.pop("usr_id")
-            if "user_id" in body and body["user_id"] != legacy_user_id:
-                raise HTTPException(400, "conflicting user_id and legacy usr_id")
-            body["user_id"] = legacy_user_id
-        frontend_id = body["frontend_id"]
-        service.require_frontend(frontend_id)
-        matches = [row for row in service.db.records("request") if not row.get("result")
-            and row["submit"]["identity"] == {"frontend_id": frontend_id, "user_id": body["user_id"]}
-            and row["chat_id"] == body.get("chat_id", "default")]
-        for row in matches:
-            service.db.enqueue(row["bucket_id"], Envelope(type="request.cancel",
-                bucket_id=row["bucket_id"], request_id=row["request_id"]))
-        return {"status": "accepted", "request_ids": [r["request_id"] for r in matches]}
-
-    @app.post("/internal/attachments/upload")
-    async def upload_attachment(request: Request):
-        if not request.headers.get("content-type", "").startswith("application/json"):
-            raise HTTPException(400, "send a JSON attachment URL or path; file uploads are handled by publish_attachment")
-        body = await request.json()
-        service.require_frontend(body["frontend_id"])
-        purpose = body.get("purpose") or "reference"
-        if purpose not in {"reference", "outbound"}:
-            raise HTTPException(400, "purpose must be reference or outbound")
-        reference = {"url": body.get("attachment_url") or body.get("url"), "path": body.get("path"),
-                     "filename": body.get("filename"), "content_type": body.get("content_type")}
-        items = await service.normalize(Identity(frontend_id=body["frontend_id"],
-            user_id=str(body.get("user_id") or "reference")), [reference], False)
-        if purpose == "outbound" and config.frontends[body["frontend_id"]].provider == "qxt":
-            if urlparse(items[0].url).scheme not in {"http", "https"}:
-                raise HTTPException(400, "QXT media upload requires an http(s) URL")
-            return await service.channels.parsers[body["frontend_id"]].upload_outbound_attachment(
-                attachment=items[0].model_dump(mode="json"))
-        return items[0].model_dump(mode="json")
 
     return app

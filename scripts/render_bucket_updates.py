@@ -17,8 +17,6 @@ from container_up.bucket_manager import BucketManager
 
 def render(config: FrontendConfig | FrontendsConfig, current: dict,
            frontend_id: str | None = None) -> dict:
-    if config.control.bucket_pool is None:
-        raise ValueError("bucket updates require a dynamic pool")
     manager = BucketManager(config.control_config())
     items = []
     for workload in current["items"]:
@@ -31,7 +29,7 @@ def render(config: FrontendConfig | FrontendsConfig, current: dict,
         owner = metadata.get("annotations", {}).get("opencode.io/frontend-id")
         if owner and frontend_id and owner != frontend_id:
             continue
-        desired = manager.deployment(name, owner or frontend_id)
+        desired = manager.deployment(name, owner)
         desired["spec"]["replicas"] = workload["spec"].get("replicas", 1)
         items.append(desired)
     return {"apiVersion": "v1", "kind": "List", "items": items}
@@ -40,11 +38,9 @@ def render(config: FrontendConfig | FrontendsConfig, current: dict,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--frontend-id", help="Owner of legacy deployments without a frontend annotation")
+    parser.add_argument("--frontend-id", help="Only update buckets belonging to this frontend")
     args = parser.parse_args()
     config = load_frontends(args.config)
-    if config.control.bucket_pool is None:
-        parser.error("bucket updates require a dynamic pool")
     result = subprocess.run(["kubectl", "-n", config.control.bucket_pool.namespace,
         "get", "deployments", "-l", "app=opencode-bucket", "-o", "json"],
         check=True, capture_output=True, text=True)

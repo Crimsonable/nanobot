@@ -7,7 +7,6 @@ from pathlib import Path
 import httpx
 
 from agent_backend.config import OpenCodeConfig
-from agent_backend.models import digest
 
 class OpenCodeClient:
     def __init__(self, config: OpenCodeConfig, password: str):
@@ -40,38 +39,34 @@ class OpenCodeClient:
         data = response.json()
         if Path(data["directory"]).resolve() != self.directory:
             raise RuntimeError("OpenCode created session in an unexpected directory")
-        await self.set_permissions(data["id"], permissions)
+        self.check_permissions(await self.session(data["id"]), permissions)
         return data["id"]
 
-    async def set_context(self, session_id: str, context: dict) -> None:
+    async def set_context(self, session_id: str, context: dict, info: dict) -> None:
         # PATCH only metadata: resending permissions appends rules in OpenCode 1.18.31.
-        info = await self.session(session_id)
-        metadata = dict(info.get("metadata") or {})
-        previous = metadata.get("bucket_runtime") or {}
+        metadata = dict(info["metadata"])
+        previous = metadata["bucket_runtime"]
+        if previous["schema_version"] != 1:
+            raise ValueError("OpenCode session metadata schema mismatch")
         for field in ("frontend_id", "user_id", "identity_id", "chat_id"):
-            if field in previous and field in context and previous[field] != context[field]:
+            if previous[field] != context[field]:
                 raise PermissionError("OpenCode session metadata ownership mismatch")
-        if "conversation_id" in previous and "chat_id" in context:
-            if previous["conversation_id"] != digest([context["identity_id"], context["chat_id"]]):
-                raise PermissionError("OpenCode session metadata ownership mismatch")
-        requests = {**previous.get("requests", {}), **context["requests"]}
+        requests = {**previous["requests"], **context["requests"]}
         metadata["bucket_runtime"] = {**context, "requests": dict(list(requests.items())[-128:])}
         response = await self.http.patch(f"/session/{session_id}", params=self.params, json={"metadata": metadata})
         response.raise_for_status()
 
-    async def set_permissions(self, session_id: str, permissions: list[dict]) -> None:
+    @staticmethod
+    def check_permissions(info: dict, permissions: list[dict]) -> None:
         # v1.18.31 PATCH appends rules. Managed sessions have an immutable policy;
         # never silently accumulate or repair an unknown policy on a shared server.
-        current = await self.http.get(f"/session/{session_id}", params=self.params)
-        current.raise_for_status()
-        if current.json().get("permission") != permissions:
-            raise RuntimeError("session permission readback failed: " + json.dumps(current.json().get("permission")))
+        if info["permission"] != permissions:
+            raise RuntimeError("session permission readback failed: " + json.dumps(info["permission"]))
 
-    async def submit(self, session_id: str, message_id: str, text: str, model: str) -> None:
-        provider, model_id = model.split("/", 1)
+    async def submit(self, session_id: str, message_id: str, text: str) -> None:
         response = await self.http.post(f"/session/{session_id}/prompt_async", params=self.params, json={
-            "messageID": message_id, "model": {"providerID": provider, "modelID": model_id},
-            "agent": "build", "parts": [{"type": "text", "text": text}]})
+            "messageID": message_id,
+            "parts": [{"type": "text", "text": text}]})
         response.raise_for_status()
 
     async def paths(self) -> dict:
@@ -87,6 +82,16 @@ class OpenCodeClient:
     async def abort(self, session_id: str) -> None:
         response = await self.http.post(f"/session/{session_id}/abort", params=self.params)
         response.raise_for_status()
+
+    async def delete_session(self, session_id: str) -> None:
+        response = await self.http.delete(f"/session/{session_id}", params=self.params)
+        if response.status_code != 404:
+            response.raise_for_status()
+
+    async def children(self, session_id: str) -> list[dict]:
+        response = await self.http.get(f"/session/{session_id}/children", params=self.params)
+        response.raise_for_status()
+        return response.json()
 
     async def close(self):
         await self.http.aclose()

@@ -17,25 +17,22 @@ def test_build_chat_completions_url_handles_trailing_slash() -> None:
 
 
 @pytest.mark.parametrize(
-    ("url", "content_type", "expected"),
+    ("content_type", "expected"),
     [
-        ("https://files.example/media", "image/jpeg", "image"),
-        ("https://files.example/media", "video/mp4; charset=binary", "video"),
-        ("https://files.example/photo.PNG?token=abc", None, "image"),
-        ("https://files.example/clip.MOV?token=abc", "application/octet-stream", "video"),
+        ("image/jpeg", "image"),
+        ("video/mp4; charset=binary", "video"),
     ],
 )
 def test_classify_media_type(
-    url: str,
     content_type: str | None,
     expected: str,
 ) -> None:
-    assert classify_media_type(url, content_type) == expected
+    assert classify_media_type(content_type) == expected
 
 
 def test_classify_media_type_rejects_non_media() -> None:
-    with pytest.raises(ToolError, match="not an image or video"):
-        classify_media_type("https://files.example/report.pdf", "application/pdf")
+    with pytest.raises(ToolError, match="Content-Type"):
+        classify_media_type("application/pdf")
 
 
 def test_build_vllm_payload_uses_image_url_block() -> None:
@@ -64,3 +61,9 @@ def test_build_vllm_payload_uses_video_url_block() -> None:
         "type": "video_url",
         "video_url": {"url": "https://files.example/clip.mp4"},
     }
+
+
+@pytest.mark.parametrize("content_type", [None, "application/octet-stream"])
+def test_media_type_is_not_guessed(content_type):
+    with pytest.raises(ToolError, match="Content-Type"):
+        classify_media_type(content_type)

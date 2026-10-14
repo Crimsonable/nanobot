@@ -1,182 +1,104 @@
-import type { PluginInput } from "@opencode-ai/plugin"
-import { randomUUID } from "node:crypto"
+import { randomUUID, createHash } from "node:crypto"
+import { mkdir, readdir, readFile, rename, unlink, open } from "node:fs/promises"
+import { join } from "node:path"
 
-type Turn = { input: string; request: string; messages: Map<string, any>; revision: number; lastProgress: number }
+type Envelope = { type: string; event_id: string; directory: string; session_id: string;
+  message_id: string; input_message_id: string; request_id: string; event: any }
 
-// Replies come exclusively from plugin events. No message-list fetches or timers
-// querying OpenCode: metadata lookups only identify a managed session on cache miss.
-export function createRuntimeEvents(client: PluginInput["client"], directory: string,
-  send: (body: any) => Promise<unknown>, report: (error: unknown) => void = () => {}) {
+// One native event stream. Persist before returning to OpenCode; remove only after runtime ACK.
+export async function createRuntimeEvents(directory: string, root: string,
+  send: (body: Envelope) => Promise<unknown>, log: (body: Envelope, owner: any) => void) {
+  const folder = join(root, createHash("sha256").update(directory).digest("hex"))
+  await mkdir(folder, { recursive: true })
+  const entries = await readdir(folder)
+  // An unfinished write was never acknowledged to OpenCode. It is not a queued event.
+  for (const name of entries.filter(name => /^\d{20}\.json\.tmp$/.test(name))) await unlink(join(folder, name))
+  const files = entries.filter(name => /^\d{20}\.json$/.test(name)).sort()
+  let sequence = files.length ? Number(files.at(-1)!.split(".")[0]) : 0
   const contexts = new Map<string, any>()
-  const turns = new Map<string, Turn>()
-  const closed = new Set<string>()
-  const earlyParts = new Map<string, Map<string, any>>()
   const inputs = new Map<string, string>()
-  const toolMessages = new Map<string, string>()
+  const activeInputs = new Map<string, string>()
+  const tools = new Map<string, string>()
+  const parts = new Map<string, string>()
   let pending = Promise.resolve()
+  let worker: Promise<void> | undefined
+  let failure: unknown
 
-  function close(session: string, turn: Turn) {
-    closed.add(session + ":" + turn.input)
-    if (closed.size > 4096) closed.delete(closed.values().next().value!)
-    turns.delete(session)
-  }
-
-  async function context(session: string, input: string) {
-    let ctx = contexts.get(session)
-    if (!ctx?.requests?.[input]) {
-      const response = await client.session.get({ path: { id: session }, signal: AbortSignal.timeout(2000) })
-      if (response.error) throw new Error("session metadata lookup failed")
-      const info: any = response.data
-      ctx = info?.metadata?.bucket_runtime
-      if (ctx?.schema_version === 1) {
-        contexts.set(session, ctx)
-        if (contexts.size > 4096) contexts.delete(contexts.keys().next().value!)
+  async function drain() {
+    while (files.length) {
+      const file = join(folder, files[0])
+      const body = JSON.parse(await readFile(file, "utf8"))
+      try {
+        await send(body)
+      } catch (error) {
+        console.error("Runtime event unacknowledged; retained for delivery", body.event_id)
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        continue
       }
-    }
-    return ctx?.schema_version === 1 ? ctx : undefined
-  }
-
-  async function sendWithRetry(body: any) {
-    for (let attempt = 0; ; attempt++) {
-      try { await send(body); return } catch (error) {
-        if (attempt === 2) throw error
-        await new Promise(resolve => setTimeout(resolve, 50 * 2 ** attempt))
-      }
+      await unlink(file)
+      files.shift()
     }
   }
-
-  async function deliver(session: string, turn: Turn, fields: any) {
-    await sendWithRetry({ session_id: session, request_id: turn.request, input_message_id: turn.input,
-      directory, revision: ++turn.revision, ...fields })
+  function start() {
+    if (worker || failure) return
+    worker = drain().catch(error => { failure = error }).finally(() => {
+      worker = undefined
+      if (files.length && !failure) start()
+    })
   }
-
-  async function forward(event: any, eventID: string) {
-    const p = event.properties ?? {}, info = p.info
-    const session = p.sessionID ?? p.part?.sessionID ?? info?.sessionID ??
-      (event.type.startsWith("session.") ? info?.id : undefined) ?? ""
-    if (["session.created", "session.updated"].includes(event.type)) {
-      const ctx = info?.metadata?.bucket_runtime
-      if (ctx?.schema_version === 1) contexts.set(session, ctx)
-    }
-    const message = p.messageID ?? p.part?.messageID ??
-      (event.type === "message.updated" ? info?.id : undefined) ?? toolMessages.get(session + ":" + p.callID) ?? ""
-    if (p.part?.type === "tool" && p.part.callID && message) {
-      toolMessages.set(session + ":" + p.part.callID, message)
-      if (toolMessages.size > 8192) toolMessages.delete(toolMessages.keys().next().value!)
-    }
-    const key = session + ":" + message
-    if (event.type === "message.updated") {
-      const input = info?.role === "user" ? info.id : info?.parentID
-      if (input) inputs.set(key, input)
-      if (inputs.size > 8192) inputs.delete(inputs.keys().next().value!)
-    }
-    const input = inputs.get(key) ?? ""
-    // Session/global/child events without a known parent stay uncorrelated. Never
-    // assign a delayed event to whichever request happens to be running now.
-    await sendWithRetry({ type: "opencode.event", event_id: eventID, directory,
-      session_id: session, message_id: message, input_message_id: input,
-      request_id: contexts.get(session)?.requests?.[input] ?? "", event })
-  }
-
-  function records(turn: Turn) {
-    return [...turn.messages.values()].map(message => ({ info: message.info, parts: [...message.parts.values()] }))
-  }
-
-  async function complete(session: string, turn: Turn) {
-    const messages = records(turn)
-    if (messages.some(m => m.parts.some((p: any) => p.type === "tool" && ["pending", "running"].includes(p.state?.status)))) return
-    const last = messages.filter(m => !m.info.summary).sort((a, b) => (a.info.time?.created ?? 0) - (b.info.time?.created ?? 0)
-      || a.info.id.localeCompare(b.info.id)).at(-1)
-    if (!last?.info.time?.completed) return
-    if (!last.info.error && !["stop", "end_turn", "length", "content-filter"].includes(last.info.finish)) return
-    await deliver(session, turn, { type: "result", messages })
-    close(session, turn)
-  }
-
-  async function onEvent(event: any) {
-    const p = event.properties ?? {}
-    const info = p.info
-    const session = p.sessionID ?? p.part?.sessionID ?? info?.sessionID ??
-      (event.type.startsWith("session.") ? info?.id : undefined)
-    if (!session) return
-    if (["session.created", "session.updated"].includes(event.type)) {
-      const ctx = info?.metadata?.bucket_runtime
-      if (ctx?.schema_version === 1) {
-        contexts.set(session, ctx)
-        if (contexts.size > 4096) contexts.delete(contexts.keys().next().value!)
-      }
-      return
-    }
-    if (event.type === "session.deleted") { contexts.delete(session); turns.delete(session); return }
-    if (event.type === "message.updated") {
-      const input = info.role === "user" ? info.id : info.parentID
-      if (!input || closed.has(session + ":" + input)) return
-      const ctx = await context(session, input)
-      if (!ctx?.requests?.[input]) return // Child/unmanaged messages cannot finish a root request.
-      let turn = turns.get(session)
-      if (!turn) {
-        turn = { input, request: ctx.requests[input], messages: new Map(), revision: 0, lastProgress: 0 }
-        turns.set(session, turn)
-      }
-      if (turn.input !== input || info.role !== "assistant") return
-      const key = session + ":" + info.id
-      const parts = turn.messages.get(info.id)?.parts ?? earlyParts.get(key) ?? new Map()
-      earlyParts.delete(key)
-      turn.messages.set(info.id, { info: { id: info.id, sessionID: session, role: info.role,
-        parentID: info.parentID, time: info.time, finish: info.finish, error: info.error,
-        summary: info.summary, tokens: info.tokens }, parts })
-      await complete(session, turn)
-      return
-    }
-    const turn = turns.get(session)
-    if (event.type === "session.error") {
-      if (turn) {
-        await deliver(session, turn, { type: "error", error: p.error?.name ?? "MODEL_ERROR" })
-        close(session, turn)
-      }
-      return
-    }
-    if (!["message.part.updated", "message.part.delta"].includes(event.type)) return
-    const part = p.part
-    const messageID = part?.messageID ?? p.messageID
-    const partID = part?.id ?? p.partID
-    if (!messageID || !partID) return
-    const message = turn?.messages.get(messageID)
-    const key = session + ":" + messageID
-    const parts: Map<string, any> = message?.parts ?? earlyParts.get(key) ?? new Map()
-    if (part?.type === "text") parts.set(partID, { id: partID, type: "text", text: part.text ?? "", ignored: part.ignored })
-    else if (part?.type === "tool") parts.set(partID, { id: partID, type: "tool", callID: part.callID,
-      tool: part.tool, state: { status: part.state?.status } })
-    else if (event.type === "message.part.delta" && p.field === "text" && parts.get(partID)?.type === "text") {
-      parts.get(partID).text += p.delta
-    } else return // All parts are forwarded above; only reply text enters the final result.
-    if (!message || !turn) {
-      earlyParts.set(key, parts)
-      if (earlyParts.size > 256) earlyParts.delete(earlyParts.keys().next().value!)
-      return
-    }
-    if (part?.type === "tool") await deliver(session, turn, { type: "tool.progress",
-      call_id: part.callID, tool: part.tool, status: part.state?.status })
-    else if (Date.now() - turn.lastProgress >= 100) {
-      turn.lastProgress = Date.now()
-      const content = records(turn).filter(m => !m.info.summary).flatMap(m => m.parts)
-        .filter((v: any) => v.type === "text" && !v.ignored && v.text).map((v: any) => v.text).join("\n").slice(-200000)
-      await deliver(session, turn, { type: "response.delta", content })
-    }
-    await complete(session, turn)
-  }
+  start()
 
   return {
     event(event: any) {
       const snapshot = structuredClone(event)
-      const eventID = "oc_" + randomUUID()
       pending = pending.then(async () => {
-        // No type whitelist, throttling, content truncation or terminal-state filter.
-        await forward(snapshot, eventID)
-        await onEvent(snapshot)
-      }).catch(report)
+        if (failure) throw failure
+        const p = snapshot.properties ?? {}, info = p.info
+        const session = p.sessionID ?? p.part?.sessionID ?? info?.sessionID ??
+          (snapshot.type.startsWith("session.") ? info?.id : undefined) ?? ""
+        if (["session.created", "session.updated"].includes(snapshot.type)) {
+          const ctx = info?.metadata?.bucket_runtime
+          if (ctx?.schema_version === 1) contexts.set(session, ctx)
+          else if (info?.parentID && contexts.has(info.parentID)) {
+            contexts.set(session, { ...contexts.get(info.parentID), requests: {}, parent_session_id: info.parentID })
+          }
+        }
+        const message = p.messageID ?? p.part?.messageID ??
+          (snapshot.type === "message.updated" ? info?.id : undefined) ?? tools.get(session + ":" + p.callID) ?? ""
+        if (p.part?.callID) tools.set(session + ":" + p.part.callID, message)
+        if (p.part?.type) parts.set(session + ":" + p.part.id, p.part.type)
+        if (snapshot.type === "message.updated") {
+          inputs.set(session + ":" + message, info.role === "user" ? info.id : info.parentID)
+          if (info.role === "user") activeInputs.set(session, info.id)
+        }
+        const input = (snapshot.type === "session.error" ? activeInputs.get(session) : inputs.get(session + ":" + message)) ?? ""
+        const owner = contexts.get(session)
+        const body: Envelope = { type: "opencode.event", event_id: "oc_" + randomUUID(), directory,
+          session_id: session, message_id: message, input_message_id: input,
+          request_id: owner?.requests?.[input] ?? "", event: snapshot }
+        const name = String(++sequence).padStart(20, "0") + ".json"
+        const target = join(folder, name)
+        const file = await open(target + ".tmp", "wx")
+        try { await file.writeFile(JSON.stringify(body)); await file.sync() } finally { await file.close() }
+        await rename(target + ".tmp", target)
+        files.push(name)
+        start()
+        log(body, { ...owner, part_type: p.part?.type ?? parts.get(session + ":" + p.partID) })
+        if (snapshot.type === "session.idle") activeInputs.delete(session)
+        if (snapshot.type === "session.deleted") {
+          contexts.delete(session)
+          activeInputs.delete(session)
+          for (const map of [inputs, tools, parts]) {
+            for (const key of map.keys()) if (key.startsWith(session + ":")) map.delete(key)
+          }
+        }
+      })
       return pending
     },
-    flush: () => pending,
+    async flush() {
+      await pending
+      while (worker) await worker
+      if (failure) throw failure
+    },
   }
 }

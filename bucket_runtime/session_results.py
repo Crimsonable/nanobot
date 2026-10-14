@@ -1,4 +1,4 @@
-"""Validate final reply snapshots pushed by the OpenCode plugin."""
+"""Determine final replies and usage from persisted native message events."""
 from agent_backend.models import Usage
 
 

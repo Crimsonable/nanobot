@@ -6,12 +6,13 @@ function quote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'"
 }
 
-export const BucketRuntimePlugin: Plugin = async ({ client: opencode, directory }) => {
+export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
   const url = process.env.BUCKET_RPC_URL
   const token = process.env.BUCKET_RPC_TOKEN
   const python = process.env.BUCKET_EXEC_PYTHON
   const client = process.env.BUCKET_EXEC_CLIENT
-  if (!url || !token || !python || !client) throw new Error("Missing trusted runtime configuration")
+  const eventRoot = process.env.BUCKET_EVENT_ROOT
+  if (!url || !token || !python || !client || !eventRoot) throw new Error("Missing trusted runtime configuration")
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(url)) throw new Error("Runtime RPC must be loopback")
 
   async function rpc(path: string, body: unknown, signal?: AbortSignal) {
@@ -23,21 +24,20 @@ export const BucketRuntimePlugin: Plugin = async ({ client: opencode, directory 
     return response.json()
   }
 
-  await rpc("/plugin/ready", { version: "3" })
-  const logger = createSessionLogger(opencode, JSON.parse(process.env.BUCKET_SESSION_LOGGING ?? "{}"))
-  const events = createRuntimeEvents(opencode, directory,
-    body => rpc("/plugin/event", body, AbortSignal.timeout(5000)),
-    () => console.error("Runtime event delivery failed"))
+  const logger = createSessionLogger(JSON.parse(process.env.BUCKET_SESSION_LOGGING!))
+  const events = await createRuntimeEvents(directory, eventRoot,
+    body => rpc("/plugin/event", body, AbortSignal.timeout(5000)), logger)
+  await rpc("/plugin/ready", { version: "4" })
   return {
-    event: async ({ event }) => { await Promise.all([logger.event(event), events.event(event)]) },
-    dispose: async () => { await Promise.all([logger.flush(), events.flush()]) },
+    event: async ({ event }) => { await events.event(event) },
+    dispose: async () => { await events.flush() },
     "tool.execute.before": async (input, output) => {
       // Runtime applies this user's configured session scope to native file tools.
       const args = structuredClone(output.args)
       delete args._runtime_ticket
-      await Promise.all([logger.toolStart(input, args), events.event({ type: "tool.execute.before", properties: {
+      await events.event({ type: "tool.execute.before", properties: {
         sessionID: input.sessionID, callID: input.callID, tool: input.tool, args,
-      } })])
+      } })
       const authorized = await rpc("/authorize", {
         session_id: input.sessionID, directory, call_id: input.callID, tool: input.tool, args,
       })
@@ -60,7 +60,6 @@ export const BucketRuntimePlugin: Plugin = async ({ client: opencode, directory 
           files: tool.schema.array(tool.schema.object({
             path: tool.schema.string(), filename: tool.schema.string().optional(),
           })).min(1).max(32),
-          caption: tool.schema.string().optional(),
           _runtime_ticket: tool.schema.string().optional().describe("Reserved; set by the runtime hook"),
         },
         async execute(args, context) {

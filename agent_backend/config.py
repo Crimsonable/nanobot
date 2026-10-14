@@ -6,7 +6,7 @@ from typing import Literal, TypeVar
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from agent_backend.common import frontend_common_root, frontend_segment, scoped_public_path
 from agent_backend.models import StrictModel
@@ -15,7 +15,7 @@ from agent_backend.workspaces import workspace_volume_subpath
 
 class UserSandbox(StrictModel):
     enabled: bool = True
-    network: bool = False
+    network: bool = True
 
 
 class UserSession(StrictModel):
@@ -26,7 +26,7 @@ class UserSession(StrictModel):
 
 class UserFilesystem(StrictModel):
     workspace: Literal["read_write", "read_only", "none"] = "read_write"
-    # None inherits the profile's public roots; [] explicitly grants none.
+    # Additional public directories; frontend app is always included.
     public_roots: list[Path] | None = None
 
 
@@ -62,12 +62,6 @@ class PermissionConfig(StrictModel):
                         overrides["tools"] = {**values[section]["tools"], **overrides["tools"]}
                     values[section].update(overrides)
         return UserPolicy.model_validate(values)
-
-
-class Profile(StrictModel):
-    model: str = Field(pattern=r"^[^/\s]+/\S+$")
-    instructions: str = ""
-    public_roots: list[Path] = Field(default_factory=list)
 
 
 class Limits(StrictModel):
@@ -119,9 +113,8 @@ class StorageConfig(StrictModel):
     secret_key: SecretStr | None = None
     region: str = "us-east-1"
     public_base_url: str = ""
-    prefix: str = Field(default="attachments", validation_alias=AliasChoices("key_prefix", "prefix"))
-    expiry_seconds: int = Field(default=86400, ge=60,
-                               validation_alias=AliasChoices("presign_expiry_seconds", "expiry_seconds"))
+    key_prefix: str = "attachments"
+    presign_expiry_seconds: int = Field(default=86400, ge=60)
 
     @model_validator(mode="after")
     def credentials(self) -> StorageConfig:
@@ -139,7 +132,6 @@ class RuntimeSettings(StrictModel):
     control_url: str = "ws://container-up:8000/internal/buckets/ws"
     state_root: Path = Path("/data/runtime")
     workspace_root: Path = Path("/mnt/env/workspaces")
-    workspace_layout: Literal["identity_hash", "frontend_user"] = "identity_hash"
     common_root: Path = Path("/mnt/common")
     rpc_port: int = Field(default=4097, ge=1024, le=65535)
     health_port: int = Field(default=8090, ge=1024, le=65535)
@@ -148,7 +140,6 @@ class RuntimeSettings(StrictModel):
     logging_file: Path | None = None
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     limits: Limits = Field(default_factory=Limits)
-    profiles: dict[str, Profile] = Field(min_length=1)
 
     @field_validator("control_url")
     @classmethod
@@ -160,7 +151,7 @@ class RuntimeSettings(StrictModel):
 
 class RuntimeConfig(RuntimeSettings):
     bucket_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
-    frontend_id: str | None = None
+    frontend_id: str = Field(min_length=1)
     storage: StorageConfig | None = None
     frontend_config_file: Path | None = None
 
@@ -188,22 +179,19 @@ class RuntimeConfig(RuntimeSettings):
             raise ValueError("service files must not be inside workspace_root")
         if len({self.rpc_port, self.health_port, self.opencode.port}) != 3:
             raise ValueError("OpenCode, RPC and health ports must be distinct")
-        for profile in self.profiles.values():
-            for root in profile.public_roots + self.sandbox.readonly_roots:
-                root = scoped_public_path(root, self.common_root, self.frontend_id)
-                if any(root.is_relative_to(Path(p).resolve()) for p in ["/proc", "/sys", "/dev"]):
-                    raise ValueError("host process, device and kernel filesystems cannot be mounted")
-                if root == Path(root.anchor) or workspace.is_relative_to(root) or root.is_relative_to(workspace):
-                    raise ValueError("read-only mounts must not expose workspace_root")
-                if any(p.resolve().is_relative_to(root) for p in protected):
-                    raise ValueError("read-only mounts must not expose service files")
+        for root in self.sandbox.readonly_roots:
+            root = scoped_public_path(root, self.common_root, self.frontend_id)
+            if any(root.is_relative_to(Path(p).resolve()) for p in ["/proc", "/sys", "/dev"]):
+                raise ValueError("host process, device and kernel filesystems cannot be mounted")
+            if root == Path(root.anchor) or workspace.is_relative_to(root) or root.is_relative_to(workspace):
+                raise ValueError("read-only mounts must not expose workspace_root")
+            if any(p.resolve().is_relative_to(root) for p in protected):
+                raise ValueError("read-only mounts must not expose service files")
         return self
 
 
 class Frontend(StrictModel):
     provider: Literal["web", "qxt", "feishu"]
-    profile_id: str
-    credential_file: Path | None = None
     channel_config: dict = Field(default_factory=dict, repr=False)
     attachment_url_prefix: str = ""
 
@@ -231,22 +219,19 @@ class ControlConfig(StrictModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
     state_root: Path = Path("/data/control")
-    bucket_ids: list[str] = Field(default_factory=list)
     frontends: dict[str, Frontend]
     limits: Limits = Field(default_factory=Limits)
-    bucket_pool: BucketPoolConfig | None = None
-    runtime_template: RuntimeSettings | None = None
+    bucket_pool: BucketPoolConfig = Field(default_factory=BucketPoolConfig)
     runtime_templates: dict[str, RuntimeSettings] = Field(default_factory=dict)
     frontend_idle_ttl_seconds: dict[str, int] = Field(default_factory=dict)
     frontend_config_path: Path = Path("/mnt/common/frontends.json")
-    instance_idle_ttl_seconds: int = 3600
 
     def runtime_for(self, frontend_id: str) -> RuntimeSettings:
         if frontend_id not in self.frontends:
             raise ValueError("frontend is not registered")
-        runtime = self.runtime_templates.get(frontend_id) if self.runtime_templates else self.runtime_template
-        if runtime is None:
+        if frontend_id not in self.runtime_templates:
             raise ValueError("frontend runtime is not configured")
+        runtime = self.runtime_templates[frontend_id]
         return runtime
 
 
@@ -254,39 +239,33 @@ class ControlSettings(StrictModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
     state_root: Path = Path("/data/control")
-    bucket_ids: list[str] = Field(default_factory=list)
-    bucket_pool: BucketPoolConfig | None = Field(default_factory=BucketPoolConfig)
+    bucket_pool: BucketPoolConfig = Field(default_factory=BucketPoolConfig)
     limits: Limits = Field(default_factory=Limits)
 
 
-class DeploymentProfile(Profile):
-    public_roots: list[Path] = Field(default_factory=lambda: [Path("/mnt/common/{frontend_id}/app"), Path("/mnt/source/public")])
-
-
 class DeploymentRuntimeSettings(RuntimeSettings):
-    workspace_layout: Literal["identity_hash", "frontend_user"] = "frontend_user"
     permissions_file: Path | None = Path("/mnt/common/{frontend_id}/config/user-permissions.yaml")
-    profiles: dict[str, DeploymentProfile] = Field(min_length=1)
 
 
 class FrontendSettings(StrictModel):
     """Routing and runtime settings belonging to one frontend registry entry."""
 
-    frontend_id: str = Field(min_length=1, validation_alias=AliasChoices("frontend_id", "id"))
+    frontend_id: str = Field(min_length=1)
     provider: Literal["web", "qxt", "feishu"]
     send_msg_url: str = ""
     attachment_storage: StorageConfig | None = None
     instance_idle_ttl_seconds: int = Field(default=3600, ge=0)
-    profile_id: str = "reports"
     attachment_url_prefix: str = ""
     channel: dict = Field(default_factory=dict, repr=False)
     runtime: DeploymentRuntimeSettings
 
     @model_validator(mode="after")
-    def profile_exists(self) -> FrontendSettings:
+    def validate_frontend(self) -> FrontendSettings:
         frontend_segment(self.frontend_id)
-        if self.profile_id not in self.runtime.profiles:
-            raise ValueError("profile_id must exist in runtime.profiles")
+        allowed = {"web": set(), "feishu": {"app_id", "app_secret"},
+                   "qxt": {"app_id", "app_secret", "corp_id", "callback_token", "access_url"}}
+        if unknown := set(self.channel) - allowed[self.provider]:
+            raise ValueError("unsupported channel configuration: " + ", ".join(sorted(unknown)))
         return self
 
 
@@ -297,27 +276,24 @@ class FrontendConfig(FrontendSettings):
 
     @model_validator(mode="after")
     def deployment_settings(self) -> FrontendConfig:
-        if self.control.bucket_pool:
-            pool = self.control.bucket_pool
-            if not pool.node_selector:
-                raise ValueError("host-mounted buckets require node_selector for the storage node")
-            if not self.runtime.state_root.is_relative_to(Path("/data")) or self.runtime.state_root == Path("/data"):
-                raise ValueError("dynamic runtime state_root must be below /data")
-            workspace_volume_subpath(self.runtime.workspace_root, self.frontend_id)
-            if self.control.bucket_ids:
-                raise ValueError("dynamic pool does not use static bucket_ids")
+        pool = self.control.bucket_pool
+        if not pool.node_selector:
+            raise ValueError("host-mounted buckets require node_selector for the storage node")
+        if not self.runtime.state_root.is_relative_to(Path("/data")) or self.runtime.state_root == Path("/data"):
+            raise ValueError("runtime state_root must be below /data")
+        workspace_volume_subpath(self.runtime.workspace_root, self.frontend_id)
         return self
 
     def control_config(self) -> ControlConfig:
         channel = {**self.channel, "send_msg_url": self.send_msg_url}
-        frontend = Frontend(provider=self.provider, profile_id=self.profile_id,
+        frontend = Frontend(provider=self.provider,
                             channel_config=channel,
                             attachment_url_prefix=self.attachment_url_prefix)
         return ControlConfig(**self.control.model_dump(), frontends={self.frontend_id: frontend},
-                             runtime_template=self.runtime,
-                             instance_idle_ttl_seconds=self.instance_idle_ttl_seconds)
+                             runtime_templates={self.frontend_id: self.runtime},
+                             frontend_idle_ttl_seconds={self.frontend_id: self.instance_idle_ttl_seconds})
 
-    def runtime_config(self, path: Path, bucket_id: str | None = None) -> RuntimeConfig:
+    def runtime_config(self, path: Path, bucket_id: str) -> RuntimeConfig:
         values = self.runtime.model_dump()
         own_root = frontend_common_root(self.runtime.common_root, self.frontend_id)
 
@@ -345,29 +321,13 @@ class FrontendConfig(FrontendSettings):
         if storage:
             storage = storage.model_copy(update={name: frontend_path(getattr(storage, name), "config")
                 for name in ["access_key_file", "secret_key_file"]})
-        for profile in values["profiles"].values():
-            profile["public_roots"] = [
-                frontend_path(root, "app") if root.as_posix().startswith("/mnt/common/{frontend_id}/")
-                or root.as_posix() == "/mnt/common/{frontend_id}" else root
-                for root in profile["public_roots"]]
-        if self.control.bucket_pool:
-            import re
-            pool = self.control.bucket_pool
-            if not bucket_id or not re.fullmatch(re.escape(pool.name_prefix) + r"-[0-9a-f]{12}", bucket_id):
-                raise ValueError("dynamic runtime requires a scheduler-issued --bucket-id")
-            values["state_root"] = self.runtime.state_root / self.frontend_id / bucket_id
-            return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id, storage=storage,
-                                 frontend_config_file=path.resolve())
-        buckets = self.control.bucket_ids
-        if bucket_id is None:
-            if len(buckets) != 1:
-                raise ValueError("--bucket-id is required when multiple buckets are configured")
-            bucket_id = next(iter(buckets))
-        if bucket_id not in buckets:
-            raise ValueError("bucket ID is not registered in control.bucket_ids")
+        import re
+        pool = self.control.bucket_pool
+        if not re.fullmatch(re.escape(pool.name_prefix) + r"-[0-9a-f]{12}", bucket_id):
+            raise ValueError("runtime requires a scheduler-issued --bucket-id")
+        values["state_root"] = self.runtime.state_root / self.frontend_id / bucket_id
         return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id,
-                             storage=storage,
-                             frontend_config_file=path.resolve())
+                             storage=storage, frontend_config_file=path.resolve())
 
 
 class FrontendsConfig(StrictModel):
@@ -381,13 +341,9 @@ class FrontendsConfig(StrictModel):
         ids = [frontend.frontend_id for frontend in self.frontends]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate frontend id")
-        if len(ids) > 1 and not self.control.bucket_pool:
-            raise ValueError("multiple frontends require the dynamic bucket pool")
         return self
 
-    def frontend(self, frontend_id: str | None) -> FrontendConfig:
-        if frontend_id is None and len(self.frontends) == 1:
-            frontend_id = self.frontends[0].frontend_id
+    def frontend(self, frontend_id: str) -> FrontendConfig:
         entry = next((frontend for frontend in self.frontends if frontend.frontend_id == frontend_id), None)
         if entry is None:
             raise ValueError("--frontend-id must identify a registered frontend")
@@ -401,8 +357,8 @@ class FrontendsConfig(StrictModel):
         config.frontend_idle_ttl_seconds = {f.frontend_id: f.instance_idle_ttl_seconds for f in selected}
         return config
 
-    def runtime_config(self, path: Path, bucket_id: str | None = None,
-                       frontend_id: str | None = None) -> RuntimeConfig:
+    def runtime_config(self, path: Path, bucket_id: str,
+                       frontend_id: str) -> RuntimeConfig:
         return self.frontend(frontend_id).runtime_config(path, bucket_id)
 
 

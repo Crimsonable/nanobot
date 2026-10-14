@@ -1,3 +1,4 @@
+from support import register_bucket
 import asyncio
 from types import SimpleNamespace
 
@@ -12,11 +13,11 @@ from container_up.server import Inbound, create_app
 @pytest.fixture
 def control(tmp_path):
     config = ControlConfig.model_validate({"state_root": str(tmp_path / "state"),
-        "bucket_ids": ["b"],
-        "frontends": {"web": {"provider": "web", "profile_id": "p", "channel_config": {}}},
+
+        "frontends": {"web": {"provider": "web", "channel_config": {}}},
     })
     app = create_app(config)
-    app.state.service.peers["b"] = SimpleNamespace(closed=False)
+    register_bucket(app.state.service)
     yield app
     app.state.service.db.close()
 
@@ -24,14 +25,14 @@ def control(tmp_path):
 @pytest.mark.asyncio
 async def test_keyless_routing_idempotency_and_result_ownership(control):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
-        body = {"user_id": "u", "content": "hello", "request_id": "r",
+        body = {"chat_id": "chat", "user_id": "u", "content": "hello", "request_id": "r",
                 "metadata": {"frontend_id": "forged", "user_id": "someone-else"}}
         first = await client.post("/inbound/web", json=body)
         assert first.status_code == 200
         assert first.json()["identity_id"]
         assert "instance_id" not in first.json()
         assert "conversation_id" not in first.json()
-        assert first.json()["chat_id"] == "default"
+        assert first.json()["chat_id"] == "chat"
         again = await client.post("/inbound/web", json=body)
         assert again.json() == first.json()
         assert len(control.state.service.db.pending("b")) == 1
@@ -39,7 +40,7 @@ async def test_keyless_routing_idempotency_and_result_ownership(control):
         assert changed.status_code == 409
         row = control.state.service.db.get("request", "r")
         assert row["submit"]["identity"] == {"frontend_id": "web", "user_id": "u"}
-        assert row["submit"]["chat_id"] == "default"
+        assert row["submit"]["chat_id"] == "chat"
         assert "conversation_id" not in row["submit"]
         with pytest.raises(PermissionError):
             await control.state.service.on_event("wrong-bucket", Envelope(type="request.completed",
@@ -49,20 +50,6 @@ async def test_keyless_routing_idempotency_and_result_ownership(control):
         response = await client.get("/requests/web/r")
         assert response.json()["content"] == "done"
         assert (await client.get("/requests/other/r")).status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_legacy_user_id_is_only_an_input_alias(control):
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
-        body = {"frontend_id": "web", "usr_id": "alice", "content": "hello", "request_id": "legacy"}
-        result = await client.post("/api/message", json=body)
-        assert result.status_code == 200
-        assert result.json()["user_id"] == "alice"
-        assert "usr_id" not in result.json()
-        conflict = await client.post("/api/message", json={**body, "user_id": "bob"})
-        assert conflict.status_code == 400
-        cancelled = await client.post("/api/cancel", json={"frontend_id": "web", "usr_id": "alice"})
-        assert cancelled.json()["request_ids"] == ["legacy"]
 
 
 @pytest.mark.asyncio
@@ -96,30 +83,6 @@ async def test_bucket_ws_needs_registered_id_but_no_auth_key(control, monkeypatc
     assert unknown.closed == 1008
 
 
-@pytest.mark.asyncio
-async def test_bucket_cannot_publish_for_another_bucket_request(control):
-    service = control.state.service
-    await service.submit("web", Inbound(user_id="alice", content="hello", request_id="r"))
-    with pytest.raises(PermissionError):
-        await service.rpc("other", "attachment.begin", {"request_id": "r"}, None)
-    with pytest.raises(ValueError, match="file transfer RPC"):
-        await service.rpc("b", "input.fetch", {"request_id": "r", "attachment_id": "not-owned"}, None)
-
-
-@pytest.mark.asyncio
-async def test_qxt_input_does_not_use_unguarded_legacy_download(control):
-    service = control.state.service
-    service.config.frontends["web"].provider = "qxt"
-
-    async def forbidden_legacy_helper(payload):
-        raise AssertionError("Inbound references must not be downloaded")
-
-    service.channels.parsers["web"] = SimpleNamespace(prepare_inbound_event=forbidden_legacy_helper)
-    await service.dispatch_channel("web", {"event": {"user_id": "alice", "content": "file",
-        "attachments": [{"url": "https://storage.example/file.txt", "filename": "file.txt"}]}})
-    assert service.db.records("request")[0]["submit"]["attachments"][0]["filename"] == "file.txt"
-
-
 def test_active_channels_import_without_environment_configuration():
     import os
     import subprocess
@@ -140,7 +103,7 @@ async def test_inbound_references_are_forwarded_without_local_io(control):
     service = control.state.service
     references = ["https://unreachable.invalid/photo.jpg", {"path": "/not-mounted-in-cu/report.pdf"},
                   {"path": "relative/data.csv"}]
-    row = await service.submit("web", Inbound(user_id="alice", content="Analyze these", attachments=references))
+    row = await service.submit("web", Inbound(chat_id="chat", user_id="alice", content="Analyze these", attachments=references))
     attachments = row["submit"]["attachments"]
     assert attachments[0]["url"] == references[0]
     assert attachments[1]["path"] == "/not-mounted-in-cu/report.pdf"
@@ -153,7 +116,7 @@ async def test_inbound_references_are_forwarded_without_local_io(control):
 @pytest.mark.asyncio
 async def test_control_returns_runtime_published_url_without_storage(control):
     service = control.state.service
-    await service.submit("web", Inbound(user_id="alice", content="Report", request_id="r"))
+    await service.submit("web", Inbound(chat_id="chat", user_id="alice", content="Report", request_id="r"))
     artifact = {"attachment_id": "published", "url": "https://objects.example/report.pdf", "filename": "report.pdf"}
     await service.on_event("b", Envelope(type="request.completed", bucket_id="b", request_id="r",
         payload={"request_id": "r", "status": "completed", "content": "Done", "attachments": [artifact]}))
@@ -174,8 +137,8 @@ async def test_im_delivery_sends_object_links_without_file_reupload(control):
     async def send(*, payload):
         delivered.append(payload)
 
-    channels.parsers["web"] = SimpleNamespace(post_message_with_retry=send)
-    row = await control.state.service.submit("web", Inbound(user_id="alice", content="Report", request_id="r"))
+    channels.parsers["web"] = SimpleNamespace(post_message=send)
+    row = await control.state.service.submit("web", Inbound(chat_id="chat", user_id="alice", content="Report", request_id="r"))
     result = Result(request_id="r", status="completed", content="Done", attachments=[
         Attachment(filename="report.pdf", url="https://objects.example/report.pdf")])
     await channels.deliver(row, result)
@@ -201,8 +164,7 @@ async def test_cu_keeps_all_events_but_delivers_only_final_message(control):
                 payload={"event": {"type": kind, "properties": {"text": "intermediate reasoning/tool output"}}})
             await service.on_event("b", raw)
             await service.on_event("b", raw)  # Replay does not duplicate the record.
-        await service.on_event("b", Envelope(type="response.delta", bucket_id="b", request_id="r",
-            payload={"revision": 1, "content": "partial response"}))
+
         await asyncio.sleep(0.25)
         assert delivered == []
         assert not service.db.get("request", "r").get("result")

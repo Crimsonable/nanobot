@@ -41,9 +41,9 @@ class FakeManager:
 def service(tmp_path):
     config = load_frontends(EXAMPLE).frontend("web-yk").control_config()
     config.state_root = tmp_path / "control"
-    config.runtime_template.workspace_root = tmp_path / "workspaces"
+    config.runtime_templates["web-yk"].workspace_root = tmp_path / "workspaces"
     config.bucket_pool.max_users_per_bucket = 2
-    config.instance_idle_ttl_seconds = 1
+    config.frontend_idle_ttl_seconds["web-yk"] = 1
     service = ControlService(config)
     service.pool.manager = FakeManager(service)
     yield service
@@ -51,7 +51,7 @@ def service(tmp_path):
 
 
 async def submit(service, user, request):
-    return await service.submit("web-yk", Inbound(user_id=user, content="hello", request_id=request))
+    return await service.submit("web-yk", Inbound(chat_id="chat", user_id=user, content="hello", request_id=request))
 
 
 async def complete(service, row):
@@ -79,44 +79,49 @@ async def test_zero_initial_buckets_capacity_and_concurrent_reservations(service
 
 
 @pytest.mark.asyncio
-async def test_bucket_only_lifecycle_does_not_release_individual_users(service):
+async def test_completed_users_release_capacity_before_whole_bucket_retires(service):
     first, second = await asyncio.gather(submit(service, "a", "a"), submit(service, "b", "b"))
     await complete(service, first)
     expire(service)
     await service.pool.sweep()
-    assert len(service.pool.bindings(first["bucket_id"])) == 2
+    assert len(service.pool.bindings(first["bucket_id"])) == 1
     assert not service.pool.manager.scaled  # b is still executing; no per-user eviction
     await complete(service, second)
     expire(service)
     await service.pool.sweep()
     assert service.pool.manager.scaled == [(first["bucket_id"], 0)]
-    assert all(b["bucket_id"] is None for b in service.db.records("binding"))
-    before = service.db.records("binding")[0]["workspace_path"]
+    assert service.db.records("binding") == []
+    before = workspace_path(service.config.runtime_for("web-yk").workspace_root,
+                            Identity(frontend_id="web-yk", user_id="a"))
     new = await submit(service, "a", "a2")
-    assert new["submit"]["session_epoch"] != first["submit"]["session_epoch"]
-    assert new["submit"]["previous_turns"][0]["assistant"] == "done"
-    assert service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").identity_id)["workspace_path"] == before
+    assert new["bucket_id"] != first["bucket_id"]
+    assert "previous_turns" not in new["submit"]
+    assert "session_epoch" not in new["submit"]
+    assert service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").identity_id)["workspace_path"] == str(before)
 
 
 @pytest.mark.asyncio
-async def test_rebuilt_bucket_restores_only_the_same_user_and_chat_history(service):
+async def test_idle_bucket_is_not_woken_for_a_returning_user(service):
+    buckets = {}
     for user, chat, content in [("alice", "group-1", "Keep this"), ("alice", "group-2", "Other chat"),
                                 ("bob", "group-1", "Other user")]:
         row = await service.submit("web-yk", Inbound(user_id=user, chat_id=chat, content=content))
+        buckets[user] = row["bucket_id"]
         await complete(service, row)
     expire(service)
     await service.pool.sweep()
     restored = await service.submit("web-yk", Inbound(user_id="alice", chat_id="group-1", content="Continue"))
-    assert [turn["user"] for turn in restored["submit"]["previous_turns"]] == ["Keep this"]
+    assert restored["bucket_id"] != buckets["alice"]
+    assert "previous_turns" not in restored["submit"]
 
 
 @pytest.mark.asyncio
-async def test_failed_creation_rolls_back_user_capacity(service):
+async def test_failed_creation_releases_user_reservation(service):
     service.pool.manager.fail_start = True
     with pytest.raises(RuntimeError, match="unavailable"):
         await submit(service, "a", "r")
     assert not service.db.records("request")
-    assert all(not b["bucket_id"] for b in service.db.records("binding"))
+    assert not service.db.records("binding")
     service.pool.manager.fail_start = False
     await submit(service, "a", "r")
     assert len(service.db.records("bucket")) == 1
@@ -135,7 +140,7 @@ async def test_unacked_commands_and_failed_scale_prevent_release(service):
     service.pool.manager.fail_stop = True
     with pytest.raises(RuntimeError, match="scale failed"):
         await service.pool.sweep()
-    assert service.pool.bindings(row["bucket_id"])
+    assert not service.pool.bindings(row["bucket_id"])
     assert service.db.get("bucket", row["bucket_id"])["status"] == "draining"
     service.pool.manager.fail_stop = False
     await service.pool.sweep()
@@ -167,7 +172,7 @@ def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
     assert runtime.state_root == config.runtime.state_root / config.frontend_id / bucket_id
     assert runtime.workspace_root == config.runtime.workspace_root
     assert not hasattr(runtime, "credential_file")
-    manifest = BucketManager(config.control_config()).deployment(bucket_id)
+    manifest = BucketManager(config.control_config()).deployment(bucket_id, "web-yk")
     pod = manifest["spec"]["template"]["spec"]
     assert len(pod["containers"]) == 1
     assert pod["containers"][0]["args"][-1] == bucket_id
@@ -178,7 +183,7 @@ def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
 
 def test_original_workspace_layout_is_bucket_independent(tmp_path):
     identity = Identity(frontend_id="web-yk", user_id="alice")
-    assert workspace_path(tmp_path, identity, "frontend_user") == tmp_path / "web-yk" / "alice"
+    assert workspace_path(tmp_path, identity) == tmp_path / "web-yk" / "alice"
 
 
 @pytest.mark.asyncio
@@ -207,14 +212,14 @@ async def test_reservation_prevents_idle_sweep_and_zero_disables_ttl(service):
         expire(service)
         await service.pool.sweep()
         assert not service.pool.manager.scaled
-    service.config.instance_idle_ttl_seconds = 0
+    service.config.frontend_idle_ttl_seconds["web-yk"] = 0
     expire(service)
     await service.pool.sweep()
     assert not service.pool.manager.scaled
 
 
 @pytest.mark.asyncio
-async def test_slow_retirement_does_not_block_or_erase_new_assignment(service):
+async def test_request_during_retirement_uses_another_bucket(service):
     row = await submit(service, "a", "r")
     await complete(service, row)
     expire(service)
@@ -231,13 +236,28 @@ async def test_slow_retirement_does_not_block_or_erase_new_assignment(service):
     task = asyncio.create_task(service.pool.sweep())
     try:
         await asyncio.wait_for(scaling.wait(), 2)
-        new = await asyncio.wait_for(submit(service, "a", "r2"), 2)
+        waiting = asyncio.create_task(submit(service, "a", "r2"))
+        new = await asyncio.wait_for(waiting, 2)
         assert new["bucket_id"] != row["bucket_id"]
     finally:
         stopped.set()
         await task
+    new = await asyncio.wait_for(waiting, 2)
     binding = service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").identity_id)
-    assert binding["bucket_id"] == new["bucket_id"]
+    assert binding["bucket_id"] == new["bucket_id"] != row["bucket_id"]
+
+
+@pytest.mark.asyncio
+async def test_returning_user_uses_free_capacity_not_previous_bucket(service):
+    service.config.bucket_pool.max_users_per_bucket = 1
+    first = await submit(service, "alice", "a1")
+    other = await submit(service, "bob", "b1")
+    await complete(service, first)
+    occupying = await submit(service, "charlie", "c1")
+    assert occupying["bucket_id"] == first["bucket_id"]
+    await complete(service, other)
+    returning = await submit(service, "alice", "a2")
+    assert returning["bucket_id"] == other["bucket_id"]
 
 
 @pytest.mark.asyncio
@@ -263,13 +283,13 @@ async def test_kubernetes_api_create_update_scale_and_wait_for_pod_exit():
             status = 404
         else:
             present = True
-            body = manager.deployment(bucket_id)
+            body = manager.deployment(bucket_id, "web-yk")
             body["metadata"]["resourceVersion"] = "1"
             body["status"] = {"replicas": replicas}
         return httpx.Response(status, json=body, request=httpx.Request(method, "https://kubernetes" + path))
 
     manager.request = request
-    await manager.ensure(bucket_id)
+    await manager.ensure(bucket_id, "web-yk")
     assert replicas == 1
     assert any(method == "POST" and path.endswith("/deployments") for method, path, _ in calls)
     await manager.scale(bucket_id, 0)

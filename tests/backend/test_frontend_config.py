@@ -10,17 +10,15 @@ EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
 
 
 def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
-    config = FrontendConfig.model_validate({"id": "web-yk", "provider": "web",
+    config = FrontendConfig.model_validate({"frontend_id": "web-yk", "provider": "web",
         "send_msg_url": "http://frontend/outbound",
-        "runtime": {"profiles": {"reports": {"model": "intranet/model"}}}})
+        "runtime": {}})
     assert config.control.port == 8000
     assert config.control.bucket_pool.namespace == "opencode-sv"
     assert config.control.bucket_pool.data_pvc == "opencode-data-pvc"
     assert config.runtime.opencode.port == 4096
     assert config.runtime.workspace_root == Path("/mnt/env/workspaces")
     assert config.runtime.permissions_file == Path("/mnt/common/{frontend_id}/config/user-permissions.yaml")
-    assert config.runtime.profiles["reports"].public_roots == [Path("/mnt/common/{frontend_id}/app"), Path("/mnt/source/public")]
-    assert config.runtime.workspace_layout == "frontend_user"
     assert config.model_dump()["frontend_id"] == "web-yk"
     assert "id" not in config.model_dump()
     runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
@@ -43,25 +41,21 @@ def test_default_values_can_still_be_overridden():
     assert runtime.limits.active == 2
 
 
-def static_config():
+def selected_config():
     config = load_frontends(EXAMPLE).frontend("web-yk")
-    config.control.bucket_pool = None
-    config.control.bucket_ids = ["bucket-0"]
     return config
 
 
 def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
-    config = static_config()
+    config = selected_config()
     cu = config.control_config()
-    runtime = config.runtime_config(EXAMPLE)
+    runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
     assert list(cu.frontends) == ["web-yk"]
     frontend = cu.frontends["web-yk"]
-    assert frontend.credential_file is None
     assert frontend.channel_config["send_msg_url"] == config.send_msg_url
-    assert frontend.profile_id in runtime.profiles
-    assert runtime.bucket_id in cu.bucket_ids
-    assert runtime.storage.prefix == "web-outbound"
-    assert runtime.storage.expiry_seconds == 3600
+    assert runtime.bucket_id == "opencode-bucket-0123456789ab"
+    assert runtime.storage.key_prefix == "web-outbound"
+    assert runtime.storage.presign_expiry_seconds == 3600
     assert config.instance_idle_ttl_seconds == 3600
     assert runtime.frontend_config_file == EXAMPLE.resolve()
 
@@ -79,24 +73,17 @@ def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
 
 
 def test_kubernetes_bucket_selection():
-    config = static_config()
-    config.control.bucket_ids.append("bucket-1")
-    with pytest.raises(ValueError, match="--bucket-id"):
-        config.runtime_config(EXAMPLE)
-    runtime = config.runtime_config(EXAMPLE, "bucket-1")
-    assert runtime.bucket_id == "bucket-1"
-    assert not hasattr(runtime, "credential_file")
-    with pytest.raises(ValueError, match="not registered"):
-        config.runtime_config(EXAMPLE, "bucket-2")
+    config = selected_config()
+    with pytest.raises(ValueError, match="scheduler-issued"):
+        config.runtime_config(EXAMPLE, "unregistered")
 
 
 def test_shared_config_can_live_in_common_but_native_tools_cannot_read_it():
     from agent_backend.config import UserPolicy
     from bucket_runtime.permissions import check_native_paths
 
-    config = static_config()
-    config.runtime.profiles[config.profile_id].public_roots = [EXAMPLE.parent]
-    runtime = config.runtime_config(EXAMPLE)
+    config = selected_config()
+    runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
     with pytest.raises(PermissionError, match="service configuration"):
         check_native_paths("read", {"filePath": str(EXAMPLE)}, UserPolicy(),
                            runtime.workspace_root, [EXAMPLE.parent], [EXAMPLE])
@@ -112,7 +99,7 @@ def test_no_duplicate_runtime_storage_and_profile_validation():
         FrontendConfig.model_validate(raw)
     raw["runtime"].pop("storage")
     raw["profile_id"] = "unknown"
-    with pytest.raises(ValidationError, match="runtime.profiles"):
+    with pytest.raises(ValidationError, match="Extra inputs"):
         FrontendConfig.model_validate(raw)
 
 

@@ -1,47 +1,14 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
 from typing import Any, Literal
-from urllib.parse import unquote, urlparse
 
 import httpx
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field, HttpUrl
 
-from engineering_scene_mcp.config import get_app_config, get_settings
+from engineering_scene_mcp.config import get_app_config
 
 MediaType = Literal["image", "video"]
-
-IMAGE_SUFFIXES = {
-    ".avif",
-    ".bmp",
-    ".gif",
-    ".heic",
-    ".heif",
-    ".jpeg",
-    ".jpg",
-    ".png",
-    ".svg",
-    ".tif",
-    ".tiff",
-    ".webp",
-}
-VIDEO_SUFFIXES = {
-    ".3gp",
-    ".avi",
-    ".flv",
-    ".m2ts",
-    ".m4v",
-    ".mkv",
-    ".mov",
-    ".mp4",
-    ".mpeg",
-    ".mpg",
-    ".ts",
-    ".webm",
-    ".wmv",
-}
-
 
 class AnalyzeImageInput(BaseModel):
     prompt: str = Field(min_length=1, description="User prompt for the engineering scene analysis.")
@@ -58,41 +25,20 @@ def build_chat_completions_url(api_url: str) -> str:
     return f"{api_url.rstrip('/')}/chat/completions"
 
 
-def classify_media_type(url: str, content_type: str | None = None) -> MediaType:
+def classify_media_type(content_type: str | None) -> MediaType:
     normalized_content_type = (content_type or "").split(";", 1)[0].strip().lower()
     if normalized_content_type.startswith("image/"):
         return "image"
     if normalized_content_type.startswith("video/"):
         return "video"
 
-    suffix = PurePosixPath(unquote(urlparse(url).path)).suffix.lower()
-    if suffix in IMAGE_SUFFIXES:
-        return "image"
-    if suffix in VIDEO_SUFFIXES:
-        return "video"
-
-    if normalized_content_type:
-        raise ToolError(
-            f"URL is not an image or video (Content-Type: {normalized_content_type})"
-        )
-    raise ToolError(
-        "Could not determine whether the URL is an image or video; "
-        "the server did not provide a usable Content-Type and the URL has no recognized media suffix"
-    )
+    raise ToolError("Media URL must return an image/* or video/* Content-Type")
 
 
 async def detect_media_type(client: httpx.AsyncClient, url: str) -> MediaType:
-    content_type: str | None = None
-    try:
-        response = await client.head(url, follow_redirects=True)
-        response.raise_for_status()
-        content_type = response.headers.get("Content-Type")
-    except httpx.HTTPError:
-        # Some object stores reject HEAD requests. The URL suffix still provides
-        # a reliable fallback for ordinary image and video links.
-        pass
-
-    return classify_media_type(url, content_type)
+    response = await client.head(url, follow_redirects=True)
+    response.raise_for_status()
+    return classify_media_type(response.headers.get("Content-Type"))
 
 
 def build_vllm_payload(prompt: str, media_url: str, media_type: MediaType = "image") -> dict[str, Any]:

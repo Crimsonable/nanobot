@@ -8,7 +8,7 @@ from bucket_runtime.supervisor import Supervisor
 
 
 @pytest.mark.asyncio
-async def test_restart_repoints_old_plugin_dependency_link_to_shared_source(tmp_path, monkeypatch):
+async def test_mismatched_plugin_dependency_link_is_rejected(tmp_path, monkeypatch):
     source = tmp_path / "source" / "opencode_plugin"
     module = source / "node_modules/@opencode-ai/plugin/package.json"
     module.parent.mkdir(parents=True)
@@ -23,9 +23,8 @@ async def test_restart_repoints_old_plugin_dependency_link_to_shared_source(tmp_
     binary.chmod(0o555)
     config_file = tmp_path / "opencode.json"
     config_file.write_text(json.dumps({"autoupdate": False}))
-    config = RuntimeConfig(bucket_id="b", state_root=tmp_path / "state",
-        workspace_root=tmp_path / "users", profiles={"p": {"model": "test/test"}},
-        opencode={"binary": binary, "context_root": tmp_path / "context",
+    config = RuntimeConfig(frontend_id="web", common_root=tmp_path / "common", bucket_id="b", state_root=tmp_path / "state",
+        workspace_root=tmp_path / "users", opencode={"binary": binary, "context_root": tmp_path / "context",
             "config_file": config_file, "plugin_file": plugin, "dependency_dir": source})
     modules = config.state_root / "opencode-home/config/opencode/node_modules"
     modules.parent.mkdir(parents=True)
@@ -42,18 +41,17 @@ async def test_restart_repoints_old_plugin_dependency_link_to_shared_source(tmp_
     monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
     supervisor = Supervisor(config)
     try:
-        with pytest.raises(RuntimeError, match="exited during startup"):
+        with pytest.raises(RuntimeError, match="dependency directory"):
             await supervisor.start()
-        assert modules.resolve() == module.parents[2]
+        assert modules.resolve() == tmp_path / "old-image-plugin/node_modules"
     finally:
         await supervisor.stop()
 
 
 @pytest.mark.asyncio
 async def test_missing_mounted_binary_fails_before_launch(tmp_path):
-    config = RuntimeConfig(bucket_id="b", state_root=tmp_path / "state",
-        workspace_root=tmp_path / "users", profiles={"p": {"model": "test/test"}},
-        opencode={"binary": tmp_path / "missing", "context_root": tmp_path / "context"})
+    config = RuntimeConfig(frontend_id="web", common_root=tmp_path / "common", bucket_id="b", state_root=tmp_path / "state",
+        workspace_root=tmp_path / "users", opencode={"binary": tmp_path / "missing", "context_root": tmp_path / "context"})
     supervisor = Supervisor(config)
     try:
         with pytest.raises(RuntimeError, match="executable missing"):

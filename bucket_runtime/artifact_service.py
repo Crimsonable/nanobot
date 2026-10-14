@@ -32,13 +32,13 @@ class ArtifactService:
         if storage.public_base_url:
             return storage.public_base_url.rstrip("/") + "/" + quote(key)
         return self.client().generate_presigned_url("get_object", Params={
-            "Bucket": storage.bucket, "Key": key}, ExpiresIn=storage.expiry_seconds)
+            "Bucket": storage.bucket, "Key": key}, ExpiresIn=storage.presign_expiry_seconds)
 
     async def upload(self, identity: Identity, attachment_id: str, path: Path,
                      attachment: Attachment) -> Attachment:
         if self.config.storage is None:
             raise RuntimeError("publish_attachment storage is not configured")
-        key = "/".join([self.config.storage.prefix.strip("/"), identity.identity_id,
+        key = "/".join([self.config.storage.key_prefix.strip("/"), identity.identity_id,
                         digest(attachment_id), attachment.sha256, attachment.filename])
         existing = self.journal.get("artifact", attachment_id)
         if existing:

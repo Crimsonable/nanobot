@@ -13,7 +13,7 @@ def test_shared_instructions_use_the_bucket_container_mount():
     config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
     native = json.loads((ROOT / "config/opencode/web-yk/config/opencode-server.json").read_text(encoding="utf-8"))
     assert native["instructions"] == ["/mnt/common/web-yk/app/templates/AGENTS.md"]
-    deployment = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
+    deployment = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     mounts = deployment["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert any(m["mountPath"] == "/mnt/common/web-yk/app" and m["subPath"] == "web-yk/app"
                and m["readOnly"] for m in mounts)
@@ -24,7 +24,7 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
     workloads = []
     for path in ["k8s/opencode/backend.yaml", "k8s/opencode/engineering-scene-mcp.yaml", "k8s/opencode/hazard-expert-mcp.yaml", "k8s/opencode/web-server.yaml"]:
         workloads.extend(d for d in yaml.safe_load_all((ROOT / path).read_text(encoding="utf-8")) if d["kind"] == "Deployment")
-    runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
+    runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     workloads.append(runtime)
     for deployment in workloads:
         pod = deployment["spec"]["template"]["spec"]
@@ -47,27 +47,26 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
                                        "COPY web_server ", "COPY public ")) for line in docker.splitlines())
     docker = (ROOT / "Dockerfile.bucket_runtime").read_text(encoding="utf-8")
     assert "COPY vendor/plugin" not in docker and "COPY vendor/opencode" not in docker
-    other = BucketManager(config.control_config()).deployment("opencode-bucket-abcdef123456")
+    other = BucketManager(config.control_config()).deployment("opencode-bucket-abcdef123456", config.frontend_id)
     for workload in [runtime, other]:
         volumes = {v["name"]: v for v in workload["spec"]["template"]["spec"]["volumes"]}
         assert volumes["opencode"]["hostPath"] == {
             "path": "/data/opencode_backend_k8s/opencode", "type": "Directory"}
     config.control.bucket_pool.opencode_host_path = "/custom/opencode"
-    custom = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
+    custom = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     volume = next(v for v in custom["spec"]["template"]["spec"]["volumes"] if v["name"] == "opencode")
     assert volume["hostPath"]["path"] == "/custom/opencode"
     native = yaml.safe_load((ROOT / "config/opencode/web-yk/config/opencode-server.json").read_text(encoding="utf-8"))
     assert native["autoupdate"] is False
-    assert "/mnt/source/public/skills" in native["skills"]["paths"]
+    assert native["skills"]["paths"] == ["/mnt/common/web-yk/app/skills"]
     assert "COPY --chown=mcp:mcp hazard_expert_mcp" not in (ROOT / "hazard_expert_mcp/Dockerfile").read_text(encoding="utf-8")
-
 
 
 def test_original_pvc_mounts_match_control_and_dynamic_buckets():
     config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
     docs = list(yaml.safe_load_all((ROOT / "k8s/opencode/backend.yaml").read_text(encoding="utf-8")))
     control = next(d for d in docs if d["kind"] == "Deployment")
-    runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
+    runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     for deployment in [control, runtime]:
         pod = deployment["spec"]["template"]["spec"]
         volumes = {v["name"]: v for v in pod["volumes"]}
@@ -79,7 +78,6 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
             assert mount.get("readOnly", False) == readonly
             assert volumes[mount["name"]]["persistentVolumeClaim"]["claimName"] == claim
         assert volumes["data"]["persistentVolumeClaim"]["claimName"] == "opencode-state-pvc"
-    assert Path("/mnt/common/{frontend_id}/app") in config.runtime.profiles[config.profile_id].public_roots
     mounts = {m["mountPath"]: m for m in runtime["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]}
     assert "/mnt/common" not in mounts
     assert "/mnt/env" not in mounts
@@ -91,7 +89,7 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
     assert mounts["/mnt/common/web-yk/config"]["readOnly"] is True
     assert mounts["/mnt/common/frontends.json"]["subPath"] == "frontends.json"
     config.frontend_id = "qxt-main"
-    other = BucketManager(config.control_config()).deployment("opencode-bucket-abcdef123456")
+    other = BucketManager(config.control_config()).deployment("opencode-bucket-abcdef123456", config.frontend_id)
     mounts = other["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert {m["subPath"] for m in mounts if m["name"] == "common"} == {"qxt-main/app", "qxt-main/config", "frontends.json"}
     assert [m for m in mounts if m["name"] == "workspace"] == [{
@@ -105,7 +103,7 @@ def test_frontend_configuration_uses_common_pvc_without_global_credentials():
     config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
     docs = list(yaml.safe_load_all((ROOT / "k8s/opencode/backend.yaml").read_text(encoding="utf-8")))
     control = next(d for d in docs if d["kind"] == "Deployment")
-    runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab")
+    runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     for deployment in [control, runtime]:
         pod = deployment["spec"]["template"]["spec"]
         assert not any(v["name"] in {"config", "secrets"} for v in pod["volumes"])
@@ -138,8 +136,8 @@ def test_bucket_upgrade_preserves_sleeping_and_running_replica_counts():
 
     config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
     manager = BucketManager(config.control_config())
-    current = [manager.deployment("opencode-bucket-0123456789ab"),
-               manager.deployment("opencode-bucket-abcdef012345")]
+    current = [manager.deployment("opencode-bucket-0123456789ab", config.frontend_id),
+               manager.deployment("opencode-bucket-abcdef012345", config.frontend_id)]
     current[0]["spec"]["replicas"] = 0
     for workload in current:
         workload["spec"]["template"]["spec"]["containers"][0]["workingDir"] = "/opt/app"
