@@ -39,11 +39,11 @@ class FakeManager:
 
 @pytest.fixture
 def service(tmp_path):
-    config = load_frontends(EXAMPLE).frontend("web-yk").control_config()
+    config = load_frontends(EXAMPLE).frontend("web-test").control_config()
     config.state_root = tmp_path / "control"
-    config.runtime_templates["web-yk"].workspace_root = tmp_path / "workspaces"
+    config.runtime_templates["web-test"].workspace_root = tmp_path / "workspaces"
     config.bucket_pool.max_users_per_bucket = 2
-    config.frontend_idle_ttl_seconds["web-yk"] = 1
+    config.frontend_idle_ttl_seconds["web-test"] = 1
     service = ControlService(config)
     service.pool.manager = FakeManager(service)
     yield service
@@ -51,7 +51,7 @@ def service(tmp_path):
 
 
 async def submit(service, user, request):
-    return await service.submit("web-yk", Inbound(chat_id="chat", user_id=user, content="hello", request_id=request))
+    return await service.submit("web-test", Inbound(chat_id="chat", user_id=user, content="hello", request_id=request))
 
 
 async def complete(service, row):
@@ -91,13 +91,13 @@ async def test_completed_users_release_capacity_before_whole_bucket_retires(serv
     await service.pool.sweep()
     assert service.pool.manager.scaled == [(first["bucket_id"], 0)]
     assert service.db.records("binding") == []
-    before = workspace_path(service.config.runtime_for("web-yk").workspace_root,
-                            Identity(frontend_id="web-yk", user_id="a"))
+    before = workspace_path(service.config.runtime_for("web-test").workspace_root,
+                            Identity(frontend_id="web-test", user_id="a"))
     new = await submit(service, "a", "a2")
     assert new["bucket_id"] != first["bucket_id"]
     assert "previous_turns" not in new["submit"]
     assert "session_epoch" not in new["submit"]
-    assert service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").identity_id)["workspace_path"] == str(before)
+    assert service.db.get("binding", Identity(frontend_id="web-test", user_id="a").identity_id)["workspace_path"] == str(before)
 
 
 @pytest.mark.asyncio
@@ -105,12 +105,12 @@ async def test_idle_bucket_is_not_woken_for_a_returning_user(service):
     buckets = {}
     for user, chat, content in [("alice", "group-1", "Keep this"), ("alice", "group-2", "Other chat"),
                                 ("bob", "group-1", "Other user")]:
-        row = await service.submit("web-yk", Inbound(user_id=user, chat_id=chat, content=content))
+        row = await service.submit("web-test", Inbound(user_id=user, chat_id=chat, content=content))
         buckets[user] = row["bucket_id"]
         await complete(service, row)
     expire(service)
     await service.pool.sweep()
-    restored = await service.submit("web-yk", Inbound(user_id="alice", chat_id="group-1", content="Continue"))
+    restored = await service.submit("web-test", Inbound(user_id="alice", chat_id="group-1", content="Continue"))
     assert restored["bucket_id"] != buckets["alice"]
     assert "previous_turns" not in restored["submit"]
 
@@ -166,13 +166,13 @@ async def test_restart_keeps_mapping_and_recovers_same_bucket(service):
 
 
 def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
-    config = load_frontends(EXAMPLE).frontend("web-yk")
+    config = load_frontends(EXAMPLE).frontend("web-test")
     bucket_id = config.control.bucket_pool.name_prefix + "-0123456789ab"
     runtime = config.runtime_config(EXAMPLE, bucket_id)
     assert runtime.state_root == config.runtime.state_root / config.frontend_id / bucket_id
     assert runtime.workspace_root == config.runtime.workspace_root
     assert not hasattr(runtime, "credential_file")
-    manifest = BucketManager(config.control_config()).deployment(bucket_id, "web-yk")
+    manifest = BucketManager(config.control_config()).deployment(bucket_id, "web-test")
     pod = manifest["spec"]["template"]["spec"]
     assert len(pod["containers"]) == 1
     assert pod["containers"][0]["args"][-1] == bucket_id
@@ -182,8 +182,8 @@ def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
 
 
 def test_original_workspace_layout_is_bucket_independent(tmp_path):
-    identity = Identity(frontend_id="web-yk", user_id="alice")
-    assert workspace_path(tmp_path, identity) == tmp_path / "web-yk" / "alice"
+    identity = Identity(frontend_id="web-test", user_id="alice")
+    assert workspace_path(tmp_path, identity) == tmp_path / "web-test" / "alice"
 
 
 @pytest.mark.asyncio
@@ -207,12 +207,12 @@ async def test_duplicate_after_retirement_does_not_start_bucket(service):
 
 @pytest.mark.asyncio
 async def test_reservation_prevents_idle_sweep_and_zero_disables_ttl(service):
-    identity = Identity(frontend_id="web-yk", user_id="a")
+    identity = Identity(frontend_id="web-test", user_id="a")
     async with service.pool.assignment(identity):
         expire(service)
         await service.pool.sweep()
         assert not service.pool.manager.scaled
-    service.config.frontend_idle_ttl_seconds["web-yk"] = 0
+    service.config.frontend_idle_ttl_seconds["web-test"] = 0
     expire(service)
     await service.pool.sweep()
     assert not service.pool.manager.scaled
@@ -243,7 +243,7 @@ async def test_request_during_retirement_uses_another_bucket(service):
         stopped.set()
         await task
     new = await asyncio.wait_for(waiting, 2)
-    binding = service.db.get("binding", Identity(frontend_id="web-yk", user_id="a").identity_id)
+    binding = service.db.get("binding", Identity(frontend_id="web-test", user_id="a").identity_id)
     assert binding["bucket_id"] == new["bucket_id"] != row["bucket_id"]
 
 
@@ -262,7 +262,7 @@ async def test_returning_user_uses_free_capacity_not_previous_bucket(service):
 
 @pytest.mark.asyncio
 async def test_kubernetes_api_create_update_scale_and_wait_for_pod_exit():
-    config = load_frontends(EXAMPLE).frontend("web-yk").control_config()
+    config = load_frontends(EXAMPLE).frontend("web-test").control_config()
     manager = BucketManager(config)
     bucket_id = config.bucket_pool.name_prefix + "-0123456789ab"
     calls = []
@@ -283,13 +283,13 @@ async def test_kubernetes_api_create_update_scale_and_wait_for_pod_exit():
             status = 404
         else:
             present = True
-            body = manager.deployment(bucket_id, "web-yk")
+            body = manager.deployment(bucket_id, "web-test")
             body["metadata"]["resourceVersion"] = "1"
             body["status"] = {"replicas": replicas}
         return httpx.Response(status, json=body, request=httpx.Request(method, "https://kubernetes" + path))
 
     manager.request = request
-    await manager.ensure(bucket_id, "web-yk")
+    await manager.ensure(bucket_id, "web-test")
     assert replicas == 1
     assert any(method == "POST" and path.endswith("/deployments") for method, path, _ in calls)
     await manager.scale(bucket_id, 0)

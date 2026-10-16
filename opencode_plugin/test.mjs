@@ -1,124 +1,81 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { mkdtemp, mkdir, readdir, writeFile, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import { createRuntimeEvents } from "./dist/runtime-events.mjs"
-import { createSessionLogger } from "./dist/session-logger.mjs"
 import { BucketRuntimePlugin } from "./dist/index.mjs"
 
-const settings = { enabled: true, text: true, reasoning: true, tools: true,
-  tool_arguments: true, tool_output: true, max_chars: 16000 }
-const owner = { schema_version: 1, frontend_id: "web", user_id: "alice", bucket_id: "b",
-  chat_id: "chat", input_message_id: "input", requests: { input: "request" } }
-const session = { type: "session.updated", properties: { info: { id: "s", metadata: { bucket_runtime: owner } } } }
-
-test("one attributed native stream includes reasoning, tools and unknown events without API reads", async () => {
-  const root = await mkdtemp(join(tmpdir(), "events-")), sent = [], logged = []
-  try {
-    const events = await createRuntimeEvents("/alice", root, async body => sent.push(body),
-      createSessionLogger(settings, line => logged.push(JSON.parse(line))))
-    await events.event(session)
-    await events.event({type:"message.updated", properties:{info:{id:"answer", sessionID:"s", role:"assistant", parentID:"input"}}})
-    const reasoning = { type:"message.part.updated", properties:{part:{id:"p", messageID:"answer", sessionID:"s", type:"reasoning", text:"think"}} }
-    await events.event(reasoning)
-    await events.event({type:"tool.execute.before", properties:{sessionID:"s", callID:"call", tool:"bash", args:{command:"echo hi", api_key:"secret"}}})
-    await events.event({type:"unknown.event", properties:{data:"x".repeat(240001)}})
-    await events.flush()
-    assert.deepEqual(sent.map(e => e.event.type), ["session.updated","message.updated","message.part.updated","tool.execute.before","unknown.event"])
-    assert.equal(sent[2].request_id, "request")
-    assert.equal(sent[2].event.properties.part.text, "think")
-    assert.equal(logged[2].chat_id,"chat")
-    assert.ok(!logged[3].data.includes("secret"))
-    assert.equal(sent[4].event.properties.data.length,240001)
-  } finally { await rm(root, {recursive:true, force:true}) }
+test("native events are forwarded unchanged with only transport metadata", async () => {
+  const sent = []
+  const events = createRuntimeEvents("/alice", async body => sent.push(body))
+  const native = {type:"message.part.updated",properties:{part:{id:"p",sessionID:"s",messageID:"m",type:"reasoning",text:"思考"}}}
+  await events.event(native)
+  await events.event({type:"future.event",properties:{text:"x".repeat(240001)}})
+  assert.deepEqual(sent[0].event,native)
+  assert.deepEqual(Object.keys(sent[0]).sort(),["directory","event","event_id","type"])
+  assert.equal(sent[1].event.properties.text.length,240001)
 })
 
-test("failed delivery remains on disk and retries the same ID until ACK", async () => {
-  const root = await mkdtemp(join(tmpdir(), "events-")), attempts = [], logs = []
-  let available = false
+test("wrapper passes shell metacharacters as one literal argument and fails closed", async () => {
+  const savedFetch = globalThis.fetch, savedEnv = {...process.env}
+  Object.assign(process.env, {BUCKET_RPC_URL:"http://127.0.0.1:4097", BUCKET_RPC_TOKEN:"token"})
+  let authorization = {argv:["/usr/bin/printf", "%s"], host_workdir:"/alice", timeout_ms:1000}
+  globalThis.fetch = async url => new Response(JSON.stringify(url.endsWith("/authorize") ? authorization : {ok:true}))
   try {
-    const events = await createRuntimeEvents("/alice", root, async body => {
-      attempts.push(body.event_id)
-      if (!available) throw new Error("offline")
-    }, body => logs.push(body.event_id))
-    await events.event({type:"test",properties:{}})
-    await new Promise(resolve=>setTimeout(resolve,50))
-    const folder=join(root,createHash("sha256").update("/alice").digest("hex"))
-    assert.equal((await readdir(folder)).filter(f=>f.endsWith(".json")).length,1)
-    available=true
-    await events.flush()
-    assert.ok(attempts.length >= 2)
-    assert.equal(new Set(attempts).size,1)
-    assert.equal(logs.length,1)
-    assert.deepEqual(await readdir(folder),[])
-  } finally { await rm(root,{recursive:true,force:true}) }
+    const plugin = await BucketRuntimePlugin({directory:"/alice"})
+    const command = "a'b\"c; $(printf EXPANDED) `printf EXPANDED`\n> /tmp/should-not-be-created"
+    const output = {args:{command}}
+    await plugin["tool.execute.before"]({sessionID:"s",callID:"c",tool:"bash"}, output)
+    const result = process.platform === "win32"
+      ? spawnSync("wsl.exe", ["--exec", "/bin/sh", "-c", output.args.command], {encoding:"utf8"})
+      : spawnSync("/bin/sh", ["-c", output.args.command], {encoding:"utf8"})
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout, command)
+    authorization = {argv:["/usr/bin/flock", "--exclusive", "--close", "/private/lock",
+      "/usr/bin/bwrap", "--unshare-all", "--clearenv", "--chdir", "/alice/a'b", "--", "/bin/sh", "-c"],
+      host_workdir:"/alice", timeout_ms:1000}
+    const wrapped = {args:{command}}
+    await plugin["tool.execute.before"]({sessionID:"s",callID:"next",tool:"bash"}, wrapped)
+    const context = {messages:[{parts:[{type:"tool", tool:"bash", state:{input:wrapped.args}}]}]}
+    // A fresh plugin has no in-memory call cache, just like a restarted server.
+    const restarted = await BucketRuntimePlugin({directory:"/alice"})
+    await restarted["experimental.chat.messages.transform"]({}, context)
+    assert.equal(context.messages[0].parts[0].state.input.command, command)
+    assert.equal(context.messages[0].parts[0].state.input.workdir, "/alice/a'b")
+    authorization = {ticket:"obsolete"}
+    const untouched = {args:{command:"echo original"}}
+    await assert.rejects(plugin["tool.execute.before"]({sessionID:"s",callID:"bad",tool:"bash"}, untouched), /Invalid sandbox authorization/)
+    assert.equal(untouched.args.command, "echo original")
+  } finally { globalThis.fetch = savedFetch; process.env = savedEnv }
 })
 
-test("process restart drains previously persisted native events", async () => {
-  const root=await mkdtemp(join(tmpdir(),"events-")), sent=[]
-  try {
-    const folder=join(root,createHash("sha256").update("/alice").digest("hex"))
-    await mkdir(folder)
-    const body={type:"opencode.event",event_id:"original",directory:"/alice",event:{type:"test",properties:{}}}
-    await writeFile(join(folder,"00000000000000000001.json"),JSON.stringify(body))
-    const events=await createRuntimeEvents("/alice",root,async body=>sent.push(body),()=>{})
-    await events.flush()
-    assert.deepEqual(sent,[body])
-  } finally {await rm(root,{recursive:true,force:true})}
+test("failed delivery rejects immediately without retrying or blocking the next event", async () => {
+  const sent=[]
+  const events=createRuntimeEvents("/alice",async body=>{
+    sent.push(body)
+    if(body.event.type==="first") throw new Error("offline")
+  })
+  await assert.rejects(events.event({type:"first"}),/offline/)
+  await events.event({type:"second"})
+  assert.deepEqual(sent.map(body=>body.event.type),["first","second"])
 })
 
 test("tool hook preserves original event arguments and uses runtime authorization", async () => {
-  const root=await mkdtemp(join(tmpdir(),"plugin-")), savedFetch=globalThis.fetch, savedEnv={...process.env}, calls=[]
-  Object.assign(process.env,{BUCKET_RPC_URL:"http://127.0.0.1:4097",BUCKET_RPC_TOKEN:"token",
-    BUCKET_EXEC_PYTHON:"/python",BUCKET_EXEC_CLIENT:"/client.py",BUCKET_EVENT_ROOT:root,
-    BUCKET_SESSION_LOGGING:JSON.stringify({...settings,enabled:false})})
+  const savedFetch=globalThis.fetch, savedEnv={...process.env}, calls=[]
+  Object.assign(process.env,{BUCKET_RPC_URL:"http://127.0.0.1:4097",BUCKET_RPC_TOKEN:"token"})
   globalThis.fetch=async (url, options)=>{
     const body=JSON.parse(options.body);calls.push({url,body})
-    return new Response(JSON.stringify(url.endsWith("/authorize") ? {ticket:"authorized",host_workdir:"/alice"}:{ok:true}),{status:200})
+    return new Response(JSON.stringify(url.endsWith("/authorize") ? {argv:["/usr/bin/bwrap","--","/bin/sh","-c"],host_workdir:"/alice",timeout_ms:1000}:{ok:true}),{status:200})
   }
   try {
     const plugin=await BucketRuntimePlugin({directory:"/alice"})
     const output={args:{command:"echo original",timeout:1000}}
     await plugin["tool.execute.before"]({sessionID:"s",callID:"c",tool:"bash"},output)
-    await plugin.dispose()
-    assert.ok(output.args.command.includes("authorized"))
+    assert.equal(output.args.command, "exec '/usr/bin/bwrap' '--' '/bin/sh' '-c' 'echo original'")
+    assert.equal(output.args.timeout,1000)
+    assert.ok(!calls.some(c=>c.url.endsWith("/execute")))
     assert.equal(output.args.workdir,"/alice")
     assert.equal(calls.find(c=>c.url.endsWith("/plugin/event")).body.event.properties.args.command,"echo original")
-    assert.equal(calls.find(c=>c.url.endsWith("/plugin/ready")).body.version,"4")
+    assert.equal(calls.find(c=>c.url.endsWith("/plugin/ready")).body.version,"6")
     assert.ok(!("caption" in plugin.tool.publish_attachment.args))
-  } finally {globalThis.fetch=savedFetch;process.env=savedEnv;await rm(root,{recursive:true,force:true})}
-})
-
-
-test("unfinished spool writes cannot block the next event after restart", async () => {
-  const root=await mkdtemp(join(tmpdir(),"events-")), sent=[]
-  try {
-    const folder=join(root,createHash("sha256").update("/alice").digest("hex"))
-    await mkdir(folder)
-    await writeFile(join(folder,"00000000000000000001.json.tmp"),"incomplete")
-    const events=await createRuntimeEvents("/alice",root,async body=>sent.push(body),()=>{})
-    await events.event({type:"next",properties:{}})
-    await events.flush()
-    assert.equal(sent.length,1)
-    assert.equal(sent[0].event.type,"next")
-    assert.deepEqual(await readdir(folder),[])
-  } finally {await rm(root,{recursive:true,force:true})}
-})
-
-test("session errors follow the active user input and idle clears that association", async () => {
-  const root=await mkdtemp(join(tmpdir(),"events-")), sent=[]
-  try {
-    const events=await createRuntimeEvents("/alice",root,async body=>sent.push(body),()=>{})
-    await events.event(session)
-    await events.event({type:"message.updated",properties:{info:{id:"input",role:"user",sessionID:"s"}}})
-    await events.event({type:"session.error",properties:{sessionID:"s",error:{name:"ProviderError"}}})
-    await events.event({type:"session.idle",properties:{sessionID:"s"}})
-    await events.event({type:"session.error",properties:{sessionID:"s",error:{name:"UnrelatedError"}}})
-    await events.flush()
-    assert.equal(sent[2].request_id,"request")
-    assert.equal(sent[2].input_message_id,"input")
-    assert.equal(sent[4].request_id,"")
-  } finally {await rm(root,{recursive:true,force:true})}
+  } finally {globalThis.fetch=savedFetch;process.env=savedEnv}
 })

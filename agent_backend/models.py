@@ -71,15 +71,18 @@ class Usage(StrictModel):
     cache_write_tokens: int = Field(default=0, ge=0)
 
 
-class OpenCodeEvent(StrictModel):
+class PluginEvent(StrictModel):
     type: Literal["opencode.event"]
     event_id: str = Field(min_length=1, max_length=100)
     directory: str = Field(min_length=1)
+    event: dict[str, Any]
+
+
+class OpenCodeEvent(PluginEvent):
     session_id: str = ""
     message_id: str = ""
     input_message_id: str = ""
     request_id: str = ""
-    event: dict[str, Any]
 
 
 class OpenCodeEventChunk(StrictModel):

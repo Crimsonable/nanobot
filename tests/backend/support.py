@@ -13,11 +13,12 @@ def register_bucket(service, bucket_id="b", frontend_id="web"):
 
 def emit_answer(runtime, session_id, request_id, input_id, directory, message):
     from uuid import uuid4
-    base = {"type": "opencode.event", "session_id": session_id, "request_id": request_id,
-            "input_message_id": input_id, "directory": directory, "message_id": message["info"]["id"]}
+    base = {"type": "opencode.event", "directory": directory}
     for i, part in enumerate(message["parts"]):
         runtime.plugin_event({**base, "event_id": uuid4().hex, "event": {"type": "message.part.updated",
-            "properties": {"part": {**part, "id": str(i), "sessionID": session_id, "messageID": base["message_id"]}}}})
+            "properties": {"part": {**part, "id": str(i), "sessionID": session_id, "messageID": message["info"]["id"]}}}})
     event = {**base, "event_id": uuid4().hex, "event": {"type": "message.updated", "properties": {"info": message["info"]}}}
     runtime.plugin_event(event)
+    while runtime.plugin_events.process_next():
+        pass
     return event

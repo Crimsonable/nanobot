@@ -15,7 +15,7 @@
 修改本目录 **`docker-compose.yml`** 中的配置。本服务的环境变量集中在此文件，源码通过只读挂载加载，镜像只提供 Python 与依赖：
 
 1. 设置 `CONTAINER_UP_BASE_URL` 为已部署的 container-up 地址；示例通过宿主机的 NodePort 30080 访问 Kubernetes CU。本地直接启动 CU 时改用其实际监听端口，默认 8000。
-2. 设置 `CONTAINER_UP_FRONTEND_ID` 为 `common/frontends.json` 中已注册的 frontend，示例为 `web-yk`。会话与工作空间按 frontend 和 user_id 隔离。
+2. 设置 `CONTAINER_UP_FRONTEND_ID` 为 `common/frontends.json` 中已注册的 frontend，示例为 `web-test`。会话与工作空间按 frontend 和 user_id 隔离。
 3. 设置 MinIO API 地址、桶名、凭证。桶需存在，凭证需有该桶目标前缀的 `PutObject` 和 `GetObject` 权限。
 4. 设置 `MINIO_DOWNLOAD_ENDPOINT` 为调用方及 OpenCode 工具都可访问的同一 MinIO S3 服务地址。它是 `https://files.example.com` 这样的 origin，不包含桶名、路径前缀、查询参数。生成链接时直接对此地址签名，不能在生成后替换域名。留空则沿用 `MINIO_ENDPOINT`。
 5. 替换 `MCP_API_KEY`。服务不限制 MCP 请求的 Host 或 Origin，无需配置域名或来源白名单。浏览器跨站调用需要的 CORS 响应头可在网关配置。

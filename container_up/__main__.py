@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from agent_backend.config import load_frontends
+from agent_backend.logging_config import access_log_config
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -29,7 +30,8 @@ def main(argv: list[str] | None = None) -> None:
     from container_up.server import create_app
 
     config.frontend_config_path = Path("/mnt/common") / args.config.name
-    uvicorn.run(create_app(config), host=config.host, port=config.port, workers=1)
+    uvicorn.run(create_app(config), host=config.host, port=config.port, workers=1,
+                log_config=access_log_config())
 
 
 if __name__ == "__main__":

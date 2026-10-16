@@ -2,7 +2,7 @@
 
 默认 CU 地址 `http://<节点地址>:30080`，集群内为 `http://container-up.opencode-sv.svc.cluster.local:8000`。
 
-`POST /inbound-sync/{frontend_id}`，示例配置 ID 为 web-yk。请求使用 `Content-Type: application/json`，不需要 API key 或 Authorization 头。
+`POST /inbound-sync/{frontend_id}`，示例配置 ID 为 web-test。请求使用 `Content-Type: application/json`，不需要 API key 或 Authorization 头。
 
 ```json
 {

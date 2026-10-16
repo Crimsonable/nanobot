@@ -61,7 +61,7 @@ spec:
               value: "http://container-up.opencode-sv.svc.cluster.local:8000"
             # 必须对应 common/frontends.json 中已有的 frontend。
             - name: CONTAINER_UP_FRONTEND_ID
-              value: "web-yk"
+              value: "web-test"
             - name: CONTAINER_UP_TIMEOUT_SECONDS
               value: "720"
             - name: CONTAINER_UP_CONNECT_TIMEOUT_SECONDS

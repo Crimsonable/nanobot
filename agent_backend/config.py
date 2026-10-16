@@ -199,7 +199,7 @@ class Frontend(StrictModel):
 class BucketPoolConfig(StrictModel):
     namespace: str = "opencode-sv"
     name_prefix: str = Field(default="opencode-bucket", pattern=r"^[a-z][a-z0-9-]{0,35}$")
-    image: str = "agent-bucket-runtime:opencode-1.18.31"
+    image: str = "agent-bucket-runtime:opencode-1.18.31-bwrap011"
     image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = "IfNotPresent"
     max_users_per_bucket: int = Field(default=16, ge=1)
     ready_timeout_seconds: int = Field(default=120, ge=1)

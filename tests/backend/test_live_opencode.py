@@ -137,6 +137,10 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     async def completion(request: Request):
         body = await request.json()
         model_calls.append(body)
+        for message in body["messages"]:
+            for call in message.get("tool_calls", []):
+                if call.get("function", {}).get("name") == "bash":
+                    assert not json.loads(call["function"]["arguments"])["command"].startswith("exec '/usr/bin/flock'")
         system = str([m["content"] for m in body["messages"] if m["role"] == "system"])
         assert "FRONTEND_TEMPLATE_RULE_78421" in system, system
         bob_request = any("BOB_REQUEST" in str(m.get("content")) for m in body["messages"] if m["role"] == "user")
@@ -144,13 +148,13 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
         tool_messages = [m for m in body["messages"] if m["role"] == "tool"]
         if not tool_messages:
             name = "bash"
-            args = {"command": f"test ! -e '{private_config}' && printf 'generated report' > output/report.txt && cat "
+            args = {"command": f"test ! -e '{private_config}' && printf 'generated report' > report.txt && cat "
                     + str(public / "SKILL.md"), "description": "Generate report"}
             if any("Long task" in str(m.get("content")) for m in body["messages"]):
-                args = {"command": "sleep 30", "description": "Long task"}
+                args = {"command": "touch started; sleep 30; touch survived", "description": "Long task"}
         elif len(tool_messages) == 1:
             name = "read"
-            args = {"filePath": "output/report.txt"}
+            args = {"filePath": "report.txt"}
         elif len(tool_messages) == 2:
             assert "generated report" in str(tool_messages[-1]["content"]), tool_messages[-1]
             name = "read"
@@ -163,7 +167,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
         elif len(tool_messages) == 4:
             assert "public skill" in str(tool_messages[-1]["content"]), tool_messages[-1]
             name = "publish_attachment"
-            args = {"files": [{"path": "output/report.txt", "filename": "report.txt"}]}
+            args = {"files": [{"path": "report.txt", "filename": "report.txt"}]}
         else:
             name = None
             args = None
@@ -199,6 +203,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
 
     peer_task = None
     async with running(model, model_port), running(app, cu_port), running(rpc_app(runtime, supervisor.rpc_token), rpc_port):
+        event_task = asyncio.create_task(runtime.plugin_events.run())
         try:
             await executor.probe(tmp_path / "probe")
             await supervisor.start()
@@ -213,7 +218,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                 runtime.peer = Peer(socket_, runtime.db, "bucket-0", runtime.on_command)
                 peer_task = asyncio.create_task(runtime.peer.run())
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{cu_port}",
-                    timeout=100, trust_env=False) as client:
+                    timeout=100, trust_env=False, headers={"Connection": "close"}) as client:
                     payload = {"chat_id": "chat", "user_id": "alice", "content": "Generate the report", "request_id": "req-test",
                         "attachments": [{"url": f"http://127.0.0.1:{model_port}/input.txt",
                                          "filename": "input.txt", "content_type": "text/plain"}]}
@@ -295,11 +300,12 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     # Cancel a live sandbox command and wait for a durable terminal result.
                     await client.post("/inbound/web", json={"chat_id": "chat", "user_id": "charlie", "content": "Long task",
                         "request_id": "req-cancel"})
+                    cancel_workspace = runtime_config.workspace_root / "web" / "charlie"
                     for _ in range(100):
-                        if executor.processes.get("req-cancel"):
+                        if (cancel_workspace / "started").exists():
                             break
                         await asyncio.sleep(0.1)
-                    assert executor.processes.get("req-cancel")
+                    assert (cancel_workspace / "started").exists()
                     await client.post("/requests/web/req-cancel/cancel")
                     for _ in range(100):
                         cancelled = (await client.get("/requests/web/req-cancel")).json()
@@ -307,7 +313,13 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                             break
                         await asyncio.sleep(0.1)
                     assert cancelled["status"] == "cancelled", cancelled
-                    assert not any(p.returncode is None for p in executor.processes.get("req-cancel", []))
+                    from bucket_runtime.file_lock import publication_lock
+                    from agent_backend.models import Submit
+                    cancelled_submit = Submit.model_validate(runtime.db.get("run", "req-cancel")["submit"])
+                    async with asyncio.timeout(5):
+                        async with publication_lock(runtime.user_lock_path(cancelled_submit)):
+                            pass
+                    assert not (cancel_workspace / "survived").exists()
                     row = runtime.db.get("run", "req-test")
                     with pytest.raises(PermissionError):
                         runtime.authorize(row["session_id"], "late", "bash", {"command": "echo bad"})
@@ -322,21 +334,21 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     assert check == {"output": "public skill", "exit_code": 0}
         finally:
             await runtime.shutdown()
-            for task in [peer_task]:
+            for task in [peer_task, event_task]:
                 if task:
                     task.cancel()
-            await asyncio.gather(*(t for t in [peer_task] if t), return_exceptions=True)
+            await asyncio.gather(*(t for t in [peer_task, event_task] if t), return_exceptions=True)
             await supervisor.stop()
             runtime.db.close()
     output = capfd.readouterr().out
-    logs = [json.loads(line) for line in output.splitlines() if line.startswith('{"timestamp":')]
-    for user_id, request_id in [("alice", "req-test"), ("bob", "req-bob")]:
+    logs = [json.loads(line) for line in output.splitlines() if line.startswith('{"user_id":')]
+    assert logs
+    assert all(set(row) == {"user_id", "frontend_id", "chat_id", "content"} for row in logs)
+    for user_id in ["alice", "bob"]:
         own_logs = [row for row in logs if row.get("user_id") == user_id]
-        assert {"message.part.updated", "message.part.delta", "tool.execute.before"} <= {row["event"] for row in own_logs}
-        allowed = {request_id, "req-alice-next", "req-alice-other", "req-resumed"} if user_id == "alice" else {request_id}
-        assert all(row.get("request_id") in allowed | {""} for row in own_logs)
-        assert all(row["chat_id"] in {"chat", "group-2"} and "conversation_id" not in row for row in own_logs)
-        parts = [json.loads(row["data"])["part"] for row in own_logs if row["event"] == "message.part.updated"]
-        assert any(part["type"] == "reasoning" and part.get("text") for part in parts)
-        assert any(part["type"] == "text" and part.get("text") == "Report ready." for part in parts)
-        assert {"running", "completed", "error"} <= {p["state"]["status"] for p in parts if p["type"] == "tool"}
+        assert own_logs
+        assert all(row["frontend_id"] == "web" and row["chat_id"] in {"chat", "group-2"} for row in own_logs)
+        contents = [row["content"] for row in own_logs]
+        assert any("Planning test step." in content for content in contents)
+        assert any("Report ready." in content for content in contents)
+        assert any("output" in content for content in contents)

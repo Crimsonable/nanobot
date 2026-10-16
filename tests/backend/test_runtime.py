@@ -8,6 +8,7 @@ from agent_backend.config import RuntimeConfig
 from agent_backend.models import Envelope, Identity, Submit
 from bucket_runtime.opencode_client import OpenCodeClient
 from bucket_runtime.runtime import Runtime
+from bucket_runtime.sandbox_executor import SandboxExecutor
 
 
 class Client:
@@ -27,17 +28,10 @@ class Client:
         self.aborted.append(session_id)
 
 
-class Executor:
+class Executor(SandboxExecutor):
     def __init__(self):
-        self.executions = []
-
-    async def execute(self, request_id, workspace, public, command, workdir, timeout, **options):
-        self.executions.append((request_id, command))
-        self.last_options = {"public": public, **options}
-        return {"output": "ok", "exit_code": 0}
-
-    async def kill(self, request_id):
-        pass
+        from agent_backend.config import SandboxConfig
+        super().__init__(SandboxConfig(), 4096)
 
 
 @pytest.fixture
@@ -139,16 +133,14 @@ async def test_every_request_recreates_deleted_workspace_without_copying_templat
                         identity=Identity(frontend_id="web", user_id="alice"), content="/cancel", deadline_at=time.time() + 60)
         await runtime.on_command(Envelope(type="request.submit", bucket_id="b",
             request_id=submit.request_id, payload=submit.model_dump(mode="json")))
-        assert (workspace / "output").is_dir()
-        assert (workspace / "scratch").is_dir()
+        assert workspace.is_dir()
+        assert list(workspace.iterdir()) == []
         assert not (workspace / "AGENTS.md").exists()
         assert runtime.db.get("run", submit.request_id)["status"] == "completed"
         shutil.rmtree(workspace)
 
 
-def test_workspace_checks_preserve_existing_files_and_repair_subdirectories(runtime, tmp_path):
-    import shutil
-
+def test_workspace_checks_preserve_existing_files(runtime, tmp_path):
     submit = active(runtime)
     workspace = runtime.workspace(submit)
     (workspace / "custom.txt").write_text("keep")
@@ -156,9 +148,8 @@ def test_workspace_checks_preserve_existing_files_and_repair_subdirectories(runt
     templates = tmp_path / "templates"
     templates.mkdir()
     (templates / "AGENTS.md").write_text("new template rules")
-    shutil.rmtree(workspace / "output")
     assert runtime.workspace(submit) == workspace
-    assert (workspace / "output").is_dir()
+    assert {p.name for p in workspace.iterdir()} == {"custom.txt", "AGENTS.md"}
     assert (workspace / "custom.txt").read_text() == "keep"
     assert (workspace / "AGENTS.md").read_text() == "user rules"
 
@@ -185,41 +176,101 @@ def test_mount_policy_rejects_host_proc_and_other_user_roots(runtime):
             RuntimeConfig.model_validate(config)
 
 
-@pytest.mark.asyncio
-async def test_ticket_bound_to_call_and_request_exactly_once(runtime):
-    active(runtime)
-    args = {"command": "echo hello"}
-    response = runtime.authorize("s", "c", "bash", args)
-    assert runtime.authorize("s", "c", "bash", args) == response
+def test_bash_authorization_returns_scope_without_execution_ticket(runtime):
+    submit = active(runtime)
+    response = runtime.authorize("s", "c", "bash", {"command": "echo hello", "timeout": 1234})
+    assert response["argv"][-3:] == ["--", "/bin/sh", "-c"]
+    assert response["argv"][:3] == ["/usr/bin/flock", "--exclusive", "--close"]
+    assert "--clearenv" in response["argv"]
+    assert str(runtime.workspace(submit)) in response["argv"]
+    assert response["timeout_ms"] == 1234
+    assert "ticket" not in response
+    assert not runtime.db.records("ticket")
+    assert not hasattr(runtime, "execute")
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "c", "bash", {"command": "different"})
+        runtime.authorize("unknown", "c", "bash", {"command": "echo hi"})
     with pytest.raises(PermissionError):
-        runtime.authorize("unknown", "c", "bash", args)
+        runtime.authorize("s", "c", "bash", {"command": "pwd", "workdir": "/etc"})
     with pytest.raises(PermissionError):
         runtime.authorize("s", "c2", "read", {"filePath": "/etc/passwd"})
-    first = await runtime.execute(response["ticket"])
-    assert await runtime.execute(response["ticket"]) == first
-    assert runtime.executor.executions == [("r", "echo hello")]
+    for timeout in [-1, 0, float("nan"), float("inf"), "100", True]:
+        with pytest.raises(ValueError):
+            runtime.authorize("s", "bad", "bash", {"command": "pwd", "timeout": timeout})
+    runtime.db.put("run", "r", {**runtime.db.get("run", "r"), "cancel_requested": True})
     with pytest.raises(PermissionError):
-        await runtime.execute("forged")
+        runtime.authorize("s", "late", "bash", {"command": "pwd"})
+
+
+@pytest.mark.asyncio
+async def test_authorized_native_shell_isolated_and_releases_lock_on_cancel(runtime, tmp_path):
+    import os
+    import shlex
+    import signal
+    from bucket_runtime.file_lock import publication_lock
+
+    submit = active(runtime)
+    outside = tmp_path / "secret"
+    outside.write_text("private")
+    workspace = runtime.workspace(submit)
+    command = f"test ! -e {shlex.quote(str(outside))} && touch started; sleep 30; touch survived"
+    auth = runtime.authorize("s", "native", "bash", {"command": command})
+    process = await asyncio.create_subprocess_exec("/bin/sh", "-c",
+        "exec " + shlex.join([*auth["argv"], command]), start_new_session=True)
+    try:
+        async with asyncio.timeout(5):
+            while not (workspace / "started").exists():
+                assert process.returncode is None
+                await asyncio.sleep(0.02)
+        async with asyncio.timeout(0.1):
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(0.05):
+                    async with publication_lock(runtime.user_lock_path(submit)):
+                        pytest.fail("native command must hold publication lock")
+    finally:
+        if process.returncode is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        await process.wait()
+    async with asyncio.timeout(5):
+        async with publication_lock(runtime.user_lock_path(submit)):
+            pass
+    assert not (workspace / "survived").exists()
+
+
+def test_bash_scope_respects_readonly_none_network_and_deadline(runtime):
+    submit = active(runtime)
+    workspace = str(runtime.workspace(submit))
+    policy = runtime.permissions.defaults
+    policy.filesystem.workspace = "read_only"
+    policy.sandbox.network = False
+    authorization = runtime.authorize("s", "ro", "bash", {"command": "pwd", "timeout": 999999})
+    argv = authorization["argv"]
+    assert "--bind" not in argv and "--share-net" not in argv
+    assert argv[argv.index(workspace) - 1] == "--ro-bind"
+    assert 0 < authorization["timeout_ms"] <= 60000
+    policy.filesystem.workspace = "none"
+    argv = runtime.authorize("s", "none", "bash", {"command": "pwd"})["argv"]
+    assert workspace not in argv
+    assert argv[argv.index("--chdir") + 1] == "/"
+    with pytest.raises(PermissionError):
+        runtime.authorize("s", "denied-cwd", "bash", {"command": "pwd", "workdir": workspace})
     row = runtime.db.get("run", "r")
-    runtime.db.put("run", "r", {**row, "status": "completed"})
-    active(runtime, request_id="r2")
-    with pytest.raises(PermissionError):
-        await runtime.execute(response["ticket"])
+    row["submit"]["deadline_at"] = time.time() - 1
+    runtime.db.put("run", "r", row)
+    with pytest.raises(PermissionError, match="deadline"):
+        runtime.authorize("s", "expired", "bash", {"command": "pwd"})
 
 
 @pytest.mark.asyncio
 async def test_publication_rejects_other_user_and_symlink(runtime):
     alice = active(runtime)
     bob = active(runtime, "bob", "r-bob", "s-bob")
-    bob_file = runtime.workspace(bob) / "output/report.txt"
+    bob_file = runtime.workspace(bob) / "report.txt"
     bob_file.write_text("private")
     ticket = runtime.authorize("s", "c", "publish_attachment", {"files": [{"path": str(bob_file)}]})
     with pytest.raises(PermissionError):
         await runtime.publish(ticket["ticket"])
     assert runtime.db.get("run", "r")["artifacts"] == []
-    own = runtime.workspace(alice) / "output/link"
+    own = runtime.workspace(alice) / "link"
     try:
         own.symlink_to(bob_file)
     except OSError:
@@ -395,9 +446,9 @@ async def test_child_tool_session_resolves_trusted_parent_and_expires(runtime):
     with pytest.raises(PermissionError, match="workspace mismatch"):
         await runtime.bind_tool_session("s", str(runtime.config.opencode.context_root))
     await runtime.bind_tool_session("child", directory)
-    ticket = runtime.authorize("child", "call", "bash", {"command": "echo hi"})
-    await runtime.execute(ticket["ticket"])
-    assert runtime.executor.executions == [("r", "echo hi")]
+    authorized = runtime.authorize("child", "call", "bash", {"command": "echo hi"})
+    assert authorized["host_workdir"] == directory
+    assert "ticket" not in authorized
     with pytest.raises(PermissionError):
         await runtime.bind_tool_session("unrelated", directory)
     runtime.db.put("run", "r", {**runtime.db.get("run", "r"), "status": "completed"})
@@ -461,8 +512,8 @@ def test_user_scope_blocks_native_symlinks_and_patch_moves(runtime, tmp_path):
     own = runtime.workspace(alice)
     with pytest.raises(PermissionError):
         runtime.authorize("s", "patch", "apply_patch", {"patchText":
-            "*** Begin Patch\n*** Update File: output/a\n*** Move to: ../escape\n*** End Patch\n"})
-    link = own / "output/link"
+            "*** Begin Patch\n*** Update File: a\n*** Move to: ../escape\n*** End Patch\n"})
+    link = own / "link"
     try:
         link.symlink_to(tmp_path / "private")
     except OSError:
@@ -478,9 +529,9 @@ def test_individual_write_switch_enables_shared_edit_permission(runtime):
     submit = active(runtime)
     rules = runtime.session_permissions(submit)
     assert any(rule["permission"] == "edit" and rule["action"] == "allow" for rule in rules)
-    assert runtime.authorize("s", "write", "write", {"filePath": "output/new.txt"})["args"]["filePath"]
+    assert runtime.authorize("s", "write", "write", {"filePath": "new.txt"})["args"]["filePath"]
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "edit", "edit", {"filePath": "output/new.txt"})
+        runtime.authorize("s", "edit", "edit", {"filePath": "new.txt"})
 
 
 @pytest.mark.asyncio
@@ -488,7 +539,7 @@ async def test_publish_tool_uploads_to_storage_without_control_peer(runtime, tmp
     from agent_backend.config import StorageConfig
     submit = active(runtime)
     own = runtime.workspace(submit)
-    source = own / "output/report.txt"
+    source = own / "report.txt"
     source.write_bytes(b"report bytes")
     runtime.config.storage = StorageConfig(endpoint="http://minio:9000", bucket="reports",
         access_key_file=tmp_path / "access", secret_key_file=tmp_path / "secret",
@@ -501,7 +552,7 @@ async def test_publish_tool_uploads_to_storage_without_control_peer(runtime, tmp
             uploaded.append((Path(path).read_bytes(), bucket, key))
 
     monkeypatch.setattr(runtime.artifacts, "client", lambda: Storage())
-    ticket = runtime.authorize("s", "publish", "publish_attachment", {"files": [{"path": "output/report.txt"}]})
+    ticket = runtime.authorize("s", "publish", "publish_attachment", {"files": [{"path": "report.txt"}]})
     result = await runtime.publish(ticket["ticket"])
     assert runtime.peer is None
     assert uploaded[0][0] == b"report bytes"
@@ -518,7 +569,7 @@ async def test_publish_tool_uploads_to_storage_without_control_peer(runtime, tmp
 async def test_failed_minio_upload_does_not_publish_a_url(runtime, tmp_path, monkeypatch):
     from agent_backend.config import StorageConfig
     submit = active(runtime)
-    (runtime.workspace(submit) / "output/report.txt").write_text("report")
+    (runtime.workspace(submit) / "report.txt").write_text("report")
     runtime.config.storage = StorageConfig(endpoint="http://minio:9000", bucket="reports",
         access_key_file=tmp_path / "access", secret_key_file=tmp_path / "secret")
 
@@ -527,7 +578,7 @@ async def test_failed_minio_upload_does_not_publish_a_url(runtime, tmp_path, mon
             raise ConnectionError("MinIO unavailable")
 
     monkeypatch.setattr(runtime.artifacts, "client", lambda: Storage())
-    ticket = runtime.authorize("s", "publish", "publish_attachment", {"files": [{"path": "output/report.txt"}]})
+    ticket = runtime.authorize("s", "publish", "publish_attachment", {"files": [{"path": "report.txt"}]})
     with pytest.raises(ConnectionError):
         await runtime.publish(ticket["ticket"])
     assert runtime.db.get("run", "r")["artifacts"] == []

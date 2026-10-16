@@ -46,7 +46,7 @@ def test_cu_entrypoint_starts_only_control_with_all_frontends(registry, monkeypa
     monkeypatch.setattr(uvicorn, "run", lambda application, **kwargs: captured.update(app=application, **kwargs))
     control_main(["--config", str(registry)])
     assert captured["app"] is app
-    assert set(captured["config"].frontends) == {"web-yk", "web-other"}
+    assert set(captured["config"].frontends) == {"web-test", "web-other"}
     assert captured["config"].frontend_config_path == Path("/mnt/common/frontends.json")
     assert captured["port"] == captured["config"].port
 
@@ -85,7 +85,7 @@ def test_check_command_validates_every_frontend_and_exits(registry):
     # A bad runtime path in the second frontend must also be rejected by the check.
     raw = json.loads(registry.read_text(encoding="utf-8"))
     raw["frontends"][1]["runtime"]["opencode"] = {
-        "config_file": "/mnt/common/web-yk/config/opencode-server.json"}
+        "config_file": "/mnt/common/web-test/config/opencode-server.json"}
     registry.write_text(json.dumps(raw), encoding="utf-8")
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert result.returncode != 0
@@ -94,7 +94,7 @@ def test_check_command_validates_every_frontend_and_exits(registry):
 
 def test_container_commands_use_component_entrypoints():
     config = load_frontends(EXAMPLE).control_config()
-    workload = BucketManager(config).deployment("opencode-bucket-0123456789ab", "web-yk")
+    workload = BucketManager(config).deployment("opencode-bucket-0123456789ab", "web-test")
     runtime_args = workload["spec"]["template"]["spec"]["containers"][0]["args"]
     documents = yaml.safe_load_all((ROOT / "k8s/opencode/backend.yaml").read_text(encoding="utf-8"))
     control = next(doc for doc in documents if doc["kind"] == "Deployment")
@@ -104,4 +104,4 @@ def test_container_commands_use_component_entrypoints():
         command = json.loads(next(line[4:] for line in docker.splitlines() if line.startswith("CMD ")))
         assert command == ["python", "-m", component, "--config", "/mnt/common/frontends.json"]
         assert args[:len(command)] == command
-    assert runtime_args[-4:] == ["--frontend-id", "web-yk", "--bucket-id", "opencode-bucket-0123456789ab"]
+    assert runtime_args[-4:] == ["--frontend-id", "web-test", "--bucket-id", "opencode-bucket-0123456789ab"]

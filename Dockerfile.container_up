@@ -8,6 +8,6 @@ COPY vendor/wheels /opt/build/wheels
 RUN pip install --no-index --find-links=/opt/build/wheels --require-hashes -r /opt/build/requirements.lock \
     && rm -rf /opt/build
 RUN useradd --uid 10001 --create-home agent && mkdir /data && chown agent:agent /data
-USER 10001:10001
+USER 0:0
 EXPOSE 8000
 CMD ["python", "-m", "container_up", "--config", "/mnt/common/frontends.json"]

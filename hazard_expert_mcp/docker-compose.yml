@@ -26,7 +26,7 @@ services:
       # 已部署的 container-up 地址。容器里的 localhost 指当前 MCP 容器。
       CONTAINER_UP_BASE_URL: "http://host.docker.internal:30080"
       # 必须是 container-up frontends.json 中已有的 frontend id。
-      CONTAINER_UP_FRONTEND_ID: "web-yk"
+      CONTAINER_UP_FRONTEND_ID: "web-test"
       # 应覆盖 container-up 的 limits.request_seconds（默认 600）及冷启动时间。
       CONTAINER_UP_TIMEOUT_SECONDS: "720"
       CONTAINER_UP_CONNECT_TIMEOUT_SECONDS: "10"

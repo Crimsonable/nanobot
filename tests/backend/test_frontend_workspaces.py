@@ -31,7 +31,7 @@ def workspaces(tmp_path):
                 "submit": submit.model_dump(mode="json"), "artifacts": []})
             workspace = runtime.workspace(submit)
             assert workspace.parent == tmp_path / "workspaces" / frontend
-            (workspace / "output/report.txt").write_text(frontend + ":" + user)
+            (workspace / "report.txt").write_text(frontend + ":" + user)
             pairs.append((runtime, submit, workspace))
     yield pairs
     for runtime in {pair[0] for pair in pairs}:
@@ -41,7 +41,7 @@ def workspaces(tmp_path):
 def test_workspace_scope_is_frontend_and_user(workspaces):
     assert len({path for _, _, path in workspaces}) == 4
     for runtime, submit, workspace in workspaces:
-        own_file = workspace / "output/report.txt"
+        own_file = workspace / "report.txt"
         for tool in ["read", "write"]:
             result = runtime.authorize(submit.identity.identity_id, tool, tool, {"filePath": str(own_file)})
             assert result["args"]["filePath"] == str(own_file)
@@ -49,8 +49,8 @@ def test_workspace_scope_is_frontend_and_user(workspaces):
             if other.identity == submit.identity:
                 continue
             for tool, args in [
-                ("read", {"filePath": str(other_workspace / "output/report.txt")}),
-                ("write", {"filePath": str(other_workspace / "output/report.txt")}),
+                ("read", {"filePath": str(other_workspace / "report.txt")}),
+                ("write", {"filePath": str(other_workspace / "report.txt")}),
                 ("grep", {"path": str(other_workspace), "pattern": "report"}),
                 ("list", {"path": str(workspace.parent)}),
             ]:
@@ -75,15 +75,15 @@ async def test_attachment_publication_cannot_use_other_frontend_workspace(worksp
                        if other.identity.frontend_id != submit.identity.frontend_id
                        and other.identity.user_id == submit.identity.user_id)
         ticket = runtime.authorize(submit.identity.identity_id, "foreign", "publish_attachment",
-            {"files": [{"path": str(foreign / "output/report.txt")}]})
+            {"files": [{"path": str(foreign / "report.txt")}]})
         with pytest.raises(PermissionError):
             await runtime.publish(ticket["ticket"])
         assert uploads == []
         ticket = runtime.authorize(submit.identity.identity_id, "own", "publish_attachment",
-            {"files": [{"path": "output/report.txt"}]})
+            {"files": [{"path": "report.txt"}]})
         result = await runtime.publish(ticket["ticket"])
         assert result["status"] == "queued_for_reply"
-        assert uploads == [(submit.identity, (workspace / "output/report.txt").read_text())]
+        assert uploads == [(submit.identity, (workspace / "report.txt").read_text())]
 
 
 @pytest.mark.asyncio
@@ -91,10 +91,10 @@ async def test_attachment_publication_cannot_use_other_frontend_workspace(worksp
 async def test_bash_mounts_only_the_current_frontend_user_workspace(workspaces):
     for runtime, submit, workspace in workspaces:
         checks = [f"test ! -e '{path}'" for _, _, path in workspaces if path != workspace]
-        checks.extend(["printf mine > scratch/new.txt", "cat scratch/new.txt"])
+        checks.extend(["printf mine > new.txt", "cat new.txt"])
         result = await runtime.executor.execute(submit.request_id, workspace, [], " && ".join(checks))
         assert result == {"output": "mine", "exit_code": 0}
-        assert (workspace / "scratch/new.txt").read_text() == "mine"
+        assert (workspace / "new.txt").read_text() == "mine"
 
 
 def test_frontend_name_is_used_without_lossy_rewriting(tmp_path):

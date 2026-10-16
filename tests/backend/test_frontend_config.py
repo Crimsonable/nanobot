@@ -10,7 +10,7 @@ EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
 
 
 def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
-    config = FrontendConfig.model_validate({"frontend_id": "web-yk", "provider": "web",
+    config = FrontendConfig.model_validate({"frontend_id": "web-test", "provider": "web",
         "send_msg_url": "http://frontend/outbound",
         "runtime": {}})
     assert config.control.port == 8000
@@ -19,16 +19,16 @@ def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
     assert config.runtime.opencode.port == 4096
     assert config.runtime.workspace_root == Path("/mnt/env/workspaces")
     assert config.runtime.permissions_file == Path("/mnt/common/{frontend_id}/config/user-permissions.yaml")
-    assert config.model_dump()["frontend_id"] == "web-yk"
+    assert config.model_dump()["frontend_id"] == "web-test"
     assert "id" not in config.model_dump()
     runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
-    assert runtime.frontend_id == "web-yk"
+    assert runtime.frontend_id == "web-test"
     assert not hasattr(runtime, "credential_file")
     assert runtime.limits.active == 4
 
 
 def test_default_values_can_still_be_overridden():
-    raw = load_frontends(EXAMPLE).frontend("web-yk").model_dump(mode="json")
+    raw = load_frontends(EXAMPLE).frontend("web-test").model_dump(mode="json")
     raw["control"].update(port=8100)
     raw["control"]["bucket_pool"].update(max_users_per_bucket=8, namespace="test")
     raw["runtime"].update(rpc_port=4107, health_port=8109, limits={"active": 2},
@@ -42,7 +42,7 @@ def test_default_values_can_still_be_overridden():
 
 
 def selected_config():
-    config = load_frontends(EXAMPLE).frontend("web-yk")
+    config = load_frontends(EXAMPLE).frontend("web-test")
     return config
 
 
@@ -50,8 +50,8 @@ def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
     config = selected_config()
     cu = config.control_config()
     runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
-    assert list(cu.frontends) == ["web-yk"]
-    frontend = cu.frontends["web-yk"]
+    assert list(cu.frontends) == ["web-test"]
+    frontend = cu.frontends["web-test"]
     assert frontend.channel_config["send_msg_url"] == config.send_msg_url
     assert runtime.bucket_id == "opencode-bucket-0123456789ab"
     assert runtime.storage.key_prefix == "web-outbound"
@@ -93,7 +93,7 @@ def test_shared_config_can_live_in_common_but_native_tools_cannot_read_it():
 
 
 def test_no_duplicate_runtime_storage_and_profile_validation():
-    raw = load_frontends(EXAMPLE).frontend("web-yk").model_dump(mode="json")
+    raw = load_frontends(EXAMPLE).frontend("web-test").model_dump(mode="json")
     raw["runtime"]["storage"] = raw["attachment_storage"]
     with pytest.raises(ValidationError):
         FrontendConfig.model_validate(raw)

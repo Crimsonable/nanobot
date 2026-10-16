@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from web_server.settings import (
     APP_HOST,
@@ -17,13 +17,23 @@ from web_server.uvicorn_logging import build_uvicorn_log_config
 
 
 class InboundRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """Lenient front-door contract mirroring container_up.server.Inbound."""
+
+    model_config = ConfigDict(extra="ignore")
     frontend_id: str = Field(min_length=1)
     user_id: str
-    chat_id: str = Field(min_length=1)
+    chat_id: str = "default"
     content: str
     attachments: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("chat_id", mode="before")
+    @classmethod
+    def default_chat_id(cls, value: Any) -> str:
+        if value is None:
+            return "default"
+        text = str(value)
+        return text if text.strip() else "default"
 
 
 class OutboundRequest(BaseModel):

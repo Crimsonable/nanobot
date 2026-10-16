@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 
-SCRIPT = Path(__file__).resolve().parents[2] / "config/opencode/web-yk/app/skills/hazard-report/scripts/report_generator.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "config/opencode/web-test/app/skills/hazard-report/scripts/report_generator.py"
 
 
 def test_report_generates_local_files_without_upload(tmp_path):

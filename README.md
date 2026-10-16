@@ -18,9 +18,9 @@
 ## 配置
 
 - [CU 与 bucket runtime 统一配置](config/opencode/frontends.json)
-- [OpenCode server](config/opencode/web-yk/config/opencode-server.json)
-- [用户权限与目录范围](config/opencode/web-yk/config/user-permissions.yaml)
-- [会话日志配置](config/opencode/web-yk/config/session-logging.json)：按 frontend 控制思考、回复和工具日志，详见 [日志与 ID 约定](docs/SESSION_LOGGING.md)。
+- [OpenCode server](config/opencode/web-test/config/opencode-server.json)
+- [用户权限与目录范围](config/opencode/web-test/config/user-permissions.yaml)
+- [会话日志配置](config/opencode/web-test/config/session-logging.json)：按 frontend 控制思考、回复和工具日志，详见 [日志与 ID 约定](docs/SESSION_LOGGING.md)。
 
 `common/frontends.json` 是统一入口总表，一个 CU 可同时接入多个 frontend。每个条目的渠道、回调、MinIO、runtime 配置 和闲置 TTL 仅作用于该 frontend；基础设施参数放在总表的 control 中。每个 frontend 的配置统一放在 `common/<frontend_id>/config/`：`opencode-server.json` 配置模型/provider/MCP，`user-permissions.yaml` 配置用户权限。业务资料、skills 和模板分别放在同级 `app/` 下。权限 defaults 只影响该 frontend 的用户。
 
@@ -36,7 +36,7 @@ python -m container_up --config config/opencode/frontends.json
 
 发布镜像、离线资源、权限开关、附件链路、HTTP 接口与部署细节见 [运行说明](docs/OPENCODE_BACKEND_IMPLEMENTATION.md)。
 
-部署清单统一放在 `k8s/opencode/`，MinIO 清单放在 `k8s/minio/`。完整步骤见 [Kubernetes 部署说明](k8s/opencode/README.md)，包含 PV/PVC、local/NFS 选择及用户工作目录初始化。
+部署清单统一放在 `k8s/opencode/`，MinIO 清单放在 `k8s/minio/`。可直接执行的部署、镜像导入和接口测试命令见 [部署与测试手册](docs/DEPLOYMENT_MANUAL.md)；存储与挂载细节见 [Kubernetes 部署说明](k8s/opencode/README.md)。
 
 全部业务源码与 opencode_plugin 统一放入服务器 source 目录，只读挂载到 /mnt/source。OpenCode 二进制单独放入服务器 opencode/opencode，所有桶只读使用同一份文件。更新 Python 源码、构建后的插件或 OpenCode 二进制后重启服务即可，无需重新构建镜像；Python/系统依赖变化才需要更新基础运行镜像。
 

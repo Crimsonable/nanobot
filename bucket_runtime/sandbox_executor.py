@@ -38,6 +38,19 @@ class SandboxExecutor:
         self.config, self.output_limit = config, output_limit
         self.processes: dict[str, set[asyncio.subprocess.Process]] = {}
 
+    def working_directory(self, workspace: Path, public: list[Path], workdir: str | None,
+                          workspace_access: str) -> Path:
+        if not workdir:
+            return workspace if workspace_access != "none" else Path("/")
+        candidate = Path(workdir)
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        roots = [*public, *([workspace] if workspace_access != "none" else [])]
+        root = next((root for root in roots if candidate.resolve().is_relative_to(root)), None)
+        if root is None:
+            raise PermissionError("working directory outside user permission scope")
+        return contained(str(candidate), root, directory=True)
+
     def argv(self, workspace: Path, public: list[Path], cwd: Path, command: str, *,
              sandbox: UserSandbox | None = None, workspace_access: str = "read_write",
              private_files: list[Path] = ()) -> list[str]:
@@ -89,17 +102,7 @@ class SandboxExecutor:
                       sandbox: UserSandbox | None = None, workspace_access: str = "read_write",
                       private_files: list[Path] = ()) -> dict:
         sandbox = sandbox or UserSandbox()
-        if workdir:
-            candidate = Path(workdir)
-            if not candidate.is_absolute():
-                candidate = workspace / candidate
-            roots = [*public, *([workspace] if workspace_access != "none" else [])]
-            root = next((root for root in roots if candidate.resolve().is_relative_to(root)), None)
-            if root is None:
-                raise PermissionError("working directory outside user permission scope")
-            cwd = contained(str(candidate), root, directory=True)
-        else:
-            cwd = workspace if workspace_access != "none" else Path("/")
+        cwd = self.working_directory(workspace, public, workdir, workspace_access)
         process = await asyncio.create_subprocess_exec(
             *self.argv(workspace, public, cwd, command, sandbox=sandbox, workspace_access=workspace_access,
                        private_files=private_files),

@@ -13,7 +13,7 @@ bucket_runtime.runtime              用户→chat_id→session、状态、权限
   ├─ OpenCodeClient → opencode serve  回环 HTTP 提交/控制，一个 bucket 一个实例
   ├─ OpenCode 插件 → runtime → CU  全量事件与最终回复回调
   ├─ 可信插件 → 私有 runtime RPC       before hook / publish_attachment
-  └─ SandboxExecutor → bwrap         被 hook 包装的 bash 在这里执行
+  └─ 插件包装 command → OpenCode 原生 bash → flock → bwrap → 用户命令
 ```
 
 container_up 不直接调用 OpenCode HTTP API，也不接收模型指定的路由元数据。会话换桶时，CU 通过共享本地 state PVC 读取和迁移原生会话数据库；在线旧桶的停止与删除操作交由 runtime 调用 OpenCode。入站附件仅转发 URL/路径，不获取文件字节。publish_attachment 的 runtime 端实现持有 MinIO 凭据、校验本地文件并上传；凭据不交给模型或 bash 沙箱。WS 传递消息、事件、附件引用及少量会话迁移控制，不传历史正文。
@@ -31,6 +31,12 @@ python -m bucket_runtime --config /mnt/common/frontends.json --bucket-id "$BUCKE
 
 ## 已落地的实现选择
 
+- bash 的 before hook 调用 `/authorize`，runtime 根据可信 session（包含子会话的父链）、当前请求和用户配置返回已校验的启动参数与剩余超时。插件逐项 shell 转义，用 `exec` 包装原始命令，再交给 OpenCode 原生 bash 执行。没有命令执行票据、`exec_client.py` 或 `/execute` RPC；附件发布仍使用独立授权票据。
+- runtime 的沙箱参数构造器与启动探测保留，业务命令的输出、退出码、输出截断和进程生命周期由 OpenCode 原生 bash 管理；不再使用 runtime 的 `limits.output_bytes` 对业务 bash 输出做硬性终止。超时取工具超时（默认 120 秒）与请求剩余时间的较小值。
+- `/usr/bin/flock` 在沙箱外持有用户执行锁，与 runtime 的附件发布共享同一文件锁；锁文件位于 state_root/execution-locks，不挂载到沙箱。取消经 OpenCode abort 传递，bwrap 保留 PID namespace 和 die-with-parent。
+- 此接口使用插件协议版本 6，runtime 与编译后的插件必须一起升级并重启 bucket；旧插件握手会被拒绝。runtime 镜像须提供 util-linux 的 `/usr/bin/flock`。
+- OpenCode 原生历史保留实际执行的包装命令；插件通过 messages.transform 在发给模型前还原本版本包装的原始 command 和沙箱 workdir，重启后也可还原，避免模型模仿内部包装。该转换不改变原始事件或持久化历史，也不解析旧版本的 exec_client 命令。
+
 - 构建与实测使用 OpenCode **1.18.31 / Linux x64**；运行时不限制版本号或二进制哈希，启动仅检查服务健康状态。构建产物的完整性校验见 vendor 脚本。
 - 创建 session 时安装策略，每次复用时回读核对。实测该版本 PATCH 权限会追加规则，因此运行时不反复 PATCH；策略不匹配时明确报错，需管理员明确处理会话策略。
 - server 配置直接读取 `opencode.config_file` 指向的完整 OpenCode JSON，仅追加 runtime 插件；不再覆盖功能开关或注入禁用功能的环境变量。
@@ -42,7 +48,7 @@ python -m bucket_runtime --config /mnt/common/frontends.json --bucket-id "$BUCKE
 - CU 与每个 bucket 使用独立 SQLite。状态和 outbox 原子提交，ACK 后删除待发送记录，inbox 去重；数据库文件有进程级单写锁。断线重放消息，重复 request_id 校验请求 hash。
 - WS 每个已登记的连接绑定一个 bucket，新连接关闭旧连接，旧 handler 拒绝继续处理。执行中及排队请求维持临时用户绑定，CU 重启后恢复其原桶；空闲用户不保留桶绑定。
 - WebSocket 传业务事件、ACK 和内存中的会话停止/删除控制；历史由 CU 读取共享 state PVC，不经 WS 传输。业务事件发送由 outbox 入队唤醒，断线重连重发未确认事件。
-- 事件只走 OpenCode 插件 → runtime → CU。插件通过带鉴权的 /plugin/event 将 event hook 收到的全部原始事件逐条推送，包括思考、正文增量、工具、会话状态、未知类型及终态之后的事件；工具执行前还推送原始参数。runtime 将这些事件写入可靠 outbox，CU 完整保存为 opencode_event 记录。原始事件不节流、不截断，不因缺少 request_id 而丢弃；确定请求归属时核对 session_id、input_message_id、directory 并附加可信用户与 chat_id。runtime 从同一原生事件流汇总最终助手正文、附件和用量，CU 仅根据最终结果向渠道回复，思考和工具中间内容不进入渠道消息。工具消息和 idle 不提前结束请求。runtime 不订阅 SSE，不轮询或补查消息；提交连接结果不确定时只等待插件回调至截止时间，重启前未持久化终态的执行中请求标记 EXECUTION_INTERRUPTED。
+- 事件只走 OpenCode 插件 → runtime → CU。插件通过带鉴权的 /plugin/event 将 event hook 收到的全部原始事件逐条推送，包括思考、正文增量、工具、会话状态、未知类型及终态之后的事件；工具执行前还推送原始参数。runtime 将这些事件写入可靠 outbox，CU 完整保存为 opencode_event 记录。原始事件不节流、不截断，不因缺少 request_id 而丢弃；确定请求归属时核对 session_id、input_message_id、directory 并附加可信用户与 chat_id。runtime 只转发事件并报告执行终态及附件；CU 从已收到的完整 part 快照和消息完成状态提取最终正文与用量，仅向渠道发送最终结果，思考和工具中间内容不进入渠道消息。工具消息和 idle 不提前结束请求。runtime 不订阅 SSE，不轮询或补查消息；提交连接结果不确定时只等待插件回调至截止时间，重启前未持久化终态的执行中请求标记 EXECUTION_INTERRUPTED。
 - 取消会终止沙箱进程树，已完成终态不可覆盖。提交结果不确定时等待插件事件；进程重启后将未完成的执行标记为 `EXECUTION_INTERRUPTED`，不自动重跑有副作用的任务。
 - 执行完成与渠道交付分开记录。外部发送状态不确定时记录 `unknown`，不盲目重试。
 
@@ -60,16 +66,16 @@ python -m bucket_runtime --config /mnt/common/frontends.json --bucket-id "$BUCKE
 
 MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，使用 access_key、secret_key、key_prefix、presign_expiry_seconds 字段。bucket 内的发布工具读取它并上传；CU 仅转发 URL。public_base_url 为空时返回签名 URL，CU 不续签。
 
-`config/opencode/web-yk/app/skills/` 提供报告、HTML→PDF、图片压缩及附件发布工具说明。模型可自行获取需要的资源，再把本地路径交给报告脚本；报告脚本不自动下载远程图片。
+`config/opencode/web-test/app/skills/` 提供报告、HTML→PDF、图片压缩及附件发布工具说明。模型可自行获取需要的资源，再把本地路径交给报告脚本；报告脚本不自动下载远程图片。
 
 ## 配置与部署
 
 `common/frontends.json` 是统一入口总表，`frontends` 数组中每项定义一个 frontend，`control` 是 CU/集群的公共基础设施参数。一个 CU 接入多个 frontend，按 frontend 创建独立桶，不同 frontend 的模型、权限或模板不会混用。
 
 - `config/opencode/frontends.json`：每项使用 frontend_id、provider、send_msg_url、attachment_storage、instance_idle_ttl_seconds、channel 和 runtime。模型通过该 frontend 的 opencode-server.json 的 model 选择，规则通过 instructions 指定的 AGENTS.md 加载；渠道凭据放在自己的 channel 中。飞书仅使用 app_id/app_secret；QXT 使用 app_id/app_secret/corp_id/callback_token/access_url，发送地址统一使用 frontend 的 send_msg_url。其他 channel 字段直接拒绝。
-- `config/opencode/web-yk/config/opencode-server.json`：部署到 common/web-yk/config/，包含仅该 frontend 生效的模型 provider、API key、MCP、LSP、formatter、skills 等原生配置。自动更新关闭，二进制统一从服务器目录更新。
-- `config/opencode/web-yk/config/user-permissions.yaml`：部署到 common/web-yk/config/，defaults 仅作用于该 frontend 的用户，users 可只写 user_id。显式 frontend_id 不匹配时启动失败。新 session 加载当前策略；已有 session 复用时核对策略，不匹配则明确报错，不自动重建会话或修改已有策略。
-- `config/opencode/web-yk/config/session-logging.json`：部署到该 frontend 的 config/，由 runtime.logging_file 指定，控制插件向 bucket stdout 输出思考、回复和工具过程。身份来自 OpenCode 会话 metadata，详见 [日志与 ID 约定](SESSION_LOGGING.md)。
+- `config/opencode/web-test/config/opencode-server.json`：部署到 common/web-test/config/，包含仅该 frontend 生效的模型 provider、API key、MCP、LSP、formatter、skills 等原生配置。自动更新关闭，二进制统一从服务器目录更新。
+- `config/opencode/web-test/config/user-permissions.yaml`：部署到 common/web-test/config/，defaults 仅作用于该 frontend 的用户，users 可只写 user_id。显式 frontend_id 不匹配时启动失败。新 session 加载当前策略；已有 session 复用时核对策略，不匹配则明确报错，不自动重建会话或修改已有策略。
+- `config/opencode/web-test/config/session-logging.json`：部署到该 frontend 的 config/，由 runtime.logging_file 指定，控制 runtime 向 bucket stdout 输出四字段精简日志（user_id、frontend_id、chat_id、content）。身份由 runtime 关联请求和 OpenCode 会话 metadata，详见 [日志与 ID 约定](SESSION_LOGGING.md)。
 - `common/<id>/app/templates/` 与 `app/skills/`：该 frontend 自己的模板和技能，通过 common 挂载供所属 bucket 使用。
 
 CU 的入站、查询、取消和附件引用接口不需要 API key；Web 代理及隐患专家调用 CU 不发送 Authorization。保留 frontend 注册校验和请求/bucket 归属检查。模型、MinIO、渠道凭据，以及桶内部自动生成的插件调用凭据仍属于各自用途。
@@ -121,8 +127,8 @@ schema 检查不代表凭据存在、模型可用或 bwrap 已通过启动测试
 ```bash
 bash scripts/vendor_opencode_backend.sh
 docker build -f Dockerfile.container_up -t agent-container-up:opencode-1.18.31 .
-docker build -f Dockerfile.bucket_runtime -t agent-bucket-runtime:opencode-1.18.31 .
-docker save agent-container-up:opencode-1.18.31 agent-bucket-runtime:opencode-1.18.31 -o agent-images.tar
+docker build -f Dockerfile.bucket_runtime -t agent-bucket-runtime:opencode-1.18.31-bwrap011 .
+docker save agent-container-up:opencode-1.18.31 agent-bucket-runtime:opencode-1.18.31-bwrap011 -o agent-images.tar
 ```
 
 APT、Chromium 和基础镜像获取发生在构建期；离线环境导入完成的镜像。不是在无基础依赖的机器上直接执行联网 Docker 构建。Python 包由带 hash 的 lock 文件和 wheelhouse 安装，插件由 npm lock 构建并包含离线依赖，runtime 不主动安装依赖；管理员额外开启的 OpenCode 自动更新、插件或 LSP 下载功能可能自行访问网络，离线部署需预置所需资源。
@@ -142,7 +148,7 @@ K8s 示例：k8s/opencode/backend.yaml。CU 的 ServiceAccount 只授予当前�
 
 frontends.json 的 control.bucket_pool 配置镜像、命名空间、max_users_per_bucket、启动超时、扫描间隔、PVC 名称与节点选择器。两种服务挂载同一份 frontends.json，不生成独立 runtime 配置。配置更改需要重启 CU，并在 bucket 重建时生效。
 
-服务器存储由 k8s/opencode/storage.yaml 提供：data PVC 在 CU 挂载 /mnt/env，在 bucket 仅挂载 workspaces/<frontend_id> 子目录到 /mnt/env/workspaces/<frontend_id>；source PVC → /mnt/source（只读），common PVC 在 CU 挂载 /mnt/common，在 bucket 分别挂载 /mnt/common/<frontend_id>/app、/mnt/common/<frontend_id>/config 和单独的 frontends.json（只读）。物理目录统一为 /data/opencode_backend_k8s/{data,source,common}，默认用户工作目录为 /mnt/env/workspaces/<frontend>/<user>。storage.yaml 通过 storage_backend 选择 local 或 NFS；服务 SQLite/OpenCode 状态另用本地 state PVC → /data。每次收到请求和真正开始执行前均检查工作目录，缺失时重建，并补齐 output/scratch；不再复制模板；在各 frontend 的 opencode-server.json 中用 instructions 指定容器内绝对路径 /mnt/common/<frontend_id>/app/templates/AGENTS.md。OpenCode server 在 context_root 启动，但每个会话的创建、消息、取消等请求都显式使用该用户工作目录作为 directory，按用户与 chat_id 创建或复用 session；共享规则从 instructions 指定文件加载；用户目录已有的 AGENTS.md 仍由 OpenCode 额外加载。本 frontend 的 app 自动加入用户权限和 bwrap 只读挂载，无需配置 public_roots。
+服务器存储由 k8s/opencode/storage.yaml 提供：data PVC 在 CU 挂载 /mnt/env，在 bucket 仅挂载 workspaces/<frontend_id> 子目录到 /mnt/env/workspaces/<frontend_id>；source PVC → /mnt/source（只读），common PVC 在 CU 挂载 /mnt/common，在 bucket 分别挂载 /mnt/common/<frontend_id>/app、/mnt/common/<frontend_id>/config 和单独的 frontends.json（只读）。物理目录统一为 /data/opencode_backend_k8s/{data,source,common}，默认用户工作目录为 /mnt/env/workspaces/<frontend>/<user>。storage.yaml 通过 storage_backend 选择 local 或 NFS；服务 SQLite/OpenCode 状态另用本地 state PVC → /data。每次收到请求和真正开始执行前均检查工作目录，缺失时仅重建工作目录，任务所需的子目录由任务按需创建；不再复制模板；在各 frontend 的 opencode-server.json 中用 instructions 指定容器内绝对路径 /mnt/common/<frontend_id>/app/templates/AGENTS.md。OpenCode server 在 context_root 启动，但每个会话的创建、消息、取消等请求都显式使用该用户工作目录作为 directory，按用户与 chat_id 创建或复用 session；每次提交消息前，runtime 使用同一用户 directory 调用 OpenCode GET /config 读取当前生效的 model，并在 prompt_async 中显式传入 providerID/modelID，新旧会话均使用当前默认模型，历史消息不改写。model 必须配置为 provider/model，缺失或无效时提交失败；frontend 配置在进程启动时通过 OPENCODE_CONFIG_CONTENT 注入，修改文件后需重启相应 OpenCode 进程使其生效；共享规则从 instructions 指定文件加载；用户目录已有的 AGENTS.md 仍由 OpenCode 额外加载。本 frontend 的 app 自动加入用户权限和 bwrap 只读挂载，无需配置 public_roots。
 
 复用会话时核对 OpenCode 返回的 directory，不匹配则返回 SESSION_WORKSPACE_MISMATCH，不切换目录或自动创建替代会话。
 
@@ -188,4 +194,4 @@ source 在每个服务中统一只读挂载为 /mnt/source；CU/runtime/Web 在�
 
 OpenCode skills.paths 中的 `/mnt/common/{frontend_id}/app/skills` 在启动时展开，越界路径拒绝启动，避免全局技能扫描读到其他 frontend 的说明。动态 bucket 分开挂载本 frontend 的 app 和 config，不挂载 frontend 根或整个 common；服务配置 frontends.json 使用独立的只读文件挂载。原生文件工具、session 路径规则和 bwrap 使用同一公共范围。相关部署准备与挂载说明见 Kubernetes 部署说明。
 
-消息发送、最终渠道投递和同步接口等待由事件唤醒；心跳及 bucket 闲置检查使用定时器。插件在持久 state 目录保存全部未确认事件，runtime 接收成功后才删除；只有 runtime 判定最终回复。调用方必须提供非空 chat_id。
+消息发送、最终渠道投递和同步接口等待由事件唤醒；心跳及 bucket 闲置检查使用定时器。插件无投递缓冲，runtime 持久化待处理和待转发事件；对话正文只由 OpenCode 持久化，runtime 不复制对话或追加 delta；CU 使用已收到的事件生成最终渠道回复。调用方必须提供非空 chat_id。

@@ -34,14 +34,20 @@ def test_configuration_rejects_deleted_fields(schema, values):
 
 
 @pytest.mark.parametrize("schema", [Inbound, InboundRequest])
-def test_chat_id_is_required(schema):
+def test_chat_id_defaults_when_absent_or_blank(schema):
     values = {"user_id": "alice", "content": "hello"}
     if schema is InboundRequest:
         values["frontend_id"] = "web"
-    with pytest.raises(ValidationError):
-        schema.model_validate(values)
-    with pytest.raises(ValidationError):
-        schema.model_validate({**values, "chat_id": ""})
+    assert schema.model_validate(values).chat_id == "default"
+    assert schema.model_validate({**values, "chat_id": ""}).chat_id == "default"
+    assert schema.model_validate({**values, "chat_id": None}).chat_id == "default"
+
+
+@pytest.mark.parametrize("schema", [Inbound, InboundRequest])
+def test_unknown_inbound_fields_are_ignored(schema):
+    values = {"user_id": "alice", "content": "hello", "chat_id": "c1",
+              "raw": {"legacy": True}, "frontend_id": "web"}
+    assert schema.model_validate(values).chat_id == "c1"
 
 
 def test_only_canonical_cu_routes_remain(tmp_path):

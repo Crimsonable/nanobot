@@ -65,9 +65,9 @@ spec:
     spec:
       automountServiceAccountToken: true
       securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
       containers:
       - name: control
         args:
@@ -89,11 +89,9 @@ spec:
             path: /health/live
             port: 8000
         securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
+          privileged: true
+          allowPrivilegeEscalation: true
+          readOnlyRootFilesystem: false
         volumeMounts:
         - name: data
           mountPath: /data
@@ -143,5 +141,5 @@ spec:
   ports:
   - port: 8000
     targetPort: 8000
-    nodePort: 30080
+    nodePort: 30082
   type: NodePort

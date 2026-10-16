@@ -14,6 +14,8 @@ from agent_backend.workspaces import workspace_volume_subpath
 
 
 class BucketManager:
+    _WRITE_ATTEMPTS = 5
+
     def __init__(self, config: ControlConfig):
         self.config = config
         self.pool = config.bucket_pool
@@ -43,8 +45,8 @@ class BucketManager:
             "args": ["python", "-m", "bucket_runtime", "--config",
                      self.config.frontend_config_path.as_posix(), "--frontend-id", frontend_id,
                      "--bucket-id", bucket_id],
-            "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
-                                "capabilities": {"drop": ["ALL"]}},
+            "securityContext": {"privileged": True, "allowPrivilegeEscalation": True,
+                                "readOnlyRootFilesystem": False},
             "resources": {"requests": {"cpu": "1", "memory": "1Gi"},
                           "limits": {"cpu": "4", "memory": "4Gi"}},
             "volumeMounts": [
@@ -74,7 +76,7 @@ class BucketManager:
                                  "automountServiceAccountToken": False,
                                  "nodeSelector": pool.node_selector,
                                  "terminationGracePeriodSeconds": 45,
-                                 "securityContext": {"runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001},
+                                 "securityContext": {"runAsUser": 0, "runAsGroup": 0, "fsGroup": 0},
                                  "containers": [container], "volumes": [
                                      {"name": "data", "persistentVolumeClaim": {"claimName": pool.state_pvc}},
                                      {"name": "workspace", "persistentVolumeClaim": {"claimName": pool.data_pvc}},
@@ -86,36 +88,46 @@ class BucketManager:
 
     async def ensure(self, bucket_id: str, frontend_id: str) -> None:
         collection = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments"
-        response = await self.request("GET", collection + "/" + bucket_id)
-        if response.status_code == 404:
-            response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id))
-            if response.status_code != 409:
-                response.raise_for_status()
-            else:
-                response = await self.request("GET", collection + "/" + bucket_id)
-        response.raise_for_status()
-        current = response.json()
-        if current.get("metadata", {}).get("labels", {}).get("bucket-id") != bucket_id:
-            raise RuntimeError("existing Deployment is not owned by this bucket")
-        owner = current.get("metadata", {}).get("annotations", {}).get("opencode.io/frontend-id")
-        if owner != frontend_id:
-            raise RuntimeError("existing Deployment belongs to another frontend")
-        desired = self.deployment(bucket_id, frontend_id)
-        desired["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
-        response = await self.request("PUT", collection + "/" + bucket_id, json=desired)
-        response.raise_for_status()
+        for attempt in range(self._WRITE_ATTEMPTS):
+            response = await self.request("GET", collection + "/" + bucket_id)
+            if response.status_code == 404:
+                response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id))
+                if response.status_code == 409:
+                    response = await self.request("GET", collection + "/" + bucket_id)
+            response.raise_for_status()
+            current = response.json()
+            if current.get("metadata", {}).get("labels", {}).get("bucket-id") != bucket_id:
+                raise RuntimeError("existing Deployment is not owned by this bucket")
+            owner = current.get("metadata", {}).get("annotations", {}).get("opencode.io/frontend-id")
+            if owner != frontend_id:
+                raise RuntimeError("existing Deployment belongs to another frontend")
+            desired = self.deployment(bucket_id, frontend_id)
+            desired["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
+            response = await self.request("PUT", collection + "/" + bucket_id, json=desired)
+            if not await self._retry_conflict(response, attempt):
+                break
         await self.scale(bucket_id, 1)
+
+    async def _retry_conflict(self, response: httpx.Response, attempt: int) -> bool:
+        if response.status_code == 409 and attempt + 1 < self._WRITE_ATTEMPTS:
+            # Re-read and rebuild the write on the next attempt; stale RVs cannot be replayed.
+            await asyncio.sleep(0.1 * 2 ** attempt)
+            return True
+        response.raise_for_status()
+        return False
 
     async def scale(self, bucket_id: str, replicas: int) -> None:
         path = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments/{bucket_id}/scale"
-        response = await self.request("GET", path)
-        if response.status_code == 404 and replicas == 0:
-            return
-        response.raise_for_status()
-        scale = response.json()
-        scale["spec"]["replicas"] = replicas
-        response = await self.request("PUT", path, json=scale)
-        response.raise_for_status()
+        for attempt in range(self._WRITE_ATTEMPTS):
+            response = await self.request("GET", path)
+            if response.status_code == 404 and replicas == 0:
+                return
+            response.raise_for_status()
+            scale = response.json()
+            scale["spec"]["replicas"] = replicas
+            response = await self.request("PUT", path, json=scale)
+            if not await self._retry_conflict(response, attempt):
+                break
         if replicas == 0:
             # Do not reuse its ID/state directory while the old writer is still terminating.
             async with asyncio.timeout(self.pool.ready_timeout_seconds):

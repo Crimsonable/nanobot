@@ -5,11 +5,10 @@ import json
 import os
 import secrets
 import shutil
-import sys
 from pathlib import Path
 
 from agent_backend.common import scoped_public_path
-from agent_backend.config import RuntimeConfig, SessionLoggingConfig, load_config
+from agent_backend.config import RuntimeConfig
 from bucket_runtime.opencode_client import OpenCodeClient
 
 
@@ -38,8 +37,6 @@ class Supervisor:
         if not oc.plugin_file.is_file():
             raise RuntimeError(f"mounted runtime plugin missing: {oc.plugin_file}")
         raw = self.server_config()
-        logging_config = (load_config(config.logging_file, SessionLoggingConfig)
-                          if config.logging_file else SessionLoggingConfig())
         plugin = oc.plugin_file.resolve().as_uri()
         plugins = raw.setdefault("plugin", [])
         if plugin not in plugins:
@@ -67,11 +64,7 @@ class Supervisor:
                     "XDG_STATE_HOME": str(home / "state"), "OPENCODE_CONFIG_CONTENT": json.dumps(raw),
                     "OPENCODE_SERVER_PASSWORD": self.password, "OPENCODE_SERVER_USERNAME": "opencode",
                     "BUCKET_RPC_URL": f"http://127.0.0.1:{config.rpc_port}",
-                    "BUCKET_RPC_TOKEN": self.rpc_token,
-                    "BUCKET_EVENT_ROOT": str(config.state_root / "plugin-events"),
-                    "BUCKET_SESSION_LOGGING": logging_config.model_dump_json(),
-                    "BUCKET_EXEC_PYTHON": sys.executable,
-                    "BUCKET_EXEC_CLIENT": str(Path(__file__).with_name("exec_client.py").resolve())})
+                    "BUCKET_RPC_TOKEN": self.rpc_token})
         self.process = await asyncio.create_subprocess_exec(str(oc.binary), "serve", "--hostname",
             "127.0.0.1", "--port", str(oc.port), cwd=oc.context_root, env=env,
             stdin=asyncio.subprocess.DEVNULL)

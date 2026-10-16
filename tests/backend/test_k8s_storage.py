@@ -10,17 +10,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_shared_instructions_use_the_bucket_container_mount():
-    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
-    native = json.loads((ROOT / "config/opencode/web-yk/config/opencode-server.json").read_text(encoding="utf-8"))
-    assert native["instructions"] == ["/mnt/common/web-yk/app/templates/AGENTS.md"]
+    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-test")
+    native = json.loads((ROOT / "config/opencode/web-test/config/opencode-server.json").read_text(encoding="utf-8"))
+    assert native["instructions"] == ["/mnt/common/web-test/app/templates/AGENTS.md"]
     deployment = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     mounts = deployment["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
-    assert any(m["mountPath"] == "/mnt/common/web-yk/app" and m["subPath"] == "web-yk/app"
+    assert any(m["mountPath"] == "/mnt/common/web-test/app" and m["subPath"] == "web-test/app"
                and m["readOnly"] for m in mounts)
 
 
 def test_all_services_use_one_source_mount_and_shared_opencode_binary():
-    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
+    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-test")
     workloads = []
     for path in ["k8s/opencode/backend.yaml", "k8s/opencode/engineering-scene-mcp.yaml", "k8s/opencode/hazard-expert-mcp.yaml", "k8s/opencode/web-server.yaml"]:
         workloads.extend(d for d in yaml.safe_load_all((ROOT / path).read_text(encoding="utf-8")) if d["kind"] == "Deployment")
@@ -56,14 +56,14 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
     custom = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
     volume = next(v for v in custom["spec"]["template"]["spec"]["volumes"] if v["name"] == "opencode")
     assert volume["hostPath"]["path"] == "/custom/opencode"
-    native = yaml.safe_load((ROOT / "config/opencode/web-yk/config/opencode-server.json").read_text(encoding="utf-8"))
+    native = yaml.safe_load((ROOT / "config/opencode/web-test/config/opencode-server.json").read_text(encoding="utf-8"))
     assert native["autoupdate"] is False
-    assert native["skills"]["paths"] == ["/mnt/common/web-yk/app/skills"]
+    assert native["skills"]["paths"] == ["/mnt/common/web-test/app/skills"]
     assert "COPY --chown=mcp:mcp hazard_expert_mcp" not in (ROOT / "hazard_expert_mcp/Dockerfile").read_text(encoding="utf-8")
 
 
 def test_original_pvc_mounts_match_control_and_dynamic_buckets():
-    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
+    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-test")
     docs = list(yaml.safe_load_all((ROOT / "k8s/opencode/backend.yaml").read_text(encoding="utf-8")))
     control = next(d for d in docs if d["kind"] == "Deployment")
     runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
@@ -71,9 +71,9 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
         pod = deployment["spec"]["template"]["spec"]
         volumes = {v["name"]: v for v in pod["volumes"]}
         mounts = {m["mountPath"]: m for m in pod["containers"][0]["volumeMounts"]}
-        for path, claim, readonly in [("/mnt/env" if deployment is control else "/mnt/env/workspaces/web-yk", "opencode-data-pvc", False),
+        for path, claim, readonly in [("/mnt/env" if deployment is control else "/mnt/env/workspaces/web-test", "opencode-data-pvc", False),
                                       ("/mnt/source", "opencode-source-pvc", True),
-                                      ("/mnt/common" if deployment is control else "/mnt/common/web-yk/app", "opencode-common-pvc", True)]:
+                                      ("/mnt/common" if deployment is control else "/mnt/common/web-test/app", "opencode-common-pvc", True)]:
             mount = mounts[path]
             assert mount.get("readOnly", False) == readonly
             assert volumes[mount["name"]]["persistentVolumeClaim"]["claimName"] == claim
@@ -82,11 +82,11 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
     assert "/mnt/common" not in mounts
     assert "/mnt/env" not in mounts
     assert "/mnt/env/workspaces" not in mounts
-    assert mounts["/mnt/env/workspaces/web-yk"]["subPath"] == "workspaces/web-yk"
-    assert "/mnt/common/web-yk" not in mounts
-    assert mounts["/mnt/common/web-yk/app"]["subPath"] == "web-yk/app"
-    assert mounts["/mnt/common/web-yk/config"]["subPath"] == "web-yk/config"
-    assert mounts["/mnt/common/web-yk/config"]["readOnly"] is True
+    assert mounts["/mnt/env/workspaces/web-test"]["subPath"] == "workspaces/web-test"
+    assert "/mnt/common/web-test" not in mounts
+    assert mounts["/mnt/common/web-test/app"]["subPath"] == "web-test/app"
+    assert mounts["/mnt/common/web-test/config"]["subPath"] == "web-test/config"
+    assert mounts["/mnt/common/web-test/config"]["readOnly"] is True
     assert mounts["/mnt/common/frontends.json"]["subPath"] == "frontends.json"
     config.frontend_id = "qxt-main"
     other = BucketManager(config.control_config()).deployment("opencode-bucket-abcdef123456", config.frontend_id)
@@ -100,7 +100,7 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
 
 
 def test_frontend_configuration_uses_common_pvc_without_global_credentials():
-    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
+    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-test")
     docs = list(yaml.safe_load_all((ROOT / "k8s/opencode/backend.yaml").read_text(encoding="utf-8")))
     control = next(d for d in docs if d["kind"] == "Deployment")
     runtime = BucketManager(config.control_config()).deployment("opencode-bucket-0123456789ab", config.frontend_id)
@@ -111,8 +111,8 @@ def test_frontend_configuration_uses_common_pvc_without_global_credentials():
                        for m in pod["containers"][0]["volumeMounts"])
         assert pod["automountServiceAccountToken"] is (deployment is control)
     cfg = config.runtime_config(ROOT / "config/opencode/frontends.json", "opencode-bucket-0123456789ab")
-    assert cfg.opencode.config_file == Path("/mnt/common/web-yk/config/opencode-server.json")
-    assert cfg.permissions_file == Path("/mnt/common/web-yk/config/user-permissions.yaml")
+    assert cfg.opencode.config_file == Path("/mnt/common/web-test/config/opencode-server.json")
+    assert cfg.permissions_file == Path("/mnt/common/web-test/config/user-permissions.yaml")
 
 
 def test_local_nfs_selector_and_unified_server_paths():
@@ -134,7 +134,7 @@ def test_local_nfs_selector_and_unified_server_paths():
 def test_bucket_upgrade_preserves_sleeping_and_running_replica_counts():
     from scripts.render_bucket_updates import render
 
-    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-yk")
+    config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-test")
     manager = BucketManager(config.control_config())
     current = [manager.deployment("opencode-bucket-0123456789ab", config.frontend_id),
                manager.deployment("opencode-bucket-abcdef012345", config.frontend_id)]

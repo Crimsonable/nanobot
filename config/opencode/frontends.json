@@ -1,13 +1,13 @@
 {
   "control": {
     "bucket_pool": {
-      "image": "agent-bucket-runtime:opencode-1.18.31",
+      "image": "agent-bucket-runtime:opencode-1.18.31-bwrap011",
       "max_users_per_bucket": 16
     }
   },
   "frontends": [
     {
-      "frontend_id": "web-yk",
+      "frontend_id": "web-test",
       "provider": "web",
       "send_msg_url": "http://your-frontend:8090/outbound",
       "attachment_storage": {

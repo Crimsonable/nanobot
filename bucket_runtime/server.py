@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from websockets.asyncio.client import connect
 
 from agent_backend.config import RuntimeConfig
+from agent_backend.logging_config import access_log_config
 from agent_backend.wire import Peer
 from bucket_runtime.runtime import Runtime
 from bucket_runtime.sandbox_executor import SandboxExecutor
@@ -29,7 +31,7 @@ def rpc_app(runtime: Runtime, token: str) -> FastAPI:
 
     @app.post("/plugin/ready")
     async def plugin_ready(request: Request):
-        if (await request.json()).get("version") != "4":
+        if (await request.json()).get("version") != "6":
             raise HTTPException(409, "plugin protocol mismatch")
         runtime.plugin_ready = True
         return {"ok": True}
@@ -51,15 +53,8 @@ def rpc_app(runtime: Runtime, token: str) -> FastAPI:
                 raise ValueError("plugin must supply its session directory")
             await runtime.bind_tool_session(body["session_id"], body["directory"])
             return runtime.authorize(body["session_id"], body["call_id"], body["tool"], body["args"])
-        except (PermissionError, ValueError) as exc:
+        except (PermissionError, ValueError, RuntimeError) as exc:
             raise HTTPException(403, str(exc)) from exc
-
-    @app.post("/execute")
-    async def execute(request: Request):
-        try:
-            return await runtime.execute((await request.json())["ticket"])
-        except (PermissionError, ValueError, RuntimeError, TimeoutError) as exc:
-            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/publish")
     async def publish(request: Request):
@@ -93,10 +88,13 @@ async def serve(config: RuntimeConfig) -> None:
     executor = SandboxExecutor(config.sandbox, config.limits.output_bytes)
     runtime = Runtime(config, supervisor.client, executor)
     rpc_server = uvicorn.Server(uvicorn.Config(rpc_app(runtime, supervisor.rpc_token),
-                                               host="127.0.0.1", port=config.rpc_port, log_level="warning"))
+                                               host="127.0.0.1", port=config.rpc_port, log_level="warning",
+                                               log_config=access_log_config()))
     health_server = uvicorn.Server(uvicorn.Config(health_app(runtime), host="0.0.0.0",
-                                                port=config.health_port, log_level="warning"))
-    tasks = [asyncio.create_task(rpc_server.serve()), asyncio.create_task(health_server.serve())]
+                                                port=config.health_port, log_level="warning",
+                                                log_config=access_log_config()))
+    tasks = [asyncio.create_task(rpc_server.serve()), asyncio.create_task(health_server.serve()),
+             asyncio.create_task(runtime.plugin_events.run())]
 
     async def connection_loop():
         while not runtime.draining:
@@ -117,6 +115,8 @@ async def serve(config: RuntimeConfig) -> None:
                 runtime.peer = None
 
     try:
+        if not Path("/usr/bin/flock").is_file():
+            raise RuntimeError("flock is required for sandbox/publication serialization")
         for _ in range(100):
             if rpc_server.started and health_server.started:
                 break

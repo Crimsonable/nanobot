@@ -20,7 +20,7 @@
   },
   "$schema": "https://opencode.ai/config.json",
   "instructions": [
-    "/mnt/common/web-yk/app/templates/AGENTS.md"
+    "/mnt/common/web-test/app/templates/AGENTS.md"
   ],
   "permission": {
     "*": "allow"
@@ -37,7 +37,7 @@
   "formatter": {},
   "skills": {
     "paths": [
-      "/mnt/common/web-yk/app/skills"
+      "/mnt/common/web-test/app/skills"
     ]
   },
   "model": "intranet/your-model"

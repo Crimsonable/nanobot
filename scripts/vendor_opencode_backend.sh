@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p vendor/wheels
+bash scripts/vendor_bubblewrap.sh
 curl --fail --location --output vendor/opencode.tar.gz \
   https://github.com/anomalyco/opencode/releases/download/v1.18.31/opencode-linux-x64.tar.gz
 echo 'e9312be75ed803b7415fc2aeabda1f4fe938912a39673762dc0c38c0e11ebde4  vendor/opencode.tar.gz' | sha256sum -c -

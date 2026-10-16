@@ -1,5 +1,7 @@
 # Kubernetes 部署
 
+首次部署、离线镜像导入、同步/异步消息、取消及附件测试的完整命令见 [部署与测试手册](../../docs/DEPLOYMENT_MANUAL.md)。
+
 会话过程日志配置与 ID 字段升级说明见 [日志与 ID 约定](../../docs/SESSION_LOGGING.md)。日志由插件写入 bucket 的 runtime 容器 stdout。
 
 一个 container-up（CU）读取 `common/frontends.json` 总表，接入多个 frontend。每个 frontend 有自己的 OpenCode 配置、用户权限、skills、模板和工作空间；动态桶固定属于一个 frontend，不同 frontend 不共用一个 OpenCode 进程。初始只启动 CU，收到请求后创建桶，不部署固定 StatefulSet。
@@ -16,24 +18,24 @@ CU 入站、查询、取消、附件引用接口和 Web 代理不需要 API key�
 ├── opencode/opencode               # 全部桶共用的一份程序
 ├── common/
 │   ├── frontends.json              # 入口总表；一个 CU 接入全部注册项
-│   ├── web-yk/
+│   ├── web-test/
 │   │   ├── config/                # 服务配置，不对用户工具开放
-│   │   │   ├── opencode-server.json  # 仅 web-yk 的模型、provider、MCP 等
-│   │   │   └── user-permissions.yaml # defaults 仅作用于 web-yk 的用户
+│   │   │   ├── opencode-server.json  # 仅 web-test 的模型、provider、MCP 等
+│   │   │   └── user-permissions.yaml # defaults 仅作用于 web-test 的用户
 │   │   └── app/                   # 本 frontend 公共只读内容
 │   │       ├── docs/
 │   │       ├── skills/
 │   │       └── templates/
 │   └── qxt-main/                   # 同样有独立配置、skills、模板
 ├── data/workspaces/
-│   ├── web-yk/alice/
+│   ├── web-test/alice/
 │   └── qxt-main/alice/              # 相同 user_id 的另一份工作空间
 └── state/
     ├── control/                    # CU 数据库
     └── runtime/<frontend_id>/<bucket_id>/  # runtime/OpenCode 状态
 ```
 
-配置示例在 `config/opencode/frontends.json` 和 `config/opencode/web-yk/config/`。总表顶层 `control` 是 CU/集群基础设施参数；`frontends` 数组中的每一项配置一个 frontend：
+配置示例在 `config/opencode/frontends.json` 和 `config/opencode/web-test/config/`。总表顶层 `control` 是 CU/集群基础设施参数；`frontends` 数组中的每一项配置一个 frontend：
 
 | 配置位置 | 作用范围与内容 |
 | --- | --- |
@@ -49,9 +51,9 @@ CU 入站、查询、取消、附件引用接口和 Web 代理不需要 API key�
 
 ```json
 {
-  "control": {"bucket_pool": {"image": "agent-bucket-runtime:opencode-1.18.31", "max_users_per_bucket": 16}},
+  "control": {"bucket_pool": {"image": "agent-bucket-runtime:opencode-1.18.31-bwrap011", "max_users_per_bucket": 16}},
   "frontends": [
-    {"id": "web-yk", "provider": "web", "runtime": {}},
+    {"id": "web-test", "provider": "web", "runtime": {}},
     {"id": "qxt-main", "provider": "qxt", "channel": {"app_id": "REPLACE", "app_secret": "REPLACE"},
      "runtime": {}}
   ]
@@ -112,24 +114,24 @@ runtime 每次收到请求以及执行前检查用户目录，缺失时重建并
 ```bash
 bash scripts/vendor_opencode_backend.sh
 docker build -f Dockerfile.container_up -t agent-container-up:opencode-1.18.31 .
-docker build -f Dockerfile.bucket_runtime -t agent-bucket-runtime:opencode-1.18.31 .
+docker build -f Dockerfile.bucket_runtime -t agent-bucket-runtime:opencode-1.18.31-bwrap011 .
 ```
 
-脚本下载校验 OpenCode、准备 Python wheels，并构建插件。镜像推入内网仓库或导入节点实际使用的运行时；正式更新应使用新镜像标签，并同步修改 backend.yaml 与总表 control.bucket_pool.image。
+脚本下载校验 OpenCode 和固定的 Debian bubblewrap 0.11.0-2+deb13u1 包、准备 Python wheels，并构建插件。已有镜像的旧内核修复及导入命令见[部署手册第 2.1 节](../../docs/DEPLOYMENT_MANUAL.md#21-已有镜像的-bwrap-旧版修复419-节点)。镜像推入内网仓库或导入节点实际使用的运行时；正式更新应使用新镜像标签，并同步修改 backend.yaml 与总表 control.bucket_pool.image。
 
 在存储节点创建目录并复制当前源码与构建结果。下面仅用于首次初始化，不覆盖已有配置：
 
 ```bash
 DEPLOY_ROOT=/data/opencode_backend_k8s
 mkdir -p "$DEPLOY_ROOT"/{data,source,common,state,opencode}
-mkdir -p "$DEPLOY_ROOT/common/web-yk/config"
-mkdir -p "$DEPLOY_ROOT/common/web-yk/app"/{docs,skills,templates}
-mkdir -p "$DEPLOY_ROOT/data/workspaces/web-yk"
+mkdir -p "$DEPLOY_ROOT/common/web-test/config"
+mkdir -p "$DEPLOY_ROOT/common/web-test/app"/{docs,skills,templates}
+mkdir -p "$DEPLOY_ROOT/data/workspaces/web-test"
 rsync -a --exclude=.git/ --exclude=.venv/ --exclude=.opencode-reference/ --exclude=vendor/ ./ "$DEPLOY_ROOT/source/"
 cp config/opencode/frontends.json "$DEPLOY_ROOT/common/frontends.json"
-cp config/opencode/web-yk/config/opencode-server.json "$DEPLOY_ROOT/common/web-yk/config/"
-cp config/opencode/web-yk/config/user-permissions.yaml "$DEPLOY_ROOT/common/web-yk/config/"
-cp config/opencode/web-yk/config/session-logging.json "$DEPLOY_ROOT/common/web-yk/config/"
+cp config/opencode/web-test/config/opencode-server.json "$DEPLOY_ROOT/common/web-test/config/"
+cp config/opencode/web-test/config/user-permissions.yaml "$DEPLOY_ROOT/common/web-test/config/"
+cp config/opencode/web-test/config/session-logging.json "$DEPLOY_ROOT/common/web-test/config/"
 install -m 0555 vendor/opencode "$DEPLOY_ROOT/opencode/opencode.new"
 mv -f "$DEPLOY_ROOT/opencode/opencode.new" "$DEPLOY_ROOT/opencode/opencode"
 ```

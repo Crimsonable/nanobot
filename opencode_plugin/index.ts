@@ -1,36 +1,66 @@
 import { tool, type Plugin } from "@opencode-ai/plugin"
-import { createSessionLogger } from "./session-logger"
 import { createRuntimeEvents } from "./runtime-events"
 
 function quote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'"
 }
 
+// Decode only the exact single-quoted format emitted by this plugin. This is
+// display/context normalization, never shell evaluation or an authorization.
+function unwrap(command: unknown): { command: string; workdir: string } | undefined {
+  if (typeof command !== "string" || !command.startsWith("exec '/usr/bin/flock' ")) return
+  const words: string[] = []
+  let i = 5
+  while (i < command.length) {
+    if (command[i++] !== "'") return
+    let word = "", closed = false
+    while (i < command.length) {
+      if (command.slice(i, i + 4) === "'\\''") { word += "'"; i += 4 }
+      else if (command[i] === "'") { i++; closed = true; break }
+      else word += command[i++]
+    }
+    if (!closed) return
+    words.push(word)
+    if (i < command.length && command[i++] !== " ") return
+  }
+  const cwd = words.indexOf("--chdir")
+  if (words[1] !== "--exclusive" || words[2] !== "--close" ||
+      !words.includes("--unshare-all") || !words.includes("--clearenv") ||
+      words.at(-4) !== "--" || words.at(-2) !== "-c" || cwd < 0) return
+  return {command: words.at(-1)!, workdir: words[cwd + 1]}
+}
+
 export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
   const url = process.env.BUCKET_RPC_URL
   const token = process.env.BUCKET_RPC_TOKEN
-  const python = process.env.BUCKET_EXEC_PYTHON
-  const client = process.env.BUCKET_EXEC_CLIENT
-  const eventRoot = process.env.BUCKET_EVENT_ROOT
-  if (!url || !token || !python || !client || !eventRoot) throw new Error("Missing trusted runtime configuration")
+  if (!url || !token) throw new Error("Missing trusted runtime configuration")
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(url)) throw new Error("Runtime RPC must be loopback")
 
   async function rpc(path: string, body: unknown, signal?: AbortSignal) {
     const response = await fetch(url + path, {
-      method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+      // Avoid reusing an idle loopback socket while Uvicorn is closing it.
+      method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json",
+        connection: "close" },
       body: JSON.stringify(body), signal: signal ?? AbortSignal.timeout(650_000),
     })
     if (!response.ok) throw new Error(`Runtime rejected ${path}: ${response.status}`)
     return response.json()
   }
 
-  const logger = createSessionLogger(JSON.parse(process.env.BUCKET_SESSION_LOGGING!))
-  const events = await createRuntimeEvents(directory, eventRoot,
-    body => rpc("/plugin/event", body, AbortSignal.timeout(5000)), logger)
-  await rpc("/plugin/ready", { version: "4" })
+  const events = createRuntimeEvents(directory,
+    body => rpc("/plugin/event", body, AbortSignal.timeout(30_000)))
+  await rpc("/plugin/ready", { version: "6" })
   return {
     event: async ({ event }) => { await events.event(event) },
-    dispose: async () => { await events.flush() },
+    "experimental.chat.messages.transform": async (_input, output) => {
+      for (const message of output.messages) {
+        for (const part of message.parts) {
+          if (part.type !== "tool" || part.tool !== "bash") continue
+          const original = unwrap(part.state.input?.command)
+          if (original) part.state.input = {...part.state.input, ...original}
+        }
+      }
+    },
     "tool.execute.before": async (input, output) => {
       // Runtime applies this user's configured session scope to native file tools.
       const args = structuredClone(output.args)
@@ -42,10 +72,17 @@ export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
         session_id: input.sessionID, directory, call_id: input.callID, tool: input.tool, args,
       })
       if (input.tool === "bash") {
-        output.args.command = [python, client, authorized.ticket].map(quote).join(" ")
+        if (!Array.isArray(authorized.argv) || authorized.argv.length === 0 ||
+            !authorized.argv.every((arg: unknown) => typeof arg === "string" && !arg.includes("\0")) ||
+            typeof authorized.host_workdir !== "string" ||
+            !Number.isFinite(authorized.timeout_ms) || authorized.timeout_ms <= 0) {
+          throw new Error("Invalid sandbox authorization")
+        }
+        // Every argument is quoted separately: only the inner shell evaluates user text.
+        // exec lets OpenCode own the sandbox process lifetime instead of a bridge client.
+        output.args.command = "exec " + [...authorized.argv, args.command].map(quote).join(" ")
         output.args.workdir = authorized.host_workdir
-        // The sandbox owns the original timeout. Leave time for RPC/error cleanup.
-        output.args.timeout = 650_000
+        output.args.timeout = authorized.timeout_ms
       } else if (input.tool === "publish_attachment") {
         output.args._runtime_ticket = authorized.ticket
       } else if (authorized.args) {

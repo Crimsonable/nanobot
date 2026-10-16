@@ -32,6 +32,8 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
         body = json.loads(request.content) if request.content else None
         calls.append((request.method, path, directory))
         await asyncio.sleep(0)  # Interleave shared-client operations.
+        if path == "/config":
+            return httpx.Response(200, json={"model": "intranet/current-model"})
         if path == "/path":
             path_directories.add(directory)
             if len(path_directories) == 2:
@@ -50,7 +52,8 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
         info = sessions[session_id]
         assert directory == info["directory"], (path, directory, info)
         if path.endswith("/prompt_async"):
-            assert "model" not in body and "agent" not in body
+            assert body["model"] == {"providerID": "intranet", "modelID": "current-model"}
+            assert "agent" not in body
             messages[session_id].append({"info": {"id": body["messageID"], "role": "user"}})
             messages[session_id].append({"info": {"id": "answer_" + body["messageID"],
                 "role": "assistant", "sessionID": session_id, "parentID": body["messageID"], "time": {"completed": 1},

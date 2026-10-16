@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from agent_backend.journal import Journal
 from agent_backend.models import Attachment, Envelope, Identity
 from agent_backend.wire import Peer
-from bucket_runtime.session_results import final_message
+from container_up.session_results import final_message
 from bucket_runtime.sandbox_executor import contained
 
 

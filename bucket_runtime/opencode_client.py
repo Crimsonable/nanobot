@@ -64,8 +64,22 @@ class OpenCodeClient:
             raise RuntimeError("session permission readback failed: " + json.dumps(info["permission"]))
 
     async def submit(self, session_id: str, message_id: str, text: str) -> None:
+        # Resolve the effective config for this workspace on every turn, including resumed sessions.
+        try:
+            config = await self.http.get("/config", params=self.params)
+        except httpx.TransportError as exc:
+            # No prompt was sent: do not enter runtime's ambiguous-submission wait path.
+            raise RuntimeError("Unable to read OpenCode default model before submission") from exc
+        config.raise_for_status()
+        model = config.json().get("model")
+        if not isinstance(model, str) or "/" not in model:
+            raise RuntimeError("OpenCode default model must be configured as provider/model")
+        provider_id, model_id = model.split("/", 1)
+        if not provider_id.strip() or not model_id.strip():
+            raise RuntimeError("OpenCode default model must be configured as provider/model")
         response = await self.http.post(f"/session/{session_id}/prompt_async", params=self.params, json={
             "messageID": message_id,
+            "model": {"providerID": provider_id, "modelID": model_id},
             "parts": [{"type": "text", "text": text}]})
         response.raise_for_status()
 

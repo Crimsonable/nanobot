@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from pydantic import Field
+from pydantic import ConfigDict, Field, field_validator
 
 from agent_backend.config import ControlConfig
 from agent_backend.journal import Journal
@@ -33,12 +33,27 @@ log = logging.getLogger(__name__)
 
 
 class Inbound(StrictModel):
+    """Lenient inbound contract.
+
+    Unknown fields are ignored and a missing or blank `chat_id` falls back to
+    `"default"` so legacy callers that omit or pad the field keep working.
+    """
+
+    model_config = ConfigDict(extra="ignore")
     user_id: str
-    chat_id: str = Field(min_length=1)
+    chat_id: str = "default"
     content: str = Field(max_length=200_000)
     attachments: list[str | dict[str, Any]] = Field(default_factory=list, max_length=32)
     metadata: dict[str, Any] = Field(default_factory=dict)
     request_id: str | None = None
+
+    @field_validator("chat_id", mode="before")
+    @classmethod
+    def default_chat_id(cls, value: Any) -> str:
+        if value is None:
+            return "default"
+        text = str(value)
+        return text if text.strip() else "default"
 
 
 class StarletteSocket:
@@ -180,9 +195,14 @@ class ControlService:
             return
         row = self.request(bucket_id, event.request_id)
         if event.type in {"request.completed", "request.failed", "request.cancelled"}:
-            result = Result.model_validate(event.payload)
+            payload = dict(event.payload)
+            source = payload.pop("native_reply", None)
+            result = Result.model_validate(payload)
             if result.request_id != event.request_id or event.type != "request." + result.status:
                 raise ValueError("terminal identity mismatch")
+            if source:
+                from container_up.native_reply import resolve_reply
+                result = resolve_reply(self.db, bucket_id, source, result)
             for item in result.attachments:
                 if urlparse(item.url).scheme not in {"http", "https"}:
                     raise ValueError("published attachment must contain an object URL")
@@ -241,7 +261,7 @@ class ControlService:
         event = payload.get("event") or {}
         try:
             await self.submit(frontend_id, Inbound(user_id=event["user_id"],
-                chat_id=event["chat_id"], content=event.get("content") or "",
+                chat_id=event.get("chat_id"), content=event.get("content") or "",
                 attachments=event.get("attachments") or [], metadata=event.get("metadata") or {}))
         except Exception:
             log.exception("subscribe dispatch failed frontend_id=%s chat_id=%s",
