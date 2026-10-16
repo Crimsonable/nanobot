@@ -7,6 +7,10 @@
 .web
 .orion
 
+# Local OpenCode artifacts outside this branch
+/opencode_plugin/
+/vendor/
+
 # Claude / AI assistant artifacts
 docs/superpowers/
 docs/plans/
