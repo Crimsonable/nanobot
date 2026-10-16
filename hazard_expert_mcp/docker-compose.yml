@@ -6,8 +6,10 @@ services:
     image: hazard-expert-mcp:1.0.0
     restart: unless-stopped
     init: true
+    volumes:
+      - hazard-history:/app/data
     ports:
-      - "8082:8082"
+      - "48082:8082"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -17,27 +19,28 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8082"
       LOG_LEVEL: "info"
+      HISTORY_DB_PATH: "/app/data/analysis-history.sqlite3"
       # 可信调用方携带 Authorization: Bearer <此值>；空字符串表示不校验。
       # 这是服务访问凭证，user_id 仍由调用方从当前登录用户取得。
-      MCP_API_KEY: "replace-with-a-long-random-service-token"
+      MCP_API_KEY: ""
 
       # 已部署的 container-up 地址。容器里的 localhost 指当前 MCP 容器。
-      CONTAINER_UP_BASE_URL: "http://host.docker.internal:8080"
+      CONTAINER_UP_BASE_URL: "http://192.168.199.168:30081"
       # 必须是 container-up frontends.json 中已有的 frontend id。
-      CONTAINER_UP_FRONTEND_ID: "web-wd"
+      CONTAINER_UP_FRONTEND_ID: "web-test"
       CONTAINER_UP_API_KEY: ""
       # 应大于 container-up 的 SYNC_REPLY_TIMEOUT_SECONDS（默认 600）及冷启动时间。
       CONTAINER_UP_TIMEOUT_SECONDS: "720"
       CONTAINER_UP_CONNECT_TIMEOUT_SECONDS: "10"
 
       # MinIO S3 API 地址（一般是 9000，不是管理控制台的 9001）。桶需事先创建。
-      MINIO_ENDPOINT: "http://host.docker.internal:9000"
+      MINIO_ENDPOINT: "http://192.168.199.167:9000"
       # 填写调用方和 nanobot 均能访问的 S3 地址；留空时使用 MINIO_ENDPOINT。
       # 会直接使用此地址签名，不会签名后替换域名。不能带桶路径。
-      MINIO_DOWNLOAD_ENDPOINT: ""
-      MINIO_ACCESS_KEY: "replace-with-minio-access-key"
-      MINIO_SECRET_KEY: "replace-with-minio-secret-key"
-      MINIO_BUCKET: "nanobot-attachments"
+      MINIO_DOWNLOAD_ENDPOINT: "http://192.168.199.167:9000"
+      MINIO_ACCESS_KEY: "minio_admin_jfhtkw8kds"
+      MINIO_SECRET_KEY: "minio_password_asdfjhur8k2kd"
+      MINIO_BUCKET: "attachments"
       MINIO_REGION: "us-east-1"
       MINIO_KEY_PREFIX: "hazard-expert"
       MINIO_PRESIGN_EXPIRY_SECONDS: "86400"
@@ -55,3 +58,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  hazard-history:

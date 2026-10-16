@@ -1,16 +1,19 @@
 # 隐患识别与分析 MCP 服务
 
-独立运行的 Streamable HTTP MCP 服务，地址为 `/mcp`，只注册两个工具：
+独立运行的 Streamable HTTP MCP 服务，地址为 `/mcp`，注册三个工具：
 
 | 工具 | 用途 |
 | --- | --- |
 | `upload_attachment`（上传附件至 MinIO） | 接收文件内容的 Base64，上传 MinIO，返回预签名下载 URL |
 | `hazard_analysis_expert`（隐患识别与分析专家） | 将当前用户 ID、会话 ID、问题及附件 URL 转发给 container-up 的 `inbound-sync`，等待最终回答 |
+| `query_analysis_result`（查询隐患分析结果） | 按 user_id 和 chat_id 查询本地保存的分析状态、问题和最终结果 |
 
 只增加调用入口。专家能力由所选 frontend 对应的 nanobot 配置、提示词及技能提供。
 上传直接使用 MinIO S3 API，无需依赖 container-up 上传接口，也不自动创建桶。
 
 ## Docker Compose 部署
+
+当前镜像默认值、Compose 和 Kubernetes 清单均已配置后端 `http://192.168.199.168:30081`、frontend `web-test`，分析请求发送至 `http://192.168.199.168:30081/inbound-sync/web-test`。运行时可通过环境变量覆盖镜像默认值。Compose 和 Kubernetes 已配置 MinIO 上传及下载签名地址 `http://192.168.199.167:9000`、桶 `attachments` 和部署凭证，对应文件地址前缀 `http://192.168.199.167:9000/attachments`。MinIO 配置在运行时注入，不写入镜像。MCP 服务凭证仍需按实际部署填写。
 
 修改本目录 **`docker-compose.yml`** 中的配置，所有运行配置均放在此文件，不需要 `.env`、JSON 配置文件或源码挂载：
 
@@ -40,7 +43,7 @@ Compose 与 Kubernetes 是两种部署入口，分别编辑各自的环境变量
 
 1. 确保现有 `k8s/base/base.yaml` 提供的 Namespace 和源码 PVC 已就绪，目标节点具有 `nanobot_node=prod` 标签。
 2. 将本目录同步到源码 PVC 根目录下的 `hazard_expert_mcp/`，使容器中的 `/mnt/source/hazard_expert_mcp/hazard_expert_mcp/app.py` 存在。与 engineering MCP 相同，Kubernetes 从挂载的源码目录启动。源目录和文件需允许镜像的 UID 10001 读取。
-3. 修改清单中的镜像地址、`CONTAINER_UP_FRONTEND_ID`、服务访问凭证和 MinIO 凭证；桶必须已创建。默认后端地址为集群内的 container-up 和 MinIO Service。
+3. 确认清单中的镜像地址并设置 MCP 服务访问凭证；MinIO 桶必须已创建。后端已配置为 `http://192.168.199.168:30081`、frontend `web-test`；MinIO 已配置为 `http://192.168.199.167:9000`、桶 `attachments`。
 4. 外部客户端需要下载附件时，设置 `MINIO_DOWNLOAD_ENDPOINT` 为双方可访问的 S3 地址。
 
 从仓库根目录构建并部署：
@@ -197,6 +200,23 @@ Content-Type: application/json
 
 ## 超时和运行约束
 
+调用方超时或断开后，应使用相同 `user_id` 和 `chat_id` 调用 `query_analysis_result`，不要再次提交分析：
+
+```json
+{"user_id": "user-123", "chat_id": "inspection-20260921-001"}
+```
+
+返回 `status`、`records` 和 `next_before_id`。`records` 默认包含最近 20 轮，最新在前；每轮保存 `request_id`、`query`、附件 URL、时间、`status`、`result` 和 `error`。确认问题和提交时间对应目标轮次，再读取 `result.content`，避免把旧轮答案当作新轮结果。可传 `limit`（1–100）；有 `next_before_id` 时将其作为 `before_id` 获取更早记录，此时顶层状态表示该页最新一条的状态。
+
+- `running`：仍在处理，同一用户和会话的结果轮询至少间隔 15 秒，禁止连续或并发轮询；其他状态停止自动轮询。
+- `completed`：最终结果已保存，读取 `result`。
+- `unknown`：上游请求超时、返回错误或 MCP 中断，尚未取得最终结果；需核查后端，不能保证之后查询能拿到答案。
+- `not_found`：该用户和会话没有本地记录；仅记录通过此 MCP 提交的分析。
+
+调用方连接取消不会取消独立的后台转发任务；只要 MCP 进程仍运行、上游请求仍有效，收到答案后会写入 SQLite。MCP 到后端本身超时或后端返回 504 时，本服务没有后端结果恢复接口，无法获取后续答案。相同会话正在处理时，相同问题和附件的重复调用复用同一任务；不同问题会被拒绝，需等待本轮结束。这不提供跨轮次的幂等重试保证。
+
+`HISTORY_DB_PATH` 指定 SQLite 路径。Compose 使用 `hazard-history` 命名卷；Kubernetes 新增独立的 `hazard-expert-history-pvc`（1 GiB，需要默认 StorageClass 或手工绑定 PV）。已保存结果在容器重建后保留，服务重启时将遗留的 `running` 标记为 `unknown`，不会自动重发。部署必须保持单副本、单进程；Kubernetes 使用 Recreate 更新策略。记录暂不自动清理，请按实际容量维护备份和存储。调用方仍须可信地绑定当前登录用户 ID。
+
 - `CONTAINER_UP_TIMEOUT_SECONDS` 默认 720 秒，覆盖上游默认 600 秒同步等待及实例冷启动。MCP 客户端、反向代理的请求/读取超时也需要相应调大。
 - 上游请求不自动重试。超时、断网或 MCP 客户端断开并不保证后端任务被取消；避免自动重复提交造成重复执行。
 - 当前 container-up 的 `SyncReplyBroker` 使用进程内存。请求和对应 outbound 回调必须到达同一 container-up 进程；部署多副本/多 worker 前需处理回复路由或共享关联状态。MCP 本身无状态不能消除这一限制。
@@ -211,7 +231,7 @@ python -m venv .venv
 .venv/bin/python -m pytest -q tests
 ```
 
-测试通过 MCP HTTP JSON-RPC 验证工具发现、两个工具调用、鉴权、请求限制，并验证上游参数转发、超时处理和 MinIO 签名地址。
+测试通过 MCP HTTP JSON-RPC 验证三个工具、鉴权、请求限制，并验证上游参数转发、超时处理、MinIO 签名地址、断开后结果保存、用户隔离、分页及重启恢复。
 测试使用模拟的 container-up 响应与 S3 Stubber，不依赖真实业务账号或对象存储凭证。
 
 实现参考：[MCP Python SDK 1.26.0](https://github.com/modelcontextprotocol/python-sdk/tree/v1.26.0)、[Boto3 预签名下载链接](https://docs.aws.amazon.com/boto3/latest/guide/s3-presigned-urls.html)。

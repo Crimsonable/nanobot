@@ -42,6 +42,8 @@ container_up_runtime/
 uv.lock
 *.tar
 *.db
+*.sqlite3
+*.sqlite3-journal
 zhicheng-hazard-report/
 */workspaces/
 .mypy_cache/

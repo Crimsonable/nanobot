@@ -19,7 +19,7 @@ HEADERS = {
 
 
 @pytest.mark.parametrize("deployment", ["compose", "kubernetes"])
-def test_deployment_environment_and_production_lifespan(monkeypatch, deployment):
+def test_deployment_environment_and_production_lifespan(monkeypatch, deployment, tmp_path):
     project = Path(__file__).resolve().parents[1]
     if deployment == "compose":
         compose = yaml.safe_load((project / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -46,7 +46,7 @@ def test_deployment_environment_and_production_lifespan(monkeypatch, deployment)
     assert {field.upper() for field in Settings.model_fields} <= set(env)
     for name, value in env.items():
         monkeypatch.setenv(name, str(value))
-    settings = Settings()
+    settings = Settings(history_db_path=str(tmp_path / "history.sqlite3"))
     # Use the real lifespan: construct/close S3 clients and the upstream HTTP client.
     with TestClient(create_app(settings), base_url="http://localhost:8082") as client:
         assert client.get("/healthz").status_code == 200
@@ -59,7 +59,7 @@ def test_deployment_environment_and_production_lifespan(monkeypatch, deployment)
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         )
         assert response.status_code == 200
-        assert len(response.json()["result"]["tools"]) == 2
+        assert len(response.json()["result"]["tools"]) == 3
 
 
 def rpc(client, method, params=None, request_id=1):
@@ -77,7 +77,7 @@ def rpc(client, method, params=None, request_id=1):
     return response.json()["result"]
 
 
-def test_real_mcp_protocol_lists_exactly_two_tools_and_calls_both(settings, completed_reply):
+def test_real_mcp_protocol_lists_exactly_three_tools_and_calls_all(settings, completed_reply):
     requests = []
 
     def handler(request):
@@ -99,10 +99,13 @@ def test_real_mcp_protocol_lists_exactly_two_tools_and_calls_both(settings, comp
             },
         )
         assert initialized["serverInfo"]["name"] == "hazard-expert-mcp"
+        assert "query_analysis_result" in initialized["instructions"]
+        assert "750" in initialized["instructions"]
         listed = rpc(client, "tools/list")
         assert {t["name"] for t in listed["tools"]} == {
             "upload_attachment",
             "hazard_analysis_expert",
+            "query_analysis_result",
         }
         upload = rpc(
             client,
@@ -137,6 +140,16 @@ def test_real_mcp_protocol_lists_exactly_two_tools_and_calls_both(settings, comp
             assert result["structuredContent"]["content"] == "发现临边防护缺失。"
             assert json.loads(requests[-1].content)["attachments"] == [url]
             assert result["structuredContent"]["chat_id"] == "c1"
+        queried = rpc(client, "tools/call", {
+            "name": "query_analysis_result", "arguments": {"user_id": "u1", "chat_id": "c1"},
+        })["structuredContent"]
+        assert queried["status"] == "completed"
+        assert [record["query"] for record in queried["records"]] == ["具体如何整改", "识别隐患"]
+        assert queried["records"][0]["result"]["content"] == "发现临边防护缺失。"
+        missing = rpc(client, "tools/call", {
+            "name": "query_analysis_result", "arguments": {"user_id": "other", "chat_id": "c1"},
+        })["structuredContent"]
+        assert missing["status"] == "not_found"
 
 
 def test_auth_health_and_request_limits(settings):
@@ -173,7 +186,7 @@ def test_arbitrary_host_and_origin_are_accepted(settings, headers):
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         )
         assert response.status_code == 200
-        assert len(response.json()["result"]["tools"]) == 2
+        assert len(response.json()["result"]["tools"]) == 3
 
 
 def test_invalid_tool_input_is_error_and_never_calls_backend(settings):

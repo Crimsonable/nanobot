@@ -4,8 +4,9 @@ from hazard_expert_mcp.config import Settings
 
 
 @pytest.fixture
-def settings():
+def settings(tmp_path):
     return Settings(
+        history_db_path=str(tmp_path / "history.sqlite3"),
         container_up_base_url="http://container-up:8080",
         container_up_frontend_id="web-wd",
         container_up_api_key="upstream-token",

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     mcp_port: int = Field(default=8082, ge=1, le=65535)
     mcp_api_key: SecretStr = SecretStr("")
     log_level: str = "info"
+    history_db_path: str = "data/analysis-history.sqlite3"
 
     container_up_base_url: str
     container_up_frontend_id: str = Field(min_length=1)
