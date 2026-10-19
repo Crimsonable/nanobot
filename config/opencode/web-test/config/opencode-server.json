@@ -10,6 +10,9 @@
       "models": {
         "your-model": {
           "name": "Internal model",
+          "options": {
+            "reasoningEffort": "low"
+          },
           "limit": {
             "context": 32768,
             "output": 8192
