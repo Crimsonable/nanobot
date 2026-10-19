@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hmac
+import logging
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from typing import Annotated, Any
 
 import httpx
@@ -23,6 +25,31 @@ from hazard_expert_mcp.service import (
     UploadResult,
     make_s3_client,
 )
+
+
+class HealthAccessFilter(logging.Filter):
+    """Suppress successful probes without hiding failed probes or business traffic."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "uvicorn.access" or not isinstance(record.args, tuple):
+            return True
+        if len(record.args) != 5:
+            return True
+        _, method, path, _, status = record.args
+        if not isinstance(path, str) or not isinstance(status, int):
+            return True
+        return not (
+            method in {"GET", "HEAD"}
+            and path.split("?", 1)[0].rstrip("/") == "/healthz"
+            and 200 <= status < 400
+        )
+
+
+def logging_config() -> dict:
+    config = deepcopy(uvicorn.config.LOGGING_CONFIG)
+    config["filters"] = {"health_access": {"()": HealthAccessFilter}}
+    config["handlers"]["access"]["filters"] = ["health_access"]
+    return config
 
 
 class MCPRequestMiddleware:
@@ -249,6 +276,7 @@ def main() -> None:
         host=settings.mcp_host,
         port=settings.mcp_port,
         log_level=settings.log_level,
+        log_config=logging_config(),
     )
 
 

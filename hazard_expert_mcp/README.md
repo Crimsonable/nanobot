@@ -13,9 +13,9 @@
 
 ## Docker Compose 部署
 
-当前镜像默认值、Compose 和 Kubernetes 清单均已配置后端 `http://192.168.199.168:30081`、frontend `web-test`，分析请求发送至 `http://192.168.199.168:30081/inbound-sync/web-test`。运行时可通过环境变量覆盖镜像默认值。Compose 和 Kubernetes 已配置 MinIO 上传及下载签名地址 `http://192.168.199.167:9000`、桶 `attachments` 和部署凭证，对应文件地址前缀 `http://192.168.199.167:9000/attachments`。MinIO 配置在运行时注入，不写入镜像。MCP 服务凭证仍需按实际部署填写。
+当前 Compose 和 Kubernetes 清单均已配置后端 `http://192.168.199.168:30081`、frontend `web-test`，分析请求发送至 `http://192.168.199.168:30081/inbound-sync/web-test`。镜像只包含 Python 和依赖，业务配置由部署文件在运行时注入。Compose 和 Kubernetes 已配置 MinIO 上传及下载签名地址 `http://192.168.199.167:9000`、桶 `attachments` 和部署凭证，对应文件地址前缀 `http://192.168.199.167:9000/attachments`。MinIO 配置在运行时注入，不写入镜像。MCP 服务凭证仍需按实际部署填写。
 
-修改本目录 **`docker-compose.yml`** 中的配置，所有运行配置均放在此文件，不需要 `.env`、JSON 配置文件或源码挂载：
+修改本目录 **`docker-compose.yml`** 中的配置，所有运行配置均放在此文件，不需要 `.env` 或 JSON 配置文件；源码必须通过目录挂载：
 
 1. 设置 `CONTAINER_UP_BASE_URL` 为已部署的 container-up 地址。
 2. 设置 `CONTAINER_UP_FRONTEND_ID` 为其 `frontends.json` 中已有的 frontend；沿用原 frontend 才能进入该用户原来的工作空间和实例。
@@ -29,10 +29,10 @@ docker compose up -d --build
 docker compose logs -f hazard-expert-mcp
 ```
 
-默认 MCP 地址：`http://localhost:8082/mcp`。健康检查：`http://localhost:8082/healthz`。
+默认 MCP 地址：`http://localhost:48082/mcp`。健康检查：`http://localhost:48082/healthz`。
 Compose 只启动此 MCP 服务，复用现有 container-up 和 MinIO。
 `host.docker.internal` 示例用于访问 Docker 宿主机发布的端口；如果后端在其他机器，直接填写实际地址。
-服务自带文件和依赖，不需要挂载 nanobot 源码。镜像以非 root 用户运行。
+镜像只提供运行环境，不包含业务源码。Compose 将同目录下的 `hazard_expert_mcp/` 只读挂载到 `/app/hazard_expert_mcp`；该目录必须存在并包含 `app.py`、`history.py` 等完整模块，且允许 UID 10001 读取。SQLite 数据单独保存在 `hazard-history` 卷。修改代码后执行 `docker compose restart hazard-expert-mcp`；只有依赖变更才需重建镜像。
 
 ## Kubernetes 部署
 

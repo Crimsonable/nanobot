@@ -6,7 +6,14 @@ services:
     image: hazard-expert-mcp:1.0.0
     restart: unless-stopped
     init: true
+    working_dir: /app
     volumes:
+      - type: bind
+        source: ./hazard_expert_mcp
+        target: /app/hazard_expert_mcp
+        read_only: true
+        bind:
+          create_host_path: false
       - hazard-history:/app/data
     ports:
       - "48082:8082"
