@@ -36,7 +36,7 @@ python -m container_up --config config/opencode/frontends.json
 
 发布镜像、离线资源、权限开关、附件链路、HTTP 接口与部署细节见 [运行说明](docs/OPENCODE_BACKEND_IMPLEMENTATION.md)。
 
-部署清单统一放在 `k8s/opencode/`，MinIO 清单放在 `k8s/minio/`。可直接执行的部署、镜像导入和接口测试命令见 [部署与测试手册](docs/DEPLOYMENT_MANUAL.md)；存储与挂载细节见 [Kubernetes 部署说明](k8s/opencode/README.md)。
+部署清单统一放在 `k8s/opencode/`，MinIO 清单放在 `k8s/minio/`。可直接执行的部署、镜像导入和接口测试命令见 [部署与测试手册](docs/DEPLOYMENT_MANUAL.md)；清单索引见 [Kubernetes 部署入口](k8s/opencode/README.md)。
 
 全部业务源码与 opencode_plugin 统一放入服务器 source 目录，只读挂载到 /mnt/source。OpenCode 二进制单独放入服务器 opencode/opencode，所有桶只读使用同一份文件。更新 Python 源码、构建后的插件或 OpenCode 二进制后重启服务即可，无需重新构建镜像；Python/系统依赖变化才需要更新基础运行镜像。
 
