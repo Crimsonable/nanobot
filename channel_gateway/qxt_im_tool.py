@@ -49,7 +49,14 @@ class QxtIMParser:
         self.send_msg_url = str(frontend_config.get("send_msg_url", "")).strip()
 
     def start(self) -> None:
-        for name in ("appid", "appsecret", "corpid", "token", "access_url", "send_msg_url"):
+        for name in (
+            "appid",
+            "appsecret",
+            "corpid",
+            "token",
+            "access_url",
+            "send_msg_url",
+        ):
             if not getattr(self, name):
                 raise ValueError(f"QXT configuration requires {name}")
 
@@ -221,6 +228,7 @@ class QxtIMParser:
         event = dict(payload.get("event") or {})
         message = dict(event.get("message") or {})
         sender_uid = str(event.get("sender_uid") or "")
+        sender_account = str(event.get("sender_account") or "")
         chat_id = str(message.get("chat_id") or "")
         content = str(message.get("content") or "")
         recipient = (
@@ -230,7 +238,7 @@ class QxtIMParser:
         )
         return build_im_receive_event(
             chat_id=chat_id,
-            user_id=sender_uid,
+            user_id=sender_account,
             content=content,
             attachments=[],
             metadata={
@@ -249,7 +257,6 @@ class QxtIMParser:
                 },
             },
         )
-
 
     async def _post_json(
         self,
@@ -284,7 +291,6 @@ class QxtIMParser:
                 "body": response_text,
             }
 
-
     async def _send_message(
         self,
         *,
@@ -304,7 +310,11 @@ class QxtIMParser:
         target = payload["metadata"]["reply_target"]
         if target.get("type") != "qxt":
             raise ValueError("qxt reply_target is required")
-        recipient = {key: target[key] for key in ("to_group_id", "to_single_uid") if target.get(key)}
+        recipient = {
+            key: target[key]
+            for key in ("to_group_id", "to_single_uid")
+            if target.get(key)
+        }
         if len(recipient) != 1:
             raise ValueError("qxt requires exactly one recipient")
         if payload.get("attachments"):
@@ -312,6 +322,10 @@ class QxtIMParser:
         if not self.send_msg_url:
             raise RuntimeError("send_msg_url is not configured")
         token = await self.get_access_token()
-        result = await self._send_message(send_meta=recipient, access_token=token,
-            message_type="text", message={"content": payload["content"]})
+        result = await self._send_message(
+            send_meta=recipient,
+            access_token=token,
+            message_type="text",
+            message={"content": payload["content"]},
+        )
         return {"message": result, "attachments": []}
