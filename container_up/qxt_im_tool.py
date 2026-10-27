@@ -319,6 +319,7 @@ class QxtIMParser:
         event = dict(payload.get("event") or {})
         message = dict(event.get("message") or {})
         sender_uid = str(event.get("sender_uid") or "")
+        sender_account = str(event.get("sender_account") or "")
         chat_id = str(message.get("chat_id") or "")
         content = str(message.get("content") or "")
         recipient = (
@@ -328,7 +329,7 @@ class QxtIMParser:
         )
         return build_im_receive_event(
             chat_id=chat_id,
-            usr_id=sender_uid,
+            usr_id=sender_account,
             content=content,
             attachments=[],
             metadata={
@@ -757,7 +758,10 @@ class QxtIMParser:
     def _normalize_outbound_payload(
         self, payload: dict[str, object]
     ) -> dict[str, object]:
-        if payload.get("to_single_uid") is not None or payload.get("to_group_id") is not None:
+        if (
+            payload.get("to_single_uid") is not None
+            or payload.get("to_group_id") is not None
+        ):
             return payload
 
         metadata = dict(payload.get("metadata") or {})
