@@ -1,3 +1,4 @@
+from tests.backend.support import plugin_scope
 import json
 import shutil
 import sys
@@ -56,7 +57,7 @@ def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants,
         frontend = submit.identity.frontend_id
         other = "web-b" if frontend == "web-a" else "web-a"
         assert runtime.public_roots(submit) == [common / frontend / "app"]
-        assert runtime.authorize(frontend, "r", "read", {
+        assert plugin_scope(runtime, frontend, "r", "read", {
             "filePath": str(common / frontend / "app/manual.txt")})["args"]["filePath"] == str(common / frontend / "app/manual.txt")
         for tool, args in [
             ("read", {"filePath": str(common / other / "app/manual.txt")}),
@@ -75,7 +76,7 @@ def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants,
             ("write", {"filePath": str(common / frontend / "app/manual.txt"), "content": "overwrite"}),
         ]:
             with pytest.raises(PermissionError):
-                runtime.authorize(frontend, "denied", tool, args)
+                plugin_scope(runtime, frontend, "denied", tool, args)
         rules = runtime.session_permissions(submit)
         for path, expected in [(common / frontend / "app/manual.txt", "allow"),
                                (common / frontend / "config/future-secret.txt", "deny"),
@@ -122,7 +123,7 @@ def test_symlink_cannot_redirect_frontend_public_directory(tenants, destination)
     with pytest.raises(ValueError):
         public_roots(runtime.config, policy)
     with pytest.raises(PermissionError):
-        runtime.authorize("web-a", "link", "read", {"filePath": str(link / "future-secret.txt")})
+        plugin_scope(runtime, "web-a", "link", "read", {"filePath": str(link / "future-secret.txt")})
 
     outside_link = common.parent / "alias"
     outside_link.symlink_to(common / destination, target_is_directory=True)

@@ -106,7 +106,7 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
     from fastapi import FastAPI, Request
     from fastapi.responses import StreamingResponse
     from websockets.asyncio.client import connect
-    from agent_backend.config import ControlConfig, RuntimeConfig
+    from agent_backend.config import ControlConfig, RuntimeConfig, GatewaySettings
     from agent_backend.wire import Peer
     from bucket_runtime.runtime import Runtime
     from bucket_runtime.server import rpc_app
@@ -151,12 +151,17 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
         "model": "test/test"}))
     control = ControlConfig(state_root=tmp_path / "control", frontends={"web": {"provider": "web"}},
                             bucket_pool={"max_users_per_bucket": 1}, limits={"request_seconds": 60})
-    app = create_app(control, Channels())
+    app = create_app(control)
+    from channel_gateway.server import create_app as gateway_app
+    gateway_port = port()
+    gateway = gateway_app(control, GatewaySettings(state_root=tmp_path / "gateway",
+        control_url=f"http://127.0.0.1:{cu_port}"), Channels())
     plugin = Path(__file__).resolve().parents[2] / "opencode_plugin/dist/index.mjs"
     async with AsyncExitStack() as stack:
         await stack.enter_async_context(running(model, model_port))
         await stack.enter_async_context(running(app, cu_port))
-        client = await stack.enter_async_context(httpx.AsyncClient(base_url=f"http://127.0.0.1:{cu_port}",
+        await stack.enter_async_context(running(gateway, gateway_port))
+        client = await stack.enter_async_context(httpx.AsyncClient(base_url=f"http://127.0.0.1:{gateway_port}",
                                                                   timeout=70, trust_env=False))
 
         async def start_bucket(bucket_id):
@@ -180,7 +185,14 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
             socket_ = await stack.enter_async_context(connect(config.control_url, proxy=None,
                                                               additional_headers={"X-Bucket-ID": bucket_id}))
             runtime.peer = Peer(socket_, runtime.db, bucket_id, runtime.on_command, runtime.session_operation)
-            tasks.append(asyncio.create_task(runtime.peer.run()))
+            tasks.extend([asyncio.create_task(runtime.peer.run()), asyncio.create_task(runtime.native_events.run()),
+                          asyncio.create_task(runtime.native_events.subscribe())])
+            gw_socket = await stack.enter_async_context(connect(f"ws://127.0.0.1:{gateway_port}/internal/events/ws", proxy=None,
+                                                               additional_headers={"X-Bucket-ID": bucket_id}))
+            async def reject(event):
+                raise AssertionError("unexpected gateway command")
+            tasks.append(asyncio.create_task(Peer(gw_socket, runtime.db, bucket_id, reject,
+                journal_peer="gateway", protocol="agent-gateway/1").run()))
             return runtime
 
         try:

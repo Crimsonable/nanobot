@@ -1,13 +1,12 @@
 from support import register_bucket
-import asyncio
-from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from agent_backend.config import ControlConfig
 from agent_backend.models import Envelope
-from container_up.server import Inbound, create_app
+from agent_backend.ingress import Inbound
+from container_up.server import create_app
 
 
 @pytest.fixture
@@ -27,16 +26,16 @@ async def test_keyless_routing_idempotency_and_result_ownership(control):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
         body = {"chat_id": "chat", "user_id": "u", "content": "hello", "request_id": "r",
                 "metadata": {"frontend_id": "forged", "user_id": "someone-else"}}
-        first = await client.post("/inbound/web", json=body)
+        first = await client.post("/internal/submit/web", json=body)
         assert first.status_code == 200
-        assert first.json()["identity_id"]
+        assert first.json()["submit"]["identity"]
         assert "instance_id" not in first.json()
         assert "conversation_id" not in first.json()
         assert first.json()["chat_id"] == "chat"
-        again = await client.post("/inbound/web", json=body)
+        again = await client.post("/internal/submit/web", json=body)
         assert again.json() == first.json()
         assert len(control.state.service.db.pending("b")) == 1
-        changed = await client.post("/inbound/web", json={**body, "content": "changed"})
+        changed = await client.post("/internal/submit/web", json={**body, "content": "changed"})
         assert changed.status_code == 409
         row = control.state.service.db.get("request", "r")
         assert row["submit"]["identity"] == {"frontend_id": "web", "user_id": "u"}
@@ -46,10 +45,10 @@ async def test_keyless_routing_idempotency_and_result_ownership(control):
             await control.state.service.on_event("wrong-bucket", Envelope(type="request.completed",
                 bucket_id="wrong-bucket", request_id="r", payload={"request_id": "r", "status": "completed"}))
         await control.state.service.on_event("b", Envelope(type="request.completed", bucket_id="b",
-            request_id="r", payload={"request_id": "r", "status": "completed", "content": "done"}))
-        response = await client.get("/requests/web/r")
-        assert response.json()["content"] == "done"
-        assert (await client.get("/requests/other/r")).status_code == 404
+            request_id="r", payload={"request_id": "r", "status": "completed"}))
+        response = await client.get("/internal/requests/web/r")
+        assert response.json()["result"] == {"request_id": "r", "status": "completed", "error": None}
+        assert (await client.get("/internal/requests/other/r")).status_code == 404
 
 
 @pytest.mark.asyncio
@@ -88,10 +87,10 @@ def test_active_channels_import_without_environment_configuration():
     import subprocess
     import sys
     env = {k: v for k, v in os.environ.items() if not k.startswith(
-        ("BUCKET_", "SOURCE_", "CONTAINER_UP_", "MINIO_", "FEISHU_"))}
+        ("BUCKET_", "SOURCE_", "GATEWAY_", "MINIO_", "FEISHU_"))}
     script = "\n".join([
         "import sys",
-        "import container_up.server, container_up.qxt_im_tool, container_up.feishu_im_tool, container_up.web_im_tool",
+        "import container_up.server, channel_gateway.qxt_im_tool, channel_gateway.feishu_im_tool, channel_gateway.web_im_tool",
         "assert 'container_up.settings' not in sys.modules",
     ])
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
@@ -114,71 +113,24 @@ async def test_inbound_references_are_forwarded_without_local_io(control):
 
 
 @pytest.mark.asyncio
-async def test_control_returns_runtime_published_url_without_storage(control):
+@pytest.mark.parametrize("field,value", [("content", "Done"), ("attachments", []), ("usage", None), ("partial", False)])
+async def test_control_rejects_channel_reply_fields(control, field, value):
     service = control.state.service
     await service.submit("web", Inbound(chat_id="chat", user_id="alice", content="Report", request_id="r"))
-    artifact = {"attachment_id": "published", "url": "https://objects.example/report.pdf", "filename": "report.pdf"}
-    await service.on_event("b", Envelope(type="request.completed", bucket_id="b", request_id="r",
-        payload={"request_id": "r", "status": "completed", "content": "Done", "attachments": [artifact]}))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://test") as client:
-        result = await client.get("/requests/web/r")
-        assert result.json()["attachments"][0]["url"] == artifact["url"]
-
-
-@pytest.mark.asyncio
-async def test_im_delivery_sends_object_links_without_file_reupload(control):
-    from agent_backend.models import Attachment, Result
-    from container_up.channel_service import ChannelService
-    config = control.state.service.config
-    config.frontends["web"].provider = "qxt"
-    channels = ChannelService(config)
-    delivered = []
-
-    async def send(*, payload):
-        delivered.append(payload)
-
-    channels.parsers["web"] = SimpleNamespace(post_message=send)
-    row = await control.state.service.submit("web", Inbound(chat_id="chat", user_id="alice", content="Report", request_id="r"))
-    result = Result(request_id="r", status="completed", content="Done", attachments=[
-        Attachment(filename="report.pdf", url="https://objects.example/report.pdf")])
-    await channels.deliver(row, result)
-    assert delivered[0]["attachments"] == []
-    assert "https://objects.example/report.pdf" in delivered[0]["content"]
-
-
-@pytest.mark.asyncio
-async def test_cu_keeps_all_events_but_delivers_only_final_message(control):
-    service = control.state.service
-    await service.submit("web", Inbound(user_id="alice", chat_id="alice-chat", content="hello", request_id="r"))
-    delivered, completed = [], asyncio.Event()
-
-    async def deliver(row, result):
-        delivered.append((row["chat_id"], result.content))
-        completed.set()
-
-    service.channels.deliver = deliver
-    task = asyncio.create_task(service.deliveries())
-    try:
-        for i, kind in enumerate(["message.part.delta", "session.idle", "tool.execute.before", "future.event"]):
-            raw = Envelope(type="opencode.event", bucket_id="b", request_id="r" if i < 3 else "",
-                payload={"event": {"type": kind, "properties": {"text": "intermediate reasoning/tool output"}}})
-            await service.on_event("b", raw)
-            await service.on_event("b", raw)  # Replay does not duplicate the record.
-
-        await asyncio.sleep(0.25)
-        assert delivered == []
-        assert not service.db.get("request", "r").get("result")
-        assert len(service.db.records("opencode_event")) == 4
+    with pytest.raises(ValueError, match="Extra inputs"):
         await service.on_event("b", Envelope(type="request.completed", bucket_id="b", request_id="r",
-            payload={"request_id": "r", "status": "completed", "content": "final answer"}))
-        await asyncio.wait_for(completed.wait(), 2)
-        await service.on_event("b", Envelope(type="opencode.event", bucket_id="b", request_id="r",
-            payload={"event": {"type": "session.idle"}}))
-        await asyncio.sleep(0.25)
-        assert delivered == [("alice-chat", "final answer")]
-        assert len(service.db.records("opencode_event")) == 5
-        with pytest.raises(PermissionError):
-            await service.on_event("other", Envelope(type="opencode.event", bucket_id="other", request_id="r"))
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+            payload={"request_id": "r", "status": "completed", field: value}))
+    row = service.db.get("request", "r")
+    assert not row.get("result")
+    assert not {"delivery", "sync", "metadata"} & row.keys()
+    assert not hasattr(service, "completed")
+
+
+@pytest.mark.asyncio
+async def test_cu_rejects_content_events(control):
+    service = control.state.service
+    await service.submit("web", Inbound(user_id="alice", chat_id="chat", content="hello", request_id="r"))
+    with pytest.raises(ValueError, match="unsupported bucket event"):
+        await service.on_event("b", Envelope(type="opencode.event", bucket_id="b", request_id="r"))
+    assert not hasattr(service, "channels")
+    assert not service.db.records("opencode_event")

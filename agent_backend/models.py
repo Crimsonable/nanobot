@@ -71,14 +71,14 @@ class Usage(StrictModel):
     cache_write_tokens: int = Field(default=0, ge=0)
 
 
-class PluginEvent(StrictModel):
+class NativeEvent(StrictModel):
     type: Literal["opencode.event"]
     event_id: str = Field(min_length=1, max_length=100)
     directory: str = Field(min_length=1)
     event: dict[str, Any]
 
 
-class OpenCodeEvent(PluginEvent):
+class OpenCodeEvent(NativeEvent):
     session_id: str = ""
     message_id: str = ""
     input_message_id: str = ""
@@ -92,6 +92,14 @@ class OpenCodeEventChunk(StrictModel):
     data: str
 
 
+class ExecutionStatus(StrictModel):
+    """BU-to-CU terminal control message, without channel reply content."""
+
+    request_id: str
+    status: Literal["completed", "failed", "cancelled"]
+    error: str | None = None
+
+
 class Result(StrictModel):
     request_id: str
     status: Literal["completed", "failed", "cancelled"]
@@ -103,7 +111,7 @@ class Result(StrictModel):
 
 
 class Envelope(StrictModel):
-    protocol: Literal["agent-bucket/1"] = "agent-bucket/1"
+    protocol: Literal["agent-bucket/1", "agent-gateway/1"] = "agent-bucket/1"
     event_id: str = Field(default_factory=lambda: uid("evt_"))
     type: str
     bucket_id: str

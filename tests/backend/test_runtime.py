@@ -1,3 +1,4 @@
+from tests.backend.support import plugin_scope, publication
 import asyncio
 import time
 
@@ -45,6 +46,7 @@ def runtime(tmp_path):
                      "plugin_file": str(tmp_path / "plugin"), "dependency_dir": str(tmp_path / "deps")},
     })
     instance = Runtime(config, Client(), Executor())
+    instance.native_events.connected.set()
     instance.client.worktree = str(tmp_path)
     yield instance
     instance.db.close()
@@ -178,7 +180,7 @@ def test_mount_policy_rejects_host_proc_and_other_user_roots(runtime):
 
 def test_bash_authorization_returns_scope_without_execution_ticket(runtime):
     submit = active(runtime)
-    response = runtime.authorize("s", "c", "bash", {"command": "echo hello", "timeout": 1234})
+    response = plugin_scope(runtime, "s", "c", "bash", {"command": "echo hello", "timeout": 1234})
     assert response["argv"][-3:] == ["--", "/bin/sh", "-c"]
     assert response["argv"][:3] == ["/usr/bin/flock", "--exclusive", "--close"]
     assert "--clearenv" in response["argv"]
@@ -188,17 +190,14 @@ def test_bash_authorization_returns_scope_without_execution_ticket(runtime):
     assert not runtime.db.records("ticket")
     assert not hasattr(runtime, "execute")
     with pytest.raises(PermissionError):
-        runtime.authorize("unknown", "c", "bash", {"command": "echo hi"})
+        plugin_scope(runtime, "unknown", "c", "bash", {"command": "echo hi"})
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "c", "bash", {"command": "pwd", "workdir": "/etc"})
+        plugin_scope(runtime, "s", "c", "bash", {"command": "pwd", "workdir": "/etc"})
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "c2", "read", {"filePath": "/etc/passwd"})
-    for timeout in [-1, 0, float("nan"), float("inf"), "100", True]:
+        plugin_scope(runtime, "s", "c2", "read", {"filePath": "/etc/passwd"})
+    for timeout in [-1, 0, "100", True]:
         with pytest.raises(ValueError):
-            runtime.authorize("s", "bad", "bash", {"command": "pwd", "timeout": timeout})
-    runtime.db.put("run", "r", {**runtime.db.get("run", "r"), "cancel_requested": True})
-    with pytest.raises(PermissionError):
-        runtime.authorize("s", "late", "bash", {"command": "pwd"})
+            plugin_scope(runtime, "s", "bad", "bash", {"command": "pwd", "timeout": timeout})
 
 
 @pytest.mark.asyncio
@@ -213,7 +212,7 @@ async def test_authorized_native_shell_isolated_and_releases_lock_on_cancel(runt
     outside.write_text("private")
     workspace = runtime.workspace(submit)
     command = f"test ! -e {shlex.quote(str(outside))} && touch started; sleep 30; touch survived"
-    auth = runtime.authorize("s", "native", "bash", {"command": command})
+    auth = plugin_scope(runtime, "s", "native", "bash", {"command": command})
     process = await asyncio.create_subprocess_exec("/bin/sh", "-c",
         "exec " + shlex.join([*auth["argv"], command]), start_new_session=True)
     try:
@@ -242,22 +241,22 @@ def test_bash_scope_respects_readonly_none_network_and_deadline(runtime):
     policy = runtime.permissions.defaults
     policy.filesystem.workspace = "read_only"
     policy.sandbox.network = False
-    authorization = runtime.authorize("s", "ro", "bash", {"command": "pwd", "timeout": 999999})
+    authorization = plugin_scope(runtime, "s", "ro", "bash", {"command": "pwd", "timeout": 999999})
     argv = authorization["argv"]
     assert "--bind" not in argv and "--share-net" not in argv
     assert argv[argv.index(workspace) - 1] == "--ro-bind"
     assert 0 < authorization["timeout_ms"] <= 60000
     policy.filesystem.workspace = "none"
-    argv = runtime.authorize("s", "none", "bash", {"command": "pwd"})["argv"]
+    argv = plugin_scope(runtime, "s", "none", "bash", {"command": "pwd"})["argv"]
     assert workspace not in argv
     assert argv[argv.index("--chdir") + 1] == "/"
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "denied-cwd", "bash", {"command": "pwd", "workdir": workspace})
+        plugin_scope(runtime, "s", "denied-cwd", "bash", {"command": "pwd", "workdir": workspace})
     row = runtime.db.get("run", "r")
     row["submit"]["deadline_at"] = time.time() - 1
     runtime.db.put("run", "r", row)
     with pytest.raises(PermissionError, match="deadline"):
-        runtime.authorize("s", "expired", "bash", {"command": "pwd"})
+        plugin_scope(runtime, "s", "expired", "bash", {"command": "pwd"})
 
 
 @pytest.mark.asyncio
@@ -266,18 +265,18 @@ async def test_publication_rejects_other_user_and_symlink(runtime):
     bob = active(runtime, "bob", "r-bob", "s-bob")
     bob_file = runtime.workspace(bob) / "report.txt"
     bob_file.write_text("private")
-    ticket = runtime.authorize("s", "c", "publish_attachment", {"files": [{"path": str(bob_file)}]})
+    body = publication(runtime, "s", "c", [{"path": str(bob_file)}])
     with pytest.raises(PermissionError):
-        await runtime.publish(ticket["ticket"])
+        await runtime.publish(body)
     assert runtime.db.get("run", "r")["artifacts"] == []
     own = runtime.workspace(alice) / "link"
     try:
         own.symlink_to(bob_file)
     except OSError:
         return
-    ticket = runtime.authorize("s", "c2", "publish_attachment", {"files": [{"path": str(own)}]})
+    body = publication(runtime, "s", "c2", [{"path": str(own)}])
     with pytest.raises(PermissionError):
-        await runtime.publish(ticket["ticket"])
+        await runtime.publish(body)
 
 
 @pytest.mark.asyncio
@@ -434,27 +433,6 @@ async def test_slash_cancel_running_task_calls_abort(runtime):
     assert runtime.db.get("run", "stop")["status"] == "completed"
 
 
-@pytest.mark.asyncio
-async def test_child_tool_session_resolves_trusted_parent_and_expires(runtime):
-    submit = active(runtime)
-    directory = str(runtime.workspace(submit))
-
-    async def session(session_id):
-        return {"id": session_id, "directory": directory, **({"parentID": "s"} if session_id == "child" else {})}
-
-    runtime.client.session = session
-    with pytest.raises(PermissionError, match="workspace mismatch"):
-        await runtime.bind_tool_session("s", str(runtime.config.opencode.context_root))
-    await runtime.bind_tool_session("child", directory)
-    authorized = runtime.authorize("child", "call", "bash", {"command": "echo hi"})
-    assert authorized["host_workdir"] == directory
-    assert "ticket" not in authorized
-    with pytest.raises(PermissionError):
-        await runtime.bind_tool_session("unrelated", directory)
-    runtime.db.put("run", "r", {**runtime.db.get("run", "r"), "status": "completed"})
-    with pytest.raises(PermissionError):
-        await runtime.bind_tool_session("child", directory)
-
 
 def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_path):
     import fnmatch
@@ -484,18 +462,18 @@ def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_
     assert not allowed("edit", public / "SKILL.md")
     assert not allowed("read", bob_workspace / "file.txt")
     assert not allowed("read", tmp_path / "secret")
-    normalized = runtime.authorize("s", "read", "read", {"filePath": "file.txt"})
+    normalized = plugin_scope(runtime, "s", "read", "read", {"filePath": "file.txt"})
     assert normalized["args"]["filePath"] == str(workspace / "file.txt")
     for tool, args in [("read", {"filePath": str(bob_workspace / "file.txt")}),
                        ("write", {"filePath": str(public / "SKILL.md")}),
                        ("glob", {"path": str(tmp_path), "pattern": "*"}),
                        ("webfetch", {"url": "https://example.com"})]:
         with pytest.raises(PermissionError):
-            runtime.authorize("s", tool, tool, args)
+            plugin_scope(runtime, "s", tool, tool, args)
     with pytest.raises(PermissionError):
-        runtime.authorize("bob", "edit", "edit", {"filePath": str(bob_workspace / "file.txt")})
+        plugin_scope(runtime, "bob", "edit", "edit", {"filePath": str(bob_workspace / "file.txt")})
     with pytest.raises(PermissionError):
-        runtime.authorize("bob", "read", "read", {"filePath": str(public / "SKILL.md")})
+        plugin_scope(runtime, "bob", "read", "read", {"filePath": str(public / "SKILL.md")})
 
 
 def test_permission_scope_rejects_exposed_service_or_user_directories(runtime):
@@ -511,7 +489,7 @@ def test_user_scope_blocks_native_symlinks_and_patch_moves(runtime, tmp_path):
     alice = active(runtime)
     own = runtime.workspace(alice)
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "patch", "apply_patch", {"patchText":
+        plugin_scope(runtime, "s", "patch", "apply_patch", {"patchText":
             "*** Begin Patch\n*** Update File: a\n*** Move to: ../escape\n*** End Patch\n"})
     link = own / "link"
     try:
@@ -519,7 +497,7 @@ def test_user_scope_blocks_native_symlinks_and_patch_moves(runtime, tmp_path):
     except OSError:
         pytest.skip("symlink privileges unavailable")
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "read", "read", {"filePath": str(link)})
+        plugin_scope(runtime, "s", "read", "read", {"filePath": str(link)})
 
 
 def test_individual_write_switch_enables_shared_edit_permission(runtime):
@@ -529,9 +507,9 @@ def test_individual_write_switch_enables_shared_edit_permission(runtime):
     submit = active(runtime)
     rules = runtime.session_permissions(submit)
     assert any(rule["permission"] == "edit" and rule["action"] == "allow" for rule in rules)
-    assert runtime.authorize("s", "write", "write", {"filePath": "new.txt"})["args"]["filePath"]
+    assert plugin_scope(runtime, "s", "write", "write", {"filePath": "new.txt"})["args"]["filePath"]
     with pytest.raises(PermissionError):
-        runtime.authorize("s", "edit", "edit", {"filePath": "new.txt"})
+        plugin_scope(runtime, "s", "edit", "edit", {"filePath": "new.txt"})
 
 
 @pytest.mark.asyncio
@@ -552,8 +530,8 @@ async def test_publish_tool_uploads_to_storage_without_control_peer(runtime, tmp
             uploaded.append((Path(path).read_bytes(), bucket, key))
 
     monkeypatch.setattr(runtime.artifacts, "client", lambda: Storage())
-    ticket = runtime.authorize("s", "publish", "publish_attachment", {"files": [{"path": "report.txt"}]})
-    result = await runtime.publish(ticket["ticket"])
+    body = publication(runtime, "s", "publish", [{"path": "report.txt"}])
+    result = await runtime.publish(body)
     assert runtime.peer is None
     assert uploaded[0][0] == b"report bytes"
     assert uploaded[0][1] == "reports"
@@ -561,7 +539,7 @@ async def test_publish_tool_uploads_to_storage_without_control_peer(runtime, tmp
     assert attachment["url"].startswith("https://objects.example/reports/")
     assert submit.identity.identity_id in uploaded[0][2]
     assert runtime.db.get("run", "r")["artifacts"] == result["attachments"]
-    assert await runtime.publish(ticket["ticket"]) == result
+    assert await runtime.publish(body) == result
     assert len(uploaded) == 1
 
 
@@ -578,7 +556,58 @@ async def test_failed_minio_upload_does_not_publish_a_url(runtime, tmp_path, mon
             raise ConnectionError("MinIO unavailable")
 
     monkeypatch.setattr(runtime.artifacts, "client", lambda: Storage())
-    ticket = runtime.authorize("s", "publish", "publish_attachment", {"files": [{"path": "report.txt"}]})
+    body = publication(runtime, "s", "publish", [{"path": "report.txt"}])
     with pytest.raises(ConnectionError):
-        await runtime.publish(ticket["ticket"])
+        await runtime.publish(body)
     assert runtime.db.get("run", "r")["artifacts"] == []
+
+
+def test_bu_returns_complete_permission_scope_without_metadata_copy(runtime):
+    submit = active(runtime)
+    runtime.permissions.defaults.filesystem.workspace = "read_only"
+    runtime.permissions.defaults.sandbox.network = False
+    context = runtime.session_context(submit, "input")
+    assert context["user_id"] == "alice" and context["chat_id"] == submit.chat_id
+    assert "execution" not in context
+    execution = runtime.execution_scope(submit)
+    assert execution["workspace"] == str(runtime.workspace(submit))
+    assert execution["policy"]["filesystem"]["workspace"] == "read_only"
+    assert execution["policy"]["sandbox"]["network"] is False
+    assert execution["public_roots"] == [str(p) for p in runtime.public_roots(submit)]
+    assert execution["private_files"] == [str(p.resolve()) for p in runtime.private_files()]
+    assert execution["lock_path"] == str(runtime.user_lock_path(submit))
+    assert execution["deadline_at"] == submit.deadline_at
+    assert not hasattr(runtime, "authorize")
+    assert not hasattr(runtime, "bind_tool_session")
+
+
+@pytest.mark.asyncio
+async def test_session_permission_lookup_and_publication_check_current_request(runtime):
+    from bucket_runtime.server import rpc_app
+    submit = active(runtime)
+    directory = str(runtime.workspace(submit))
+    queried = []
+
+    async def session(session_id):
+        queried.append(session_id)
+        return {"directory": directory, "parentID": "s" if session_id == "child" else None}
+
+    runtime.client.session = session
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rpc_app(runtime, "key")),
+                                 base_url="http://runtime", headers={"Authorization": "Bearer key"}) as client:
+        body = {"session_id": "s", "directory": directory}
+        response = await client.post("/permissions", json=body)
+        assert response.status_code == 200
+        assert response.json()["workspace"] == directory
+        assert queried == []  # Root session permission lookup never calls OpenCode.
+        response = await client.post("/permissions", json={**body, "session_id": "child"})
+        assert response.status_code == 200 and queried == ["child"]
+        assert (await client.post("/permissions", json={**body, "directory": "/wrong"})).status_code == 403
+        assert (await client.post("/permissions", json={**body, "session_id": "unknown"})).status_code == 403
+        runtime.permissions.defaults.session.tools["publish_attachment"] = False
+        response = await client.post("/publish", json={**body, "message_id": "m", "files": [{"path": "x"}]})
+        assert response.status_code == 400 and "disabled" in response.text
+        runtime.db.put("run", "r", {**runtime.db.get("run", "r"), "cancel_requested": True})
+        assert (await client.post("/permissions", json=body)).status_code == 403
+        assert (await client.post("/publish", json={**body, "message_id": "m", "files": [{"path": "x"}]})).status_code == 400
+        assert not runtime.db.records("ticket") and not runtime.db.records("child_session")

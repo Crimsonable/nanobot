@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
-from container_up.http_state import get_dispatch_session
+from channel_gateway.http_state import get_dispatch_session
 
 
 class WebIMParser:

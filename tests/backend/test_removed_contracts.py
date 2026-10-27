@@ -5,7 +5,8 @@ from pydantic import ValidationError
 
 from agent_backend.config import ControlConfig, FrontendSettings, RuntimeSettings
 from agent_backend.models import Submit
-from container_up.server import Inbound, create_app
+from agent_backend.ingress import Inbound
+from container_up.server import create_app
 from web_server.app import InboundRequest
 
 
@@ -56,7 +57,7 @@ def test_only_canonical_cu_routes_remain(tmp_path):
         paths = {route.path for route in app.routes}
         assert not any(path.startswith("/api/") for path in paths)
         assert "/internal/attachments/upload" not in paths
-        assert {"/inbound/{frontend_id}", "/inbound-sync/{frontend_id}",
-                "/requests/{frontend_id}/{request_id}"} <= paths
+        assert {"/internal/submit/{frontend_id}", "/internal/requests/{frontend_id}/{request_id}"} <= paths
+        assert not any(path.startswith(("/inbound", "/requests", "/subscribe")) for path in paths)
     finally:
         app.state.service.db.close()

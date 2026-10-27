@@ -12,7 +12,8 @@ from agent_backend.models import Envelope, Identity, Submit
 from agent_backend.session_history import (
     database, delete_history, export_history, import_history, validate_destination,
 )
-from container_up.server import ControlService, Inbound
+from agent_backend.ingress import Inbound
+from container_up.server import ControlService
 from support import register_bucket
 
 

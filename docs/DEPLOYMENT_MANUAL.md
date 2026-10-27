@@ -1,5 +1,8 @@
 # OpenCode backend 部署与运维手册
 
+Channel Gateway 与 CU 共用一个单副本 Pod，分别运行在 `gateway` 和 `control` 容器。外部 NodePort 30081 指向 Gateway，CU 仅供内部控制连接；分层升级及已有独立 Deployment 的合并步骤见 [渠道分层部署说明](CHANNEL_GATEWAY.md)。
+
+
 本文按首次部署的操作顺序编排。命令适用于 **Linux x86_64 + Bash**，不适用于 Windows PowerShell。以现有 Kubernetes 集群、一个运行节点、`web-test` frontend 为例；本地盘和 NFS 二选一。旧 nanobot 的配置和数据库不能直接复用。
 
 首次部署依次执行第 1～6 章，然后跳到第 11 章验收。第 7～10 章是日常操作，**不要在首次部署时顺着执行停服、卸载命令**。
@@ -22,9 +25,9 @@
 
 ### 1.1 服务怎样运行
 
-`container-up`（下文简称 CU）是统一入口，固定运行一个副本。它读取 `common/frontends.json`，收到用户请求后动态创建 bucket Deployment。每个 bucket 运行 runtime 和 OpenCode，仅服务一个 frontend。首次启动只有 CU、没有 bucket 是正常现象；无需手工启动 runtime，也没有固定 StatefulSet。
+`container-up` Deployment 固定运行一个副本，包含 Gateway 与 CU 两个容器。Gateway 是统一业务入口，CU 负责调度；两者读取 `common/frontends.json`，收到用户请求后由 CU 动态创建 bucket Deployment。每个 bucket 运行 runtime 和 OpenCode，仅服务一个 frontend。首次启动只有 Gateway/CU Pod、没有 bucket 是正常现象；无需手工启动 runtime，也没有固定 StatefulSet。
 
-可选 `web-server` 用于 Web 代理和异步回调测试。模型服务和 MinIO 需提前可用：模型供 OpenCode 调用，MinIO 用于附件发布。当前 CU 入站、查询、取消接口不要求 Authorization 头；模型、渠道和 MinIO 各自仍需实际凭据。
+可选 `web-server` 用于 Web 代理和异步回调测试。模型服务和 MinIO 需提前可用：模型供 OpenCode 调用，MinIO 用于附件发布。当前 Gateway 入站、查询、取消接口不要求 Authorization 头；模型、渠道和 MinIO 各自仍需实际凭据。
 
 ### 1.2 哪台机器做什么
 
@@ -50,8 +53,10 @@
 | namespace | `opencode-sv` |
 | 部署根目录 | `/data/opencode_backend_k8s` |
 | frontend | `web-test` |
-| CU 容器 / Service 端口 | `8000` |
-| CU NodePort | **`30081`**，以 `backend.yaml` 为准 |
+| CU 容器 / Service 端口 | `8001` / `8000` |
+| Gateway 容器 / Service 端口 | `8000` / `8000` |
+| Gateway 调用 CU | `http://127.0.0.1:8001` |
+| Gateway NodePort | **`30081`**，以 `backend.yaml` 为准 |
 | 节点标签 | `opencode-runtime=true`，仅一个节点 |
 | CU 镜像 | `agent-container-up:opencode-1.18.31` |
 | bucket 镜像 | `agent-bucket-runtime:opencode-1.18.31-bwrap011` |
@@ -62,7 +67,7 @@
 kubectl get nodes -o wide
 export NODE='REPLACE_WITH_NODE_NAME'
 export NODE_IP='REPLACE_WITH_NODE_IP'
-export CU_URL="http://${NODE_IP}:30081"
+export GATEWAY_URL="http://${NODE_IP}:30081"
 ```
 
 后文文件操作的终端均先设置：
@@ -71,7 +76,7 @@ export CU_URL="http://${NODE_IP}:30081"
 export DEPLOY_ROOT=/data/opencode_backend_k8s
 ```
 
-新开终端要重新设置变量。集群中应能解析 Service DNS；CU 能访问 Kubernetes API，bucket 能访问 CU、模型服务、MinIO 与实际附件 URL。操作机须能访问节点 30081；OpenCode 4096 和插件 RPC 4097 仅在桶内回环监听，不需要对外开放。
+新开终端要重新设置变量。集群中应能解析 Service DNS；CU 能访问 Kubernetes API，bucket 能访问 CU、Gateway、模型服务、MinIO 与实际附件 URL。操作机须能访问节点 30081；OpenCode 4096 和插件 RPC 4097 仅在桶内回环监听，不需要对外开放。
 
 ## 2. 节点配置
 
@@ -110,12 +115,13 @@ df -h /data
 /data/opencode_backend_k8s/
 ├── source/                         # 仓库源码，不是仅一个 Python 包
 │   ├── container_up/
+│   ├── channel_gateway/
 │   ├── bucket_runtime/
 │   ├── agent_backend/
 │   ├── web_server/
 │   └── opencode_plugin/            # 必须含 dist、node_modules 和 package 文件
 ├── common/
-│   ├── frontends.json              # CU 总表：入口、镜像、基础设施、回调、MinIO
+│   ├── frontends.json              # 后端总表：渠道、镜像、调度、回调、MinIO
 │   └── web-test/
 │       ├── config/                 # 模型、权限、会话日志配置
 │       │   ├── opencode-server.json
@@ -275,7 +281,7 @@ cp vendor/opencode ../opencode-delivery/opencode
 交付包在仓库外的 `../opencode-delivery/`，避免 tar 把自己打进去。确认源码包包含插件产物与依赖：
 
 ```bash
-tar -tzf ../opencode-delivery/agent-source.tar.gz | grep -E 'opencode_plugin/(dist/index.mjs|dist/runtime-events.mjs|node_modules/)' | head
+tar -tzf ../opencode-delivery/agent-source.tar.gz | grep -E 'opencode_plugin/(dist/index.mjs|dist/permissions.mjs|node_modules/)' | head
 ls -lh ../opencode-delivery/
 ```
 
@@ -360,7 +366,7 @@ sudo chmod 0755 "$DEPLOY_ROOT"
 sudo chmod -R a+rX "$DEPLOY_ROOT/source"
 sudo chmod -R u+rwX,go-rwx "$DEPLOY_ROOT/common" "$DEPLOY_ROOT/data"
 sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/dist/index.mjs"
-sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/dist/runtime-events.mjs"
+sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/dist/permissions.mjs"
 sudo test -d "$DEPLOY_ROOT/source/opencode_plugin/node_modules"
 sudo test -r "$DEPLOY_ROOT/common/frontends.json"
 sudo test -r "$DEPLOY_ROOT/common/web-test/app/templates/AGENTS.md"
@@ -442,16 +448,17 @@ kubectl get pv
 kubectl apply -f k8s/opencode/backend.yaml
 kubectl -n opencode-sv rollout status deployment/container-up --timeout=180s
 kubectl -n opencode-sv get pods,deployments,svc,pvc -o wide
-kubectl -n opencode-sv logs deployment/container-up --tail=100
-kubectl -n opencode-sv exec deployment/container-up -- \
+kubectl -n opencode-sv logs deployment/container-up -c control --tail=100
+kubectl -n opencode-sv logs deployment/container-up -c gateway --tail=100
+kubectl -n opencode-sv exec deployment/container-up -c control -- \
   python -m container_up --check-config --config /mnt/common/frontends.json
-curl -fsS "$CU_URL/health/live"
-curl -fsS "$CU_URL/health/ready"
+curl -fsS "$GATEWAY_URL/health/live"
+curl -fsS "$GATEWAY_URL/health/ready"
 ```
 
-预期 CU 为 Running/Ready、Service 的 NodePort 为 30081，配置检查成功、健康接口返回成功。检查的是实际挂载的配置，不是仓库里的示例。若 CU 不能启动，先看日志修配置，无法对退出的容器 exec。
+预期 `container-up` Pod 为 Running 且 Ready 为 2/2，Gateway Service 的 NodePort 为 30081，配置检查成功、健康接口返回成功。CU 8001、Gateway 8000 及内部通信地址使用代码默认值，无需写入总表；若实际配置中残留旧的 `gateway` 块或显式 `control.port`，应移除。若容器不能启动，先看对应日志修配置，无法对退出的容器 exec。
 
-CU 必须保持一个副本，共享 control.sqlite 使用单写进程。此时没有 bucket 属正常情况；第 11 章首个请求才验证建桶和模型调用。**CU Ready 只代表入口就绪，不代表模型、bwrap 和附件链路已通过。**
+此 Deployment 必须保持一个副本，Gateway 和 CU 各自 SQLite 使用单写进程；它们随 Pod 一起更新和启停。此时没有 bucket 属正常情况；第 11 章首个请求才验证建桶和模型调用。**Pod Ready 只代表服务就绪，不代表模型、bwrap 和附件链路已通过。**
 
 ### 6.2 可选 Web 与业务 MCP
 
@@ -462,7 +469,7 @@ kubectl apply -f k8s/opencode/web-server.yaml
 kubectl -n opencode-sv rollout status deployment/web-server --timeout=180s
 ```
 
-如果启动 CU 后才改回调地址，需要重启 CU 重新读取。工程场景和隐患专家 MCP 分别有独立清单 `engineering-scene-mcp.yaml`、`hazard-expert-mcp.yaml`，需要各自镜像和配置，不属于最小部署。隐患专家接入步骤见 [其 README](../hazard_expert_mcp/README.md)，不要注册成同一 CU 的模型工具导致递归调用。
+如果启动后才改回调地址，需要重启 Gateway/CU Pod 重新读取。工程场景和隐患专家 MCP 分别有独立清单 `engineering-scene-mcp.yaml`、`hazard-expert-mcp.yaml`，需要各自镜像和配置，不属于最小部署。隐患专家接入步骤见 [其 README](../hazard_expert_mcp/README.md)，不要注册成同一后端的模型工具导致递归调用。
 
 首次部署完成后直接去第 11 章；以下章节按需使用。
 
@@ -498,7 +505,7 @@ kubectl -n opencode-sv scale deployment/container-up --replicas=1
 kubectl -n opencode-sv rollout status deployment/container-up --timeout=180s
 # 仅在之前部署过 Web 时执行
 # kubectl -n opencode-sv scale deployment/web-server --replicas=1
-curl -fsS "$CU_URL/health/ready"
+curl -fsS "$GATEWAY_URL/health/ready"
 ```
 
 按需恢复原先部署的 MCP。bucket 留在 0，由 CU 按后续请求分配和拉起；不要把全部历史桶盲目缩放为 1。
@@ -597,7 +604,7 @@ Retain PV 在旧 PVC 删除后可能为 Released，仍带旧 claimRef；仅重�
 
 ## 10. 日志与排障
 
-### 10.1 CU 与所有 bucket 日志
+### 10.1 Gateway、CU 与所有 bucket 日志
 
 **执行位置：kubectl 操作机。**
 
@@ -605,6 +612,8 @@ Retain PV 在旧 PVC 删除后可能为 Released，仍带旧 claimRef；仅重�
 # CU 最近日志 / 持续跟踪，Ctrl+C 只结束跟踪
 kubectl -n opencode-sv logs deployment/container-up -c control --tail=200 --timestamps
 kubectl -n opencode-sv logs -f deployment/container-up -c control --tail=100 --timestamps
+# Gateway 渠道接入与外发日志
+kubectl -n opencode-sv logs -f deployment/container-up -c gateway --tail=100 --timestamps
 # 所有当前 bucket；首次未建桶或全部回收时可能没有匹配项
 kubectl -n opencode-sv logs -f -l app=opencode-bucket -c runtime \
   --prefix=true --timestamps --tail=100 --max-log-requests=20
@@ -648,7 +657,7 @@ kubectl get nodes -L opencode-runtime
 
 ## 11. 测试命令
 
-**执行位置：能访问 CU NodePort 的 Linux Bash 终端。**以下 curl 使用可直接替换的完整 URL，不依赖前面终端的变量。统一将 `192.168.199.168:30081` 替换为实际节点地址，frontend 保持与总表一致。
+**执行位置：能访问 Gateway NodePort 的 Linux Bash 终端。**以下 curl 使用可直接替换的完整 URL，不依赖前面终端的变量。统一将 `192.168.199.168:30081` 替换为实际节点地址，frontend 保持与总表一致。
 
 每轮测试更换 request_id；同一轮去重测试则故意复用原 ID。想重新验证会话记忆时，chat_id 也换新值。先完成同步和会话，再验证异步及附件。
 
@@ -849,4 +858,4 @@ npm test --prefix opencode_plugin
 OPENCODE_TEST_BINARY="$PWD/vendor/opencode" python -m pytest tests -q
 ```
 
-验收至少完成：CU Ready、请求自动建桶、同步 completed、同会话上下文、去重/409、附件下载；使用异步业务时还需验证 delivery_state=sent 和业务回调日志。本文命令按仓库实现编写，实际模型、MinIO 和集群能力需在目标环境运行验证。
+验收至少完成：Gateway/CU Pod Ready、请求自动建桶、同步 completed、同会话上下文、去重/409、附件下载；使用异步业务时还需验证 delivery_state=sent 和业务回调日志。本文命令按仓库实现编写，实际模型、MinIO 和集群能力需在目标环境运行验证。

@@ -31,36 +31,24 @@ def rpc_app(runtime: Runtime, token: str) -> FastAPI:
 
     @app.post("/plugin/ready")
     async def plugin_ready(request: Request):
-        if (await request.json()).get("version") != "6":
+        if (await request.json()).get("version") != "9":
             raise HTTPException(409, "plugin protocol mismatch")
         runtime.plugin_ready = True
         return {"ok": True}
 
-    @app.post("/plugin/event")
-    async def plugin_event(request: Request):
+    @app.post("/permissions")
+    async def permissions(request: Request):
         try:
-            return runtime.plugin_event(await request.json())
-        except PermissionError as exc:
-            raise HTTPException(403, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.post("/authorize")
-    async def authorize(request: Request):
-        body = await request.json()
-        try:
-            if not isinstance(body.get("directory"), str) or not body["directory"]:
-                raise ValueError("plugin must supply its session directory")
-            await runtime.bind_tool_session(body["session_id"], body["directory"])
-            return runtime.authorize(body["session_id"], body["call_id"], body["tool"], body["args"])
-        except (PermissionError, ValueError, RuntimeError) as exc:
+            body = await request.json()
+            return await runtime.tool_permissions(body["session_id"], body["directory"])
+        except (PermissionError, ValueError, KeyError, TypeError) as exc:
             raise HTTPException(403, str(exc)) from exc
 
     @app.post("/publish")
     async def publish(request: Request):
         try:
-            return await runtime.publish((await request.json())["ticket"])
-        except (PermissionError, ValueError, RuntimeError, TimeoutError) as exc:
+            return await runtime.publish(await request.json())
+        except (PermissionError, ValueError, KeyError, TypeError, RuntimeError, TimeoutError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
     return app
@@ -76,7 +64,7 @@ def health_app(runtime: Runtime) -> FastAPI:
     @app.get("/health/ready")
     async def ready():
         if (not runtime.ready or runtime.draining or not runtime.plugin_ready or not runtime.peer
-                or runtime.peer.closed):
+                or runtime.peer.closed or not runtime.native_events.connected.is_set()):
             raise HTTPException(503, "runtime not ready")
         return {"status": "ready", "active": len(runtime.tasks)}
 
@@ -94,10 +82,10 @@ async def serve(config: RuntimeConfig) -> None:
                                                 port=config.health_port, log_level="warning",
                                                 log_config=access_log_config()))
     tasks = [asyncio.create_task(rpc_server.serve()), asyncio.create_task(health_server.serve()),
-             asyncio.create_task(runtime.plugin_events.run())]
+             asyncio.create_task(runtime.native_events.run())]
 
     async def connection_loop():
-        while not runtime.draining:
+        while True:
             try:
                 async with connect(config.control_url, additional_headers={
                     "X-Bucket-ID": config.bucket_id}, max_size=1024 * 1024,
@@ -114,6 +102,30 @@ async def serve(config: RuntimeConfig) -> None:
             finally:
                 runtime.peer = None
 
+    async def report_load():
+        last = None
+        while True:
+            accepting = runtime.accepting()
+            if accepting != last:
+                runtime.emit("bucket.status", "", {"accepting": accepting})
+                last = accepting
+            await asyncio.sleep(1)
+
+    async def gateway_loop():
+        async def unexpected(event):
+            raise ValueError("gateway cannot send execution commands")
+
+        while True:
+            try:
+                async with connect(config.gateway_url, additional_headers={"X-Bucket-ID": config.bucket_id},
+                                   max_size=1024 * 1024, ping_interval=20, ping_timeout=20, proxy=None) as socket:
+                    await Peer(socket, runtime.db, config.bucket_id, unexpected, journal_peer="gateway", protocol="agent-gateway/1").run()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("gateway connection lost: %s", type(exc).__name__)
+                await asyncio.sleep(1)
+
     try:
         if not Path("/usr/bin/flock").is_file():
             raise RuntimeError("flock is required for sandbox/publication serialization")
@@ -125,6 +137,8 @@ async def serve(config: RuntimeConfig) -> None:
             await asyncio.sleep(0.05)
         await executor.probe(config.state_root / "sandbox-probe")
         await supervisor.start()
+        tasks.append(asyncio.create_task(runtime.native_events.subscribe()))
+        await asyncio.wait_for(runtime.native_events.connected.wait(), timeout=30)
         # Force trusted instance initialization and therefore plugin loading before readiness.
         response = await supervisor.client.http.get("/config")
         response.raise_for_status()
@@ -138,7 +152,7 @@ async def serve(config: RuntimeConfig) -> None:
             raise RuntimeError("runtime plugin handshake missing")
         await runtime.recover()
         runtime.ready = True
-        tasks.extend([asyncio.create_task(connection_loop()),
+        tasks.extend([asyncio.create_task(connection_loop()), asyncio.create_task(gateway_loop()), asyncio.create_task(report_load()),
                       asyncio.create_task(supervisor.process.wait())])
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:

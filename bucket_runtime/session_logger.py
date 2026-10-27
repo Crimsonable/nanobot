@@ -4,7 +4,7 @@ import re
 
 from agent_backend.config import SessionLoggingConfig, load_config
 
-SECRET = re.compile(r"^(?:_runtime_ticket|authorization|cookie|api[-_]?key|access[-_]?key|secret[-_]?key|password|token|access_token|refresh_token|client_secret)$", re.I)
+SECRET = re.compile(r"^(?:authorization|cookie|api[-_]?key|access[-_]?key|secret[-_]?key|password|token|access_token|refresh_token|client_secret)$", re.I)
 
 
 def redact(value):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+
 def attachment_from_content_url(content: str, prefix: str) -> dict[str, str] | None:
     text = content.strip()
     if not text:

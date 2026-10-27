@@ -42,7 +42,7 @@ def test_deployment_environment_and_production_lifespan(monkeypatch, deployment)
         )
         assert workload["metadata"]["namespace"] == "opencode-sv"
         assert pod["spec"]["nodeSelector"] == {"opencode-runtime": "true"}
-        assert env["CONTAINER_UP_BASE_URL"] == "http://container-up.opencode-sv.svc.cluster.local:8000"
+        assert env["CONTAINER_UP_BASE_URL"] == "http://channel-gateway.opencode-sv.svc.cluster.local:8000"
         assert "CONTAINER_UP_API_KEY" not in env
         assert container["workingDir"] == "/mnt/source/hazard_expert_mcp"
         assert container["livenessProbe"]["httpGet"]["path"] == "/healthz"

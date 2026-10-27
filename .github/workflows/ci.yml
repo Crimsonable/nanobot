@@ -15,8 +15,8 @@ jobs:
           node-version: '22'
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: python -m pip install -e '.[test]'
-      - run: ruff check agent_backend bucket_runtime --select F
-      - run: python -m pytest tests -q
+      - run: ruff check agent_backend bucket_runtime channel_gateway container_up --select F
       - run: npm ci --prefix opencode_plugin
       - run: npm run build --prefix opencode_plugin
+      - run: python -m pytest tests -q
       - run: npm test --prefix opencode_plugin

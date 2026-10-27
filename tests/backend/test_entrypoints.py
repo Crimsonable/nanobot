@@ -77,6 +77,34 @@ def test_bucket_entrypoint_uses_scheduler_identity(registry, monkeypatch):
     assert len(captured) == 1
 
 
+def test_gateway_entrypoint_uses_internal_defaults(registry, monkeypatch):
+    import channel_gateway.server
+    import uvicorn
+    from channel_gateway.__main__ import main
+
+    raw = json.loads(registry.read_text(encoding="utf-8"))
+    assert "gateway" not in raw
+    assert "port" not in raw["control"]
+    captured = {}
+    app = object()
+
+    def create_app(config, settings):
+        captured.update(config=config, settings=settings)
+        return app
+
+    monkeypatch.setattr(channel_gateway.server, "create_app", create_app)
+    monkeypatch.setattr(uvicorn, "run", lambda application, **kwargs: captured.update(app=application, **kwargs))
+    main(["--config", str(registry)])
+    assert captured["app"] is app
+    assert captured["host"] == "0.0.0.0"
+    assert captured["port"] == 8000
+    assert captured["config"].port == 8001
+    assert captured["settings"].control_url == "http://127.0.0.1:8001"
+    assert captured["settings"].state_root == Path("/data/gateway")
+    assert set(captured["config"].frontends) == {"web-test", "web-other"}
+    assert "gateway" not in load_frontends(registry).model_dump()
+
+
 def test_check_command_validates_every_frontend_and_exits(registry):
     command = [sys.executable, "-m", "container_up", "--check-config", "--config", str(registry)]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)

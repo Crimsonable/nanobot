@@ -79,8 +79,8 @@ class Journal:
     def delete(self, kind: str, key: str) -> None:
         self.db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
 
-    def enqueue(self, peer: str, event: Envelope) -> None:
-        if self.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] >= self.max_outbox:
+    def enqueue(self, peer: str, event: Envelope, reserve: int = 0) -> None:
+        if self.db.execute("SELECT COUNT(*) FROM outbox WHERE peer=?", (peer,)).fetchone()[0] >= self.max_outbox + reserve:
             raise RuntimeError("OUTBOX_FULL")
         self.db.execute("INSERT INTO outbox(peer,event) VALUES (?,?)",
                         (peer, event.model_dump_json()))

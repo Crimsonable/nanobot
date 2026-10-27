@@ -1,4 +1,4 @@
-"""Compile a user's directory scope for OpenCode and validate native file targets."""
+"""Compile a user's directory scope for OpenCode session creation."""
 from __future__ import annotations
 
 import os
@@ -80,60 +80,3 @@ def session_rules(policy: UserPolicy, workspace: Path, public: list[Path], workt
         rule("read", pattern, False)
         rule("edit", pattern, False)
     return rules
-
-
-def check_native_paths(tool: str, args: dict, policy: UserPolicy, workspace: Path, public: list[Path],
-                       private_files: list[Path] = ()) -> dict:
-    """Return normalized arguments; no model-supplied directory is trusted."""
-    if not policy.session.enabled:
-        return args
-    if not policy.session.tools.get(tool, policy.session.default_tools):
-        raise PermissionError("tool disabled for this user")
-    readable = [*public, *([workspace] if policy.filesystem.workspace != "none" else [])]
-    writable = [workspace] if policy.filesystem.workspace == "read_write" else []
-
-    def target(value: str, write: bool) -> str:
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            candidate = workspace / candidate
-        candidate = Path(os.path.abspath(candidate))
-        roots = writable if write else readable
-        root = next((root for root in roots if candidate.is_relative_to(root)), None)
-        if root is None:
-            raise PermissionError("path outside user permission scope")
-        for part in [candidate, *candidate.parents]:
-            if part.is_symlink():
-                raise PermissionError("symbolic links are not accepted by native file hooks")
-            if part == root:
-                break
-        resolved = candidate.resolve()
-        for private in private_files:
-            if resolved == private.resolve() or (tool in {"grep", "lsp"} and private.resolve().is_relative_to(resolved)):
-                raise PermissionError("service configuration is not user content")
-        if not resolved.is_relative_to(root):
-            raise PermissionError("path outside user permission scope")
-        if resolved.is_file() and resolved.stat().st_nlink != 1:
-            raise PermissionError("hard-linked files are not accepted by native file hooks")
-        return str(resolved)
-
-    if tool == "publish_attachment" and policy.filesystem.workspace == "none":
-        raise PermissionError("workspace access is disabled")
-    args = dict(args)
-    if tool in {"read", "edit", "write", "lsp"}:
-        args["filePath"] = target(args["filePath"], tool in {"edit", "write"})
-    elif tool in {"glob", "grep", "list"}:
-        args["path"] = target(args.get("path") or str(workspace), False)
-        if tool == "glob" and (Path(args["pattern"]).is_absolute() or ".." in Path(args["pattern"]).parts):
-            raise PermissionError("glob pattern must stay within its search directory")
-    elif tool == "multiedit":
-        args["filePath"] = target(args["filePath"], True)
-    elif tool == "apply_patch":
-        lines = args["patchText"].splitlines(keepends=True)
-        prefixes = ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: ")
-        for index, line in enumerate(lines):
-            for prefix in prefixes:
-                if line.startswith(prefix):
-                    lines[index] = prefix + target(line[len(prefix):].rstrip("\r\n"), True) + "\n"
-                    break
-        args["patchText"] = "".join(lines)
-    return args

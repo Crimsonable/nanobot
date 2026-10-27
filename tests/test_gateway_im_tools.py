@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from container_up import feishu_im_tool
-from container_up import qxt_im_tool as im_tools
-from container_up import qxt_im_tool
+from channel_gateway import feishu_im_tool
+from channel_gateway import qxt_im_tool as im_tools
+from channel_gateway import qxt_im_tool
 
 
 class FakeResponse:

@@ -300,7 +300,7 @@ class FeishuIMParser:
         self._started = True
         self._thread = threading.Thread(
             target=self._run_ws_client,
-            name=f"container-up-feishu-ws-{self.frontend_id}",
+            name=f"channel-gateway-feishu-ws-{self.frontend_id}",
             daemon=True,
         )
         self._thread.start()

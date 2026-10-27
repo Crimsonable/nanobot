@@ -1,3 +1,4 @@
+from tests.backend.support import plugin_scope, publication
 import shutil
 import sys
 import time
@@ -43,7 +44,7 @@ def test_workspace_scope_is_frontend_and_user(workspaces):
     for runtime, submit, workspace in workspaces:
         own_file = workspace / "report.txt"
         for tool in ["read", "write"]:
-            result = runtime.authorize(submit.identity.identity_id, tool, tool, {"filePath": str(own_file)})
+            result = plugin_scope(runtime, submit.identity.identity_id, tool, tool, {"filePath": str(own_file)})
             assert result["args"]["filePath"] == str(own_file)
         for _, other, other_workspace in workspaces:
             if other.identity == submit.identity:
@@ -55,7 +56,7 @@ def test_workspace_scope_is_frontend_and_user(workspaces):
                 ("list", {"path": str(workspace.parent)}),
             ]:
                 with pytest.raises(PermissionError):
-                    runtime.authorize(submit.identity.identity_id, "other", tool, args)
+                    plugin_scope(runtime, submit.identity.identity_id, "other", tool, args)
             if other.identity.frontend_id != submit.identity.frontend_id:
                 with pytest.raises(PermissionError, match="another frontend"):
                     runtime.workspace(other)
@@ -74,14 +75,12 @@ async def test_attachment_publication_cannot_use_other_frontend_workspace(worksp
         foreign = next(path for _, other, path in workspaces
                        if other.identity.frontend_id != submit.identity.frontend_id
                        and other.identity.user_id == submit.identity.user_id)
-        ticket = runtime.authorize(submit.identity.identity_id, "foreign", "publish_attachment",
-            {"files": [{"path": str(foreign / "report.txt")}]})
+        body = publication(runtime, submit.identity.identity_id, "foreign", [{"path": str(foreign / "report.txt")}])
         with pytest.raises(PermissionError):
-            await runtime.publish(ticket["ticket"])
+            await runtime.publish(body)
         assert uploads == []
-        ticket = runtime.authorize(submit.identity.identity_id, "own", "publish_attachment",
-            {"files": [{"path": "report.txt"}]})
-        result = await runtime.publish(ticket["ticket"])
+        body = publication(runtime, submit.identity.identity_id, "own", [{"path": "report.txt"}])
+        result = await runtime.publish(body)
         assert result["status"] == "queued_for_reply"
         assert uploads == [(submit.identity, (workspace / "report.txt").read_text())]
 

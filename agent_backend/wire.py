@@ -19,9 +19,12 @@ class Socket(Protocol):
 class Peer:
     def __init__(self, socket: Socket, journal: Journal, bucket_id: str,
                  handler: Callable[[Envelope], Awaitable[None]],
-                 session_handler: Callable[[dict], Awaitable[None]] | None = None):
+                 session_handler: Callable[[dict], Awaitable[None]] | None = None,
+                 journal_peer: str | None = None, protocol: str = "agent-bucket/1"):
         self.socket, self.journal, self.bucket_id = socket, journal, bucket_id
         self.handler = handler
+        self.journal_peer = journal_peer or bucket_id
+        self.protocol = protocol
         self.send_lock = asyncio.Lock()
         self.closed = False
         self.session_handler = session_handler
@@ -53,7 +56,7 @@ class Peer:
 
     async def send(self, event: Envelope) -> None:
         async with self.send_lock:
-            await self.socket.send(event.model_dump_json())
+            await self.socket.send(event.model_copy(update={"protocol": self.protocol}).model_dump_json())
 
     async def receive(self) -> None:
         while True:
@@ -61,10 +64,10 @@ class Peer:
             if not isinstance(packet, str) or len(packet.encode()) > 1024 * 1024:
                 raise ValueError("invalid control frame")
             event = Envelope.model_validate_json(packet)
-            if event.bucket_id != self.bucket_id:
+            if event.bucket_id != self.bucket_id or event.protocol != self.protocol:
                 raise ValueError("bucket identity mismatch")
             if event.type == "ack":
-                self.journal.ack(self.bucket_id, event.payload["seq"], event.payload["event_id"])
+                self.journal.ack(self.journal_peer, event.payload["seq"], event.payload["event_id"])
             elif event.type == "heartbeat":
                 continue
             elif event.type == "session.reply":
@@ -87,18 +90,18 @@ class Peer:
             else:
                 if not event.seq:
                     raise ValueError("durable messages require sequence")
-                if not self.journal.seen(self.bucket_id, event.event_id):
+                if not self.journal.seen(self.journal_peer, event.event_id):
                     await self.handler(event)
-                    self.journal.accept(self.bucket_id, event.event_id)
+                    self.journal.accept(self.journal_peer, event.event_id)
                 await self.send(Envelope(type="ack", bucket_id=self.bucket_id,
                     payload={"seq": event.seq, "event_id": event.event_id}))
 
     async def pump(self) -> None:
-        notification = self.journal.notification(self.bucket_id)
+        notification = self.journal.notification(self.journal_peer)
         sent = 0
         while True:
             notification.clear()
-            while events := self.journal.pending(self.bucket_id, after=sent):
+            while events := self.journal.pending(self.journal_peer, after=sent):
                 for event in events:
                     await self.send(event)
                     sent = event.seq

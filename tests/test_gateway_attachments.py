@@ -1,5 +1,5 @@
-from container_up.attachments import attachment_from_content_url
-from container_up.feishu_im_tool import FeishuIMParser
+from channel_gateway.attachments import attachment_from_content_url
+from channel_gateway.feishu_im_tool import FeishuIMParser
 
 
 def test_reference_from_content_url():

@@ -11,7 +11,7 @@ from typing import Any
 from Crypto.Cipher import AES
 from loguru import logger
 
-from container_up.http_state import get_dispatch_session
+from channel_gateway.http_state import get_dispatch_session
 
 _AES_BLOCK_SIZE = 16
 

@@ -1,5 +1,5 @@
 import { tool, type Plugin } from "@opencode-ai/plugin"
-import { createRuntimeEvents } from "./runtime-events"
+import { applyPermissions } from "./permissions"
 
 function quote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'"
@@ -47,11 +47,8 @@ export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
     return response.json()
   }
 
-  const events = createRuntimeEvents(directory,
-    body => rpc("/plugin/event", body, AbortSignal.timeout(30_000)))
-  await rpc("/plugin/ready", { version: "6" })
+  await rpc("/plugin/ready", { version: "9" })
   return {
-    event: async ({ event }) => { await events.event(event) },
     "experimental.chat.messages.transform": async (_input, output) => {
       for (const message of output.messages) {
         for (const part of message.parts) {
@@ -62,15 +59,11 @@ export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
       }
     },
     "tool.execute.before": async (input, output) => {
-      // Runtime applies this user's configured session scope to native file tools.
+      // File/shell tools query BU once. Publication validates inside /publish.
       const args = structuredClone(output.args)
-      delete args._runtime_ticket
-      await events.event({ type: "tool.execute.before", properties: {
-        sessionID: input.sessionID, callID: input.callID, tool: input.tool, args,
-      } })
-      const authorized = await rpc("/authorize", {
-        session_id: input.sessionID, directory, call_id: input.callID, tool: input.tool, args,
-      })
+      if (input.tool === "publish_attachment") return
+      const scope = await rpc("/permissions", {session_id: input.sessionID, directory})
+      const authorized = applyPermissions(scope, input.tool, args)
       if (input.tool === "bash") {
         if (!Array.isArray(authorized.argv) || authorized.argv.length === 0 ||
             !authorized.argv.every((arg: unknown) => typeof arg === "string" && !arg.includes("\0")) ||
@@ -83,8 +76,6 @@ export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
         output.args.command = "exec " + [...authorized.argv, args.command].map(quote).join(" ")
         output.args.workdir = authorized.host_workdir
         output.args.timeout = authorized.timeout_ms
-      } else if (input.tool === "publish_attachment") {
-        output.args._runtime_ticket = authorized.ticket
       } else if (authorized.args) {
         Object.assign(output.args, authorized.args)
       }
@@ -97,11 +88,12 @@ export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
           files: tool.schema.array(tool.schema.object({
             path: tool.schema.string(), filename: tool.schema.string().optional(),
           })).min(1).max(32),
-          _runtime_ticket: tool.schema.string().optional().describe("Reserved; set by the runtime hook"),
         },
         async execute(args, context) {
-          if (!args._runtime_ticket) throw new Error("Missing runtime authorization")
-          const result = await rpc("/publish", { ticket: args._runtime_ticket }, context.abort)
+          const result = await rpc("/publish", {
+            session_id: context.sessionID, directory,
+            message_id: context.messageID, files: args.files,
+          }, context.abort)
           return JSON.stringify(result)
         },
       }),

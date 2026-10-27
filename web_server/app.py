@@ -10,14 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from web_server.settings import (
     APP_HOST,
     APP_PORT,
-    CONTAINER_UP_BASE_URL,
+    GATEWAY_BASE_URL,
     OUTBOUND_ECHO,
 )
 from web_server.uvicorn_logging import build_uvicorn_log_config
 
 
 class InboundRequest(BaseModel):
-    """Lenient front-door contract mirroring container_up.server.Inbound."""
+    """Lenient front-door contract mirroring agent_backend.ingress.Inbound."""
 
     model_config = ConfigDict(extra="ignore")
     frontend_id: str = Field(min_length=1)
@@ -49,7 +49,7 @@ app = FastAPI(title="web-server", version="0.1.0")
 
 
 async def _forward_inbound(frontend_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    target_url = f"{CONTAINER_UP_BASE_URL}/inbound/{frontend_id}"
+    target_url = f"{GATEWAY_BASE_URL}/inbound/{frontend_id}"
     try:
         async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
             response = await client.post(target_url, json=payload)

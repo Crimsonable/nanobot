@@ -23,6 +23,23 @@
       "instance_idle_ttl_seconds": 3600,
       "runtime": {
         "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
+      },
+      "event_forwarding": {
+        "include_types": [
+          "message.updated",
+          "message.part.updated",
+          "message.part.delta",
+          "message.part.removed",
+          "message.removed",
+          "session.status",
+          "session.error"
+        ],
+        "include_part_types": [
+          "text",
+          "file",
+          "tool"
+        ],
+        "include_child_sessions": false
       }
     }
   ]

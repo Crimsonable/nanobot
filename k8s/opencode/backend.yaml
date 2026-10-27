@@ -63,7 +63,7 @@ spec:
       labels:
         app: container-up
     spec:
-      automountServiceAccountToken: true
+      automountServiceAccountToken: false
       securityContext:
         runAsUser: 0
         runAsGroup: 0
@@ -79,20 +79,24 @@ spec:
         image: agent-container-up:opencode-1.18.31
         imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 8000
+        - name: control-http
+          containerPort: 8001
         readinessProbe:
           httpGet:
             path: /health/ready
-            port: 8000
+            port: control-http
         livenessProbe:
           httpGet:
             path: /health/live
-            port: 8000
+            port: control-http
         securityContext:
           privileged: true
           allowPrivilegeEscalation: true
           readOnlyRootFilesystem: false
         volumeMounts:
+        - name: kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
         - name: data
           mountPath: /data
         - name: tmp
@@ -107,7 +111,62 @@ spec:
           mountPath: /mnt/common
           readOnly: true
         workingDir: /mnt/source
+      - name: gateway
+        args:
+        - python
+        - -m
+        - channel_gateway
+        - --config
+        - /mnt/common/frontends.json
+        image: agent-container-up:opencode-1.18.31
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: gateway-http
+          containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: gateway-http
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: gateway-http
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: gateway-tmp
+          mountPath: /tmp
+        - name: source
+          mountPath: /mnt/source
+          readOnly: true
+        - name: common
+          mountPath: /mnt/common
+          readOnly: true
+        workingDir: /mnt/source
       volumes:
+      - name: kube-api-access
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3600
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - path: namespace
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+      - name: gateway-tmp
+        emptyDir:
+          sizeLimit: 1Gi
       - name: data
         persistentVolumeClaim:
           claimName: opencode-state-pvc
@@ -140,6 +199,19 @@ spec:
     app: container-up
   ports:
   - port: 8000
-    targetPort: 8000
+    targetPort: control-http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: channel-gateway
+  namespace: opencode-sv
+spec:
+  selector:
+    app: container-up
+  ports:
+  - port: 8000
+    targetPort: gateway-http
     nodePort: 30081
   type: NodePort

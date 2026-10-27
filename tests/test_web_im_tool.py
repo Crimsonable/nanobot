@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from container_up import http_state
-from container_up.web_im_tool import WebIMParser
+from channel_gateway import http_state
+from channel_gateway.web_im_tool import WebIMParser
 
 
 class _FakeResponse:

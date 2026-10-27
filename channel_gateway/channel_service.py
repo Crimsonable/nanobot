@@ -1,4 +1,4 @@
-"""Channel adapters are called only by the control service, never by a bucket."""
+"""Channel adapters are owned by Gateway; preserve existing external payload contracts."""
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -15,7 +15,7 @@ class ChannelService:
     async def start(self, dispatch: Callable[[str, dict], Awaitable[None]]) -> None:
         import asyncio
 
-        from container_up.http_state import init_dispatch_session
+        from channel_gateway.http_state import init_dispatch_session
         init_dispatch_session()
         for frontend_id, frontend in self.config.frontends.items():
             raw = dict(frontend.channel_config)
@@ -24,14 +24,14 @@ class ChannelService:
                 await dispatch(frontend_id, payload)
 
             if frontend.provider == "qxt":
-                from container_up.qxt_im_tool import QxtIMParser
+                from channel_gateway.qxt_im_tool import QxtIMParser
                 parser = QxtIMParser(frontend_id=frontend_id, frontend_config=raw)
             elif frontend.provider == "feishu":
-                from container_up.feishu_im_tool import FeishuIMParser
+                from channel_gateway.feishu_im_tool import FeishuIMParser
                 parser = FeishuIMParser(frontend_id=frontend_id, frontend_config=raw,
                     dispatch_event=receive, main_loop=asyncio.get_running_loop())
             else:
-                from container_up.web_im_tool import WebIMParser
+                from channel_gateway.web_im_tool import WebIMParser
                 parser = WebIMParser(frontend_id=frontend_id, frontend_config=raw)
             self.parsers[frontend_id] = parser
             parser.start()
@@ -57,7 +57,7 @@ class ChannelService:
         })
 
     async def stop(self) -> None:
-        from container_up.http_state import close_dispatch_session
+        from channel_gateway.http_state import close_dispatch_session
         for parser in self.parsers.values():
             parser.stop()
         await close_dispatch_session()

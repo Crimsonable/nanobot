@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from websockets.asyncio.client import connect
 
 from support import register_bucket
-from agent_backend.config import ControlConfig, RuntimeConfig
+from agent_backend.config import ControlConfig, RuntimeConfig, GatewaySettings
 from agent_backend.wire import Peer
 from bucket_runtime.runtime import Runtime
 from bucket_runtime.sandbox_executor import SandboxExecutor
@@ -78,6 +78,7 @@ class Channels:
                     reason="requires Linux, bwrap and explicit pinned OpenCode binary")
 async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     binary = Path(os.environ["OPENCODE_TEST_BINARY"])
+    request_seconds = int(os.environ.get("OPENCODE_TEST_REQUEST_SECONDS", "90"))
     plugin = Path(__file__).resolve().parents[2] / "opencode_plugin/dist/index.mjs"
     assert plugin.exists(), "run npm ci && npm run build in opencode_plugin"
     oc_port, rpc_port, cu_port, model_port = port(), port(), port(), port()
@@ -106,14 +107,19 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
         "opencode": {"binary": str(binary), "port": oc_port,
             "context_root": str(tmp_path / "context"), "config_file": str(model_config),
             "plugin_file": str(plugin), "dependency_dir": str(plugin.parent.parent)},
-        "limits": {"request_seconds": 90},
+        "limits": {"request_seconds": request_seconds},
     })
     control_config = ControlConfig.model_validate({
         "state_root": str(tmp_path / "control"),
         "frontends": {"web": {"provider": "web", "channel_config": {}}},
-        "limits": {"request_seconds": 90},
+        "limits": {"request_seconds": request_seconds},
     })
-    app = create_app(control_config, Channels())
+    app = create_app(control_config)
+    from channel_gateway.server import create_app as gateway_app
+    gateway_port = port()
+    gateway = gateway_app(control_config, GatewaySettings(state_root=tmp_path / "gateway",
+        control_url=f"http://127.0.0.1:{cu_port}"), Channels())
+    runtime_config.event_forwarding.include_part_types.append("reasoning")
     register_bucket(app.state.service, "bucket-0")
     uploaded = []
 
@@ -160,7 +166,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
             name = "read"
             args = {"filePath": str(secret_file)}
         elif len(tool_messages) == 3:
-            assert "Runtime rejected /authorize: 403" in str(tool_messages[-1]["content"]), tool_messages[-1]
+            assert "permission scope" in str(tool_messages[-1]["content"]), tool_messages[-1]
             assert "frontend-config-must-stay-private" not in str(body["messages"])
             name = "read"
             args = {"filePath": str(public / "SKILL.md")}
@@ -196,17 +202,18 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     runtime.artifacts.upload = upload
     def forbid_reply_queries(request):
         assert not request.url.path.endswith("/message"), "runtime must not query replies"
-        assert request.url.path != "/global/event", "runtime must not subscribe to SSE"
     async def check_request(request):
         forbid_reply_queries(request)
     supervisor.client.http.event_hooks["request"].append(check_request)
 
-    peer_task = None
-    async with running(model, model_port), running(app, cu_port), running(rpc_app(runtime, supervisor.rpc_token), rpc_port):
-        event_task = asyncio.create_task(runtime.plugin_events.run())
+    peer_task = sse_task = gateway_task = None
+    async with running(model, model_port), running(app, cu_port), running(gateway, gateway_port), running(rpc_app(runtime, supervisor.rpc_token), rpc_port):
+        event_task = asyncio.create_task(runtime.native_events.run())
         try:
             await executor.probe(tmp_path / "probe")
             await supervisor.start()
+            sse_task = asyncio.create_task(runtime.native_events.subscribe())
+            await asyncio.wait_for(runtime.native_events.connected.wait(), 10)
             initialized = await supervisor.client.http.get("/config")
             assert initialized.status_code == 200, initialized.text
             # The plugin initializes on tool discovery, not necessarily on config access.
@@ -217,8 +224,15 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                 "X-Bucket-ID": "bucket-0"}) as socket_:
                 runtime.peer = Peer(socket_, runtime.db, "bucket-0", runtime.on_command)
                 peer_task = asyncio.create_task(runtime.peer.run())
-                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{cu_port}",
-                    timeout=100, trust_env=False, headers={"Connection": "close"}) as client:
+                async def gateway_connection():
+                    async def reject(event):
+                        raise AssertionError("unexpected gateway command")
+                    async with connect(f"ws://127.0.0.1:{gateway_port}/internal/events/ws", proxy=None,
+                                       additional_headers={"X-Bucket-ID": "bucket-0"}) as sock:
+                        await Peer(sock, runtime.db, "bucket-0", reject, journal_peer="gateway", protocol="agent-gateway/1").run()
+                gateway_task = asyncio.create_task(gateway_connection())
+                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{gateway_port}",
+                    timeout=request_seconds + 10, trust_env=False, headers={"Connection": "close"}) as client:
                     payload = {"chat_id": "chat", "user_id": "alice", "content": "Generate the report", "request_id": "req-test",
                         "attachments": [{"url": f"http://127.0.0.1:{model_port}/input.txt",
                                          "filename": "input.txt", "content_type": "text/plain"}]}
@@ -231,16 +245,20 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     assert result["usage"]["output_tokens"] > 0
                     assert uploaded == [b"generated report"]
                     assert not input_downloads
-                    raw_events = app.state.service.db.records("opencode_event")
+                    raw_events = gateway.state.service.db.records("opencode_event")
+                    assert not app.state.service.db.records("opencode_event")
                     own_events = [e["payload"]["event"] for e in raw_events if e["request_id"] == "req-test"]
                     assert any(e["type"] == "message.part.updated" and
                                e["properties"]["part"]["type"] == "reasoning" for e in own_events), own_events
                     assert any(e["type"] == "message.part.delta" for e in own_events)
-                    assert any(e["type"] == "tool.execute.before" for e in own_events)
-                    assert any(e["payload"]["event"]["type"] == "session.created" for e in raw_events)
+                    assert not any(e["type"] == "tool.execute.before" for e in own_events)
+                    assert any(e["type"] == "message.part.updated" and
+                               e["properties"]["part"]["type"] == "tool" for e in own_events)
+                    assert any(e["payload"]["event"]["type"] == "session.status" for e in raw_events)
                     alice_row = runtime.db.get("run", "req-test")
                     session_info = await runtime.run_client(alice_row).session(alice_row["session_id"])
                     context = session_info["metadata"]["bucket_runtime"]
+                    assert "execution" not in context
                     assert context["frontend_id"] == "web" and context["user_id"] == "alice"
                     assert context["chat_id"] == "chat"
                     assert "conversation_id" not in context and "conversation_id" not in result
@@ -322,7 +340,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     assert not (cancel_workspace / "survived").exists()
                     row = runtime.db.get("run", "req-test")
                     with pytest.raises(PermissionError):
-                        runtime.authorize(row["session_id"], "late", "bash", {"command": "echo bad"})
+                        runtime.active_request(row["request_id"])
                     # Independent bwrap check: another user's directory and runtime secrets are absent.
                     private = tmp_path / "other-user"
                     private.mkdir()
@@ -334,10 +352,10 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     assert check == {"output": "public skill", "exit_code": 0}
         finally:
             await runtime.shutdown()
-            for task in [peer_task, event_task]:
+            for task in [peer_task, event_task, sse_task, gateway_task]:
                 if task:
                     task.cancel()
-            await asyncio.gather(*(t for t in [peer_task, event_task] if t), return_exceptions=True)
+            await asyncio.gather(*(t for t in [peer_task, event_task, sse_task, gateway_task] if t), return_exceptions=True)
             await supervisor.stop()
             runtime.db.close()
     output = capfd.readouterr().out

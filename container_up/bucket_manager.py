@@ -1,4 +1,4 @@
-"""Kubernetes workload lifecycle. All runtime traffic still uses the CU WebSocket."""
+"""Kubernetes workload lifecycle; CU WebSocket carries bucket control traffic."""
 from __future__ import annotations
 
 import asyncio

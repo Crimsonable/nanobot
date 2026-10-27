@@ -1,0 +1,13 @@
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /mnt/source
+# Business source is mounted read-only from opencode-source-pvc at deployment.
+COPY requirements-backend.lock /opt/build/requirements.lock
+COPY vendor/wheels /opt/build/wheels
+RUN pip install --no-index --find-links=/opt/build/wheels --require-hashes -r /opt/build/requirements.lock \
+    && rm -rf /opt/build
+RUN useradd --uid 10001 --create-home agent && mkdir /data && chown agent:agent /data
+USER 0:0
+EXPOSE 8000
+CMD ["python", "-m", "channel_gateway", "--config", "/mnt/common/frontends.json"]

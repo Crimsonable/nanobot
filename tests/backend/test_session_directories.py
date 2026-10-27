@@ -77,6 +77,7 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
     async with httpx.AsyncClient(base_url="http://opencode", params={"directory": str(config.opencode.context_root)},
                                 transport=httpx.MockTransport(handle)) as client.http:
         runtime = Runtime(config, client, SimpleNamespace(kill=kill))
+        runtime.native_events.connected.set()
 
         async def send(user, chat, request_id):
             submit = Submit(request_id=request_id, chat_id=chat,
@@ -104,6 +105,7 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
             assert {directory for _, _, directory in calls} == {alice["directory"], bob["directory"]}
             runtime.db.close()
             runtime = Runtime(config, client, SimpleNamespace(kill=kill))
+            runtime.native_events.connected.set()
             resumed = await send("alice", "chat-1", "after-restart")
             assert resumed["session_id"] == alice["session_id"]
             assert len(sessions) == 3
@@ -150,6 +152,7 @@ async def test_recovery_and_cancellation_use_persisted_request_directory(tmp_pat
     await client.http.aclose()
     async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
         runtime = Runtime(config, client, SimpleNamespace(kill=kill))
+        runtime.native_events.connected.set()
         try:
             for user in ["alice", "bob"]:
                 submit = Submit(request_id=user, chat_id="same", identity=Identity(frontend_id="web", user_id=user),

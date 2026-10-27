@@ -1,3 +1,4 @@
+from tests.backend.support import plugin_scope
 import json
 import shutil
 import sys
@@ -12,7 +13,8 @@ from bucket_runtime.runtime import Runtime
 from bucket_runtime.sandbox_executor import SandboxExecutor
 from bucket_runtime.supervisor import Supervisor
 from container_up.bucket_manager import BucketManager
-from container_up.server import ControlService, Inbound
+from agent_backend.ingress import Inbound
+from container_up.server import ControlService
 
 
 @pytest.fixture
@@ -79,9 +81,9 @@ async def test_models_permissions_and_templates_are_selected_per_frontend(regist
             assert not (runtime.workspace(submit) / "AGENTS.md").exists()
             for filename in ["opencode-server.json", "user-permissions.yaml", "session-logging.json", "future-secret.txt"]:
                 with pytest.raises(PermissionError, match="outside user permission scope"):
-                    runtime.authorize(frontend, filename, "read", {"filePath": str(path.parent / frontend / "config" / filename)})
-            runtime.authorize(frontend, "public", "read", {"filePath": str(path.parent / frontend / "app/manual.txt")})
-            runtime.authorize(frontend, "search", "grep", {"path": str(path.parent / frontend / "app"), "pattern": "secret"})
+                    plugin_scope(runtime, frontend, filename, "read", {"filePath": str(path.parent / frontend / "config" / filename)})
+            plugin_scope(runtime, frontend, "public", "read", {"filePath": str(path.parent / frontend / "app/manual.txt")})
+            plugin_scope(runtime, frontend, "search", "grep", {"path": str(path.parent / frontend / "app"), "pattern": "secret"})
         finally:
             runtime.db.close()
             await supervisor.stop()
@@ -172,7 +174,8 @@ async def test_one_cu_keeps_bucket_pools_and_retirement_frontend_scoped(registry
 
     async def ensure(bucket_id, frontend_id=None):
         started.append((bucket_id, frontend_id))
-        service.peers[bucket_id] = SimpleNamespace(closed=False)
+        from unittest.mock import AsyncMock
+        service.peers[bucket_id] = SimpleNamespace(closed=False, session_call=AsyncMock())
 
     async def scale(bucket_id, replicas):
         scaled.append((bucket_id, replicas))
@@ -185,7 +188,7 @@ async def test_one_cu_keeps_bucket_pools_and_retirement_frontend_scoped(registry
         assert started == [(first["bucket_id"], "web-a"), (second["bucket_id"], "web-b")]
         assert {b["frontend_id"] for b in service.db.records("bucket")} == {"web-a", "web-b"}
         for request in service.db.records("request"):
-            service.db.put("request", request["request_id"], {**request, "result": {"content": "done"}})
+            service.db.put("request", request["request_id"], {**request, "result": {"request_id": request["request_id"], "status": "completed", "error": None}})
         for bucket in service.db.records("bucket"):
             service.db.put("bucket", bucket["bucket_id"], {**bucket, "last_active_at": time.time() - 10})
             for event in service.db.pending(bucket["bucket_id"]):

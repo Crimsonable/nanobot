@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from web_server.app import app
 
 
-def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
+def test_web_server_inbound_forwards_to_gateway(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class _FakeResponse:
@@ -34,7 +34,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
             captured["headers"] = headers
             return _FakeResponse()
 
-    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
+    monkeypatch.setattr("web_server.app.GATEWAY_BASE_URL", "http://channel-gateway:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
 
     with TestClient(app) as client:
@@ -52,7 +52,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "identity_id": "u-1"}
-    assert captured["url"] == "http://container-up:8000/inbound/web-main"
+    assert captured["url"] == "http://channel-gateway:8000/inbound/web-main"
     assert captured["json"] == {
         "user_id": "u-1",
         "chat_id": "chat-1",
@@ -64,7 +64,7 @@ def test_web_server_inbound_forwards_to_container_up(monkeypatch) -> None:
 
 
 def test_web_server_inbound_propagates_http_error(monkeypatch) -> None:
-    request = httpx.Request("POST", "http://container-up:8000/inbound/web-main")
+    request = httpx.Request("POST", "http://channel-gateway:8000/inbound/web-main")
     response = httpx.Response(503, request=request, text="backend unavailable")
 
     class _FakeAsyncClient:
@@ -80,7 +80,7 @@ def test_web_server_inbound_propagates_http_error(monkeypatch) -> None:
         async def post(self, url: str, json: dict[str, object], headers: dict[str, str] | None = None):
             raise httpx.HTTPStatusError("failed", request=request, response=response)
 
-    monkeypatch.setattr("web_server.app.CONTAINER_UP_BASE_URL", "http://container-up:8000")
+    monkeypatch.setattr("web_server.app.GATEWAY_BASE_URL", "http://channel-gateway:8000")
     monkeypatch.setattr("web_server.app.httpx.AsyncClient", _FakeAsyncClient)
 
     with TestClient(app) as client:

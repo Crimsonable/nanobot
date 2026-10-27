@@ -58,7 +58,7 @@ spec:
             - name: MCP_API_KEY
               value: "replace-with-a-long-random-service-token"
             - name: CONTAINER_UP_BASE_URL
-              value: "http://container-up.opencode-sv.svc.cluster.local:8000"
+              value: "http://channel-gateway.opencode-sv.svc.cluster.local:8000"
             # 必须对应 common/frontends.json 中已有的 frontend。
             - name: CONTAINER_UP_FRONTEND_ID
               value: "web-test"

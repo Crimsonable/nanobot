@@ -7,34 +7,39 @@
 ```text
 渠道 / 业务前端
   ↕ HTTP / 平台订阅
-container_up.server                 用户→bucket、渠道投递
-  ↕ /internal/buckets/ws            双向控制 / 事件 / 附件引用
-bucket_runtime.runtime              用户→chat_id→session、状态、权限、附件发布
-  ├─ OpenCodeClient → opencode serve  回环 HTTP 提交/控制，一个 bucket 一个实例
-  ├─ OpenCode 插件 → runtime → CU  全量事件与最终回复回调
-  ├─ 可信插件 → 私有 runtime RPC       before hook / publish_attachment
-  └─ 插件包装 command → OpenCode 原生 bash → flock → bwrap → 用户命令
+channel_gateway.server             渠道接入、原生事件消费、最终外发
+  → 内部 HTTP → container_up.server 用户→bucket、调度、迁移
+                       ↕ /internal/buckets/ws 双向控制与执行状态
+                  bucket_runtime.runtime
+                       ├─ OpenCodeClient → opencode serve
+                       ├─ OpenCode SSE → 关联/过滤 → Gateway /internal/events/ws
+                       ├─ 插件 → BU /permissions
+                       └─ publish_attachment → MinIO
 ```
 
-container_up 不直接调用 OpenCode HTTP API，也不接收模型指定的路由元数据。会话换桶时，CU 通过共享本地 state PVC 读取和迁移原生会话数据库；在线旧桶的停止与删除操作交由 runtime 调用 OpenCode。入站附件仅转发 URL/路径，不获取文件字节。publish_attachment 的 runtime 端实现持有 MinIO 凭据、校验本地文件并上传；凭据不交给模型或 bash 沙箱。WS 传递消息、事件、附件引用及少量会话迁移控制，不传历史正文。
+分层部署、事件过滤、可靠移交和旧数据库迁移详见 [CHANNEL_GATEWAY.md](CHANNEL_GATEWAY.md)。CU 不再接收内容事件或组装最终回复；渠道最终外发字段保持原版本。
 
-两个组件各自提供启动入口，`agent_backend` 仅提供配置、协议和持久化等公共库：
+container_up 不直接调用 OpenCode HTTP API，也不接收模型指定的路由元数据。会话换桶时，CU 通过共享本地 state PVC 读取和迁移原生会话数据库；在线旧桶的停止与删除操作交由 runtime 调用 OpenCode。入站附件仅转发 URL/路径，不获取文件字节。publish_attachment 的 runtime 端实现持有 MinIO 凭据、校验本地文件并上传；凭据不交给模型或 bash 沙箱。CU 控制 WS 传执行状态与会话迁移控制，Gateway 事件 WS 传原生事件与附件引用；两者都不传迁移历史正文。
+
+三个组件各自提供启动入口，`agent_backend` 仅提供配置、协议和持久化等公共库：
 
 ```bash
+python -m channel_gateway --config /mnt/common/frontends.json
 python -m container_up --config /mnt/common/frontends.json
 
 # runtime 由 CU 按需创建的 Deployment 启动，传入调度器生成的 --bucket-id 和所属 --frontend-id。
 python -m bucket_runtime --config /mnt/common/frontends.json --bucket-id "$BUCKET_ID" --frontend-id "$FRONTEND_ID"
 ```
 
-两个后端 Dockerfile 使用上述入口，依赖通过 requirements-backend.lock 固定；全部业务源码、插件及插件依赖由同一个 source PVC 挂载到 /mnt/source；业务资料、脚本和 skills 则通过各 frontend 的 common/app 挂载。所有桶只读挂载服务器 opencode 目录到 /opt/opencode，共用其中的 opencode 二进制。服务配置来自服务器挂载目录。
+三个服务的 Dockerfile 使用上述入口，依赖通过 requirements-backend.lock 固定；全部业务源码、插件及插件依赖由同一个 source PVC 挂载到 /mnt/source；业务资料、脚本和 skills 则通过各 frontend 的 common/app 挂载。所有桶只读挂载服务器 opencode 目录到 /opt/opencode，共用其中的 opencode 二进制。服务配置来自服务器挂载目录。
 
 ## 已落地的实现选择
 
-- bash 的 before hook 调用 `/authorize`，runtime 根据可信 session（包含子会话的父链）、当前请求和用户配置返回已校验的启动参数与剩余超时。插件逐项 shell 转义，用 `exec` 包装原始命令，再交给 OpenCode 原生 bash 执行。没有命令执行票据、`exec_client.py` 或 `/execute` RPC；附件发布仍使用独立授权票据。
-- runtime 的沙箱参数构造器与启动探测保留，业务命令的输出、退出码、输出截断和进程生命周期由 OpenCode 原生 bash 管理；不再使用 runtime 的 `limits.output_bytes` 对业务 bash 输出做硬性终止。超时取工具超时（默认 120 秒）与请求剩余时间的较小值。
+- 普通工具的 before hook 调用 BU `/permissions`，仅传 session_id 和 directory。BU 根据活动请求返回当前用户的路径权限、沙箱配置和截止时间；根会话直接查本地请求记录，子会话沿 OpenCode parentID 查找，不保存额外子会话授权缓存。插件本地检查文件路径，构建并逐项转义 flock/bwrap 参数，再交给 OpenCode 原生 bash 执行。权限配置不写入 OpenCode metadata，插件不查询 OpenCode。
+- 附件由 OpenCode 调用 `publish_attachment` 工具。该工具跳过 before hook 的权限查询，直接 POST `/publish`，传入 session_id、directory、message_id、files；BU 在该接口内检查活动请求、工具权限、工作目录范围、文件类型和大小，然后上传并记录结果。没有 `/authorize`、授权票据或第二次权限查询，上传按 request_id、message_id 和文件列表去重。
+- runtime 的沙箱启动探测保留，业务命令参数构造迁入插件，业务命令的输出、退出码、输出截断和进程生命周期由 OpenCode 原生 bash 管理；不再使用 runtime 的 `limits.output_bytes` 对业务 bash 输出做硬性终止。超时取工具超时（默认 120 秒）与请求剩余时间的较小值。
 - `/usr/bin/flock` 在沙箱外持有用户执行锁，与 runtime 的附件发布共享同一文件锁；锁文件位于 state_root/execution-locks，不挂载到沙箱。取消经 OpenCode abort 传递，bwrap 保留 PID namespace 和 die-with-parent。
-- 此接口使用插件协议版本 6，runtime 与编译后的插件必须一起升级并重启 bucket；旧插件握手会被拒绝。runtime 镜像须提供 util-linux 的 `/usr/bin/flock`。
+- 此接口使用插件协议版本 9，runtime 与编译后的插件必须一起升级并重启 bucket；旧插件握手会被拒绝。runtime 镜像须提供 util-linux 的 `/usr/bin/flock`。
 - OpenCode 原生历史保留实际执行的包装命令；插件通过 messages.transform 在发给模型前还原本版本包装的原始 command 和沙箱 workdir，重启后也可还原，避免模型模仿内部包装。该转换不改变原始事件或持久化历史，也不解析旧版本的 exec_client 命令。
 
 - 构建与实测使用 OpenCode **1.18.31 / Linux x64**；运行时不限制版本号或二进制哈希，启动仅检查服务健康状态。构建产物的完整性校验见 vendor 脚本。
@@ -45,12 +50,12 @@ python -m bucket_runtime --config /mnt/common/frontends.json --bucket-id "$BUCKE
 - 启用 bwrap 时仅挂载当前用户允许的目录、公共只读根及基础运行库；network 控制网络 namespace，PID namespace 和干净环境保留。初始化失败拒绝执行，不自动降级。frontend 桶拒绝 sandbox.enabled=false。
 - 单用户请求串行，文件操作另有互斥；不同用户并发上限由 `limits.active` 控制。执行票据绑定 session/call/request，重复执行返回已有结果，不再次启动命令。
 - 动态池先按 frontend 分桶，再使用 frontend_id/user_id 目录布局，每个 bucket 只挂载自己 frontend 的用户目录子树。frontend ID 原样校验使用；数据库记录用户目录归属，拒绝 user_id 清洗规则产生的身份碰撞。用户只在有未完成请求或分配中的请求时占用桶容量；下一次空闲后的分配只取决于活跃桶容量。会话位置由 CU 按 frontend、用户和 chat_id 独立持久化；换桶时原生历史经 CU 内存迁移，保持 session_id，删除旧桶副本，详见 SESSION_LOGGING.md。
-- CU 与每个 bucket 使用独立 SQLite。状态和 outbox 原子提交，ACK 后删除待发送记录，inbox 去重；数据库文件有进程级单写锁。断线重放消息，重复 request_id 校验请求 hash。
+- Gateway、CU 与每个 bucket 使用独立 SQLite。状态和 outbox 原子提交，ACK 后删除待发送记录，inbox 去重；数据库文件有进程级单写锁。断线重放消息，重复 request_id 校验请求 hash。
 - WS 每个已登记的连接绑定一个 bucket，新连接关闭旧连接，旧 handler 拒绝继续处理。执行中及排队请求维持临时用户绑定，CU 重启后恢复其原桶；空闲用户不保留桶绑定。
 - WebSocket 传业务事件、ACK 和内存中的会话停止/删除控制；历史由 CU 读取共享 state PVC，不经 WS 传输。业务事件发送由 outbox 入队唤醒，断线重连重发未确认事件。
-- 事件只走 OpenCode 插件 → runtime → CU。插件通过带鉴权的 /plugin/event 将 event hook 收到的全部原始事件逐条推送，包括思考、正文增量、工具、会话状态、未知类型及终态之后的事件；工具执行前还推送原始参数。runtime 将这些事件写入可靠 outbox，CU 完整保存为 opencode_event 记录。原始事件不节流、不截断，不因缺少 request_id 而丢弃；确定请求归属时核对 session_id、input_message_id、directory 并附加可信用户与 chat_id。runtime 只转发事件并报告执行终态及附件；CU 从已收到的完整 part 快照和消息完成状态提取最终正文与用量，仅向渠道发送最终结果，思考和工具中间内容不进入渠道消息。工具消息和 idle 不提前结束请求。runtime 不订阅 SSE，不轮询或补查消息；提交连接结果不确定时只等待插件回调至截止时间，重启前未持久化终态的执行中请求标记 EXECUTION_INTERRUPTED。
-- 取消会终止沙箱进程树，已完成终态不可覆盖。提交结果不确定时等待插件事件；进程重启后将未完成的执行标记为 `EXECUTION_INTERRUPTED`，不自动重跑有副作用的任务。
-- 执行完成与渠道交付分开记录。外部发送状态不确定时记录 `unknown`，不盲目重试。
+- 事件链为 OpenCode server → /global/event SSE → runtime → WebSocket → Gateway。BU 的全局订阅覆盖所有用户目录，读取原生 directory/payload，按 session/message 关联用户、chat_id 和 request_id，并保留原始事件。插件不再转发事件，/plugin/event 和合成的 tool.execute.before 事件已删除；工具状态直接来自原生 tool part。server.heartbeat 不落业务队列，其余事件按 frontend.event_forwarding 过滤，未知类型默认不外发。runtime 使用原生事件 id 去重，将输入落 native_pending，再消费到可靠 outbox；Gateway 保存为 opencode_event，并从已收到的完整 part 快照和消息完成信息提取最终正文与用量，只向渠道发送最终结果。工具消息完成不结束请求；根会话原生 busy/retry→idle 驱动执行结束，子会话 idle 不结束父请求。启动及新请求提交等待 SSE 就绪，断线自动重连；SSE 没有已验证的历史回放保证，断线期间可能丢原生事件，缺少终态时按原请求截止时间失败，不重复提交或轮询补查消息。重启前未持久化终态的执行中请求标记 EXECUTION_INTERRUPTED。
+- 取消会终止沙箱进程树，已完成终态不可覆盖。提交结果不确定时等待原生 SSE 事件；进程重启后将未完成的执行标记为 `EXECUTION_INTERRUPTED`，不自动重跑有副作用的任务。
+- CU 执行完成与 Gateway 渠道交付分开记录。外部发送状态不确定时记录 `unknown`，不盲目重试。
 
 共享 OpenCode 主进程仍属于可信服务，并不拥有每用户独立的 OS 权限。OS 隔离覆盖的是 bwrap 执行的命令；用户不可直连 OpenCode/RPC 端口。这不是“共享主进程内核级多租户隔离”的承诺。
 
@@ -62,9 +67,9 @@ python -m bucket_runtime --config /mnt/common/frontends.json --bucket-id "$BUCKE
 
 出站由 OpenCode 主动调用 `publish_attachment(files=[{path, filename?}])`。runtime 验证会话、用户、工具开关、票据、路径和文件大小；仅接受用户工作目录内的普通非链接文件，生成本地快照后直接上传 MinIO，取得对象 URL。幂等记录保存在 bucket 数据库，重复调用不重复上传。存储失败会返回工具错误，不登记成功 URL。
 
-上传成功后，工具返回对象 URL，runtime 将附件元数据加入本轮结果，经 WS 发给 CU。Web 返回正文和 attachments；QXT/飞书将对象 URL 作为文本链接发送，CU 不重新下载上传文件。工具成功代表对象已上传并加入待回复附件，最终渠道投递状态由 CU 记录。
+上传成功后，工具返回对象 URL，runtime 将附件元数据加入本轮结果，经独立事件 WS 发给 Gateway。Web 返回正文和 attachments；QXT/飞书将对象 URL 作为文本链接发送，Gateway 不重新下载上传文件。工具成功代表对象已上传并加入待回复附件，最终渠道投递状态由 Gateway 记录。
 
-MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，使用 access_key、secret_key、key_prefix、presign_expiry_seconds 字段。bucket 内的发布工具读取它并上传；CU 仅转发 URL。public_base_url 为空时返回签名 URL，CU 不续签。
+MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，使用 access_key、secret_key、key_prefix、presign_expiry_seconds 字段。bucket 内的发布工具读取它并上传；Gateway 仅使用 URL。public_base_url 为空时返回签名 URL，Gateway 不续签。
 
 `config/opencode/web-test/app/skills/` 提供报告、HTML→PDF、图片压缩及附件发布工具说明。模型可自行获取需要的资源，再把本地路径交给报告脚本；报告脚本不自动下载远程图片。
 
@@ -78,7 +83,7 @@ MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，使�
 - `config/opencode/web-test/config/session-logging.json`：部署到该 frontend 的 config/，由 runtime.logging_file 指定，控制 runtime 向 bucket stdout 输出四字段精简日志（user_id、frontend_id、chat_id、content）。身份由 runtime 关联请求和 OpenCode 会话 metadata，详见 [日志与 ID 约定](SESSION_LOGGING.md)。
 - `common/<id>/app/templates/` 与 `app/skills/`：该 frontend 自己的模板和技能，通过 common 挂载供所属 bucket 使用。
 
-CU 的入站、查询、取消和附件引用接口不需要 API key；Web 代理及隐患专家调用 CU 不发送 Authorization。保留 frontend 注册校验和请求/bucket 归属检查。模型、MinIO、渠道凭据，以及桶内部自动生成的插件调用凭据仍属于各自用途。
+Gateway 的入站、查询、取消和附件引用接口不需要 API key；Web 代理及隐患专家调用 Gateway 不发送 Authorization。保留 frontend 注册校验和请求/bucket 归属检查。模型、MinIO、渠道凭据，以及桶内部自动生成的插件调用凭据仍属于各自用途。
 
 ### 用户权限开关和目录范围
 
@@ -137,7 +142,7 @@ APT、Chromium 和基础镜像获取发生在构建期；离线环境导入完�
 
 CU 通过数据库事务预占名额、复用未满 bucket、按需创建 Deployment，空闲后 scale 到 0。一个 bucket 只有一个 runtime 和一个 OpenCode server，多个用户各自使用 session。
 
-1. 全新部署只有 CU（以及 Service/RBAC/PVC 等资源），没有 bucket Pod。
+1. 全新部署只有一个包含 CU 与 Gateway 两个容器的单副本 Pod（以及 Service/RBAC/PVC 等资源），没有 bucket Pod。Gateway 8000 通过 localhost 调用 CU 8001；两个 Service 对 BU 均保留 8000 端口。
 2. CU 在 SQLite 的 bucket/binding 记录中原子预占用户容量。有未完成请求的用户继续使用当前桶，避免同时操作其工作区；其余用户只按本 frontend 活跃桶容量分配，没有容量则创建 bucket，不参考历史会话所在桶。
 3. max_users_per_bucket 限制正在分配或有排队/执行中请求的不同用户数；用户全部请求完成即释放名额。runtime.limits.active 另行限制同时执行的请求数，两者不是同一个限制。
 4. CU 调用 Kubernetes API 创建 Deployment，runtime 启动唯一的 OpenCode server、完成插件初始化并连接 CU 的 WS 后才派发请求。启动失败释放用户预占。换桶时，CU 在用户锁内将原生历史读入内存、删除旧桶副本、导入新桶、更新会话位置，再提交新消息。
@@ -173,7 +178,7 @@ kubectl apply -f k8s/opencode/backend.yaml
 ## 渠道与业务服务
 
 - QXT 支持 group_chat_at_bot，保留群 ID 为可信回复目标。QXT/飞书统一发送对象 URL，渠道不下载或重新上传附件。详见 ATTACHMENT_UPLOAD_API.md。
-- 新增 hazard_expert_mcp，业务客户端可上传 Base64 附件到 MinIO，再调用分析工具请求 CU /inbound-sync。部署已改用 opencode-sv、opencode-source-pvc、opencode-runtime=true 和 CU 8000 端口。它不是应注册给同一 OpenCode 的模型工具，否则可能递归请求自身。
+- 新增 hazard_expert_mcp，业务客户端可上传 Base64 附件到 MinIO，再调用分析工具请求 Gateway /inbound-sync。部署已改用 opencode-sv、opencode-source-pvc、opencode-runtime=true 和 Gateway Service 8000 端口。它不是应注册给同一 OpenCode 的模型工具，否则可能递归请求自身。
 - 订阅失败记录 frontend/chat 上下文并传播错误；取消不被吞掉。Supervisor 使用继承的 stdout/stderr，runtime serve 在 finally 停止 OpenCode 子进程。
 - Web 代理要求显式 frontend_id、user_id、chat_id，额外字段直接拒绝；代理不传递 Authorization。
 - 本地文件由 runtime publish_attachment 发布；附件引用接口支持 JSON 引用和 QXT outbound URL。业务客户端可通过 hazard_expert_mcp 上传 Base64 文件到 MinIO。
@@ -184,7 +189,7 @@ kubectl apply -f k8s/opencode/backend.yaml
 
 每个桶共用一个 OpenCode 服务和服务级认证，用户会话按 frontend/user/chat 映射，正常请求不混用历史。工作区文件通过 hook/session 规则和 bwrap 限制，但 OpenCode 主进程、MCP 等可信扩展不是按用户隔离的进程。
 
-CU 接收调用方提供的 frontend_id、user_id，不再提供入站 API key 校验。目录范围仍按这两个身份字段确定，query/cancel 校验 frontend 归属；调用业务端负责用户身份与请求归属。
+Gateway 接收调用方提供的 frontend_id、user_id，不提供入站 API key 校验。目录范围仍按这两个身份字段确定，query/cancel 校验 frontend 归属；调用业务端负责用户身份与请求归属。
 
 source 在每个服务中统一只读挂载为 /mnt/source；CU/runtime/Web 在该目录启动，MCP 在其对应项目子目录启动。插件位于 /mnt/source/opencode_plugin；业务脚本与 skills 位于 /mnt/common/<frontend_id>/app。所有桶的二进制来自同一服务器目录 /data/opencode_backend_k8s/opencode，文件 /opt/opencode/opencode 只读。更新源码、重新构建插件（npm ci && npm run build）或替换二进制均不需要重建镜像；基础依赖变化仍需更新运行环境。见 Kubernetes 部署说明中的部署更新步骤。
 
@@ -194,4 +199,12 @@ source 在每个服务中统一只读挂载为 /mnt/source；CU/runtime/Web 在�
 
 OpenCode skills.paths 中的 `/mnt/common/{frontend_id}/app/skills` 在启动时展开，越界路径拒绝启动，避免全局技能扫描读到其他 frontend 的说明。动态 bucket 分开挂载本 frontend 的 app 和 config，不挂载 frontend 根或整个 common；服务配置 frontends.json 使用独立的只读文件挂载。原生文件工具、session 路径规则和 bwrap 使用同一公共范围。相关部署准备与挂载说明见 Kubernetes 部署说明。
 
-消息发送、最终渠道投递和同步接口等待由事件唤醒；心跳及 bucket 闲置检查使用定时器。插件无投递缓冲，runtime 持久化待处理和待转发事件；对话正文只由 OpenCode 持久化，runtime 不复制对话或追加 delta；CU 使用已收到的事件生成最终渠道回复。调用方必须提供非空 chat_id。
+Gateway 消息发送、最终渠道投递和同步接口等待由事件唤醒；心跳及 bucket 闲置检查使用定时器。插件无投递缓冲，runtime 持久化待处理和待转发事件；对话正文只由 OpenCode 持久化，runtime 不复制对话或追加 delta；Gateway 使用已收到的事件生成最终渠道回复。调用方必须提供非空 chat_id。
+
+### 权限查询与附件发布
+
+用户路径权限来自 BU 加载的 user-permissions.yaml，包含工作目录 read_write/read_only/none 和额外公共只读目录。BU 返回解析后的绝对路径及沙箱设置，插件仅保留通用校验/封装逻辑，不另存用户权限配置。取消或过期的请求不能获取权限，也不能发布附件。
+
+session metadata 继续保存用户、chat_id 和请求关联，不保存 execution 权限副本。曾写入 execution 的旧 session 在下一次提交前随 set_context 更新移除该字段。插件协议为 9，部署需同步更新 BU 与编译后的插件并重启。原始事件由 BU 订阅 server 的 /global/event SSE，按 frontend 过滤后通过 Gateway 事件 WebSocket 转发。
+
+测试前执行 `npm ci --prefix opencode_plugin && npm run build --prefix opencode_plugin`；Python 隔离测试调用实际 TypeScript 权限实现，需要 Node.js（可通过 NODE_BINARY 指定路径）。真实 OpenCode 联调可通过 OPENCODE_TEST_REQUEST_SECONDS 调整测试超时，不改变生产默认值。

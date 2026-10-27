@@ -33,7 +33,7 @@ async def test_preserves_conversation_identity_query_and_signed_urls(settings, c
             assert (result.user_id, result.chat_id) == (user, chat)
             assert "bucket_id" not in result.model_dump()
             request = requests[-1]
-            assert str(request.url) == "http://container-up:8080/inbound-sync/web-wd"
+            assert str(request.url) == "http://channel-gateway:8000/inbound-sync/web-wd"
             assert "Authorization" not in request.headers
             assert json.loads(request.content) == {
                 "user_id": user,

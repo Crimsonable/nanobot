@@ -14,23 +14,25 @@ kubectl -n opencode-sv logs -f <bucket-pod名称> -c runtime
 
 ## 唯一事件链
 
-`OpenCode 插件 → runtime → CU`。插件不生成第二套进度或结果协议。思考、正文、工具、会话、未知类型、终态后的事件均原样转发；工具执行前发送原始参数。
+`OpenCode server → GET /global/event (SSE) → BU/runtime → WebSocket → Gateway`。BU 的单个全局订阅覆盖所有用户工作目录；插件不再订阅、构造或转发事件，旧 /plugin/event 接口已删除。被 frontend 过滤规则选中的事件保留原始 payload；未知类型、reasoning 和子会话默认不外发；server.heartbeat 只用于保活，不进入业务队列。工具过程使用原生 message.part.updated 的 tool part，不再额外生成 tool.execute.before 事件。
 
-插件只附带 directory 和用于去重的 event_id，原始事件保持不变。插件不推导业务 ID，不维护映射、投递缓冲或磁盘队列，不重试，也不输出会话日志。单次 RPC 失败直接返回错误；未送达 runtime 的事件不提供恢复保证。
+BU 从全局帧读取 directory 与 payload，沿用原生事件 id 作为 event_id（没有 id 时生成传输 ID）。连接控制事件没有 directory 时使用 global，无法关联的事件不附加用户身份。BU 按 session ID 及已有请求/会话信息附加 frontend_id、user_id、chat_id；精确 request_id 还需要 message 的 parentID 等关联，不能只凭 session ID 猜当前请求。
 
-runtime 接收到事件后，将原始事件与去重标记事务性写入 runtime.sqlite 的 plugin_pending，提交后立即 ACK。独立消费者按接收顺序推导身份和请求归属，并写入发往 CU 的 outbox；只维护路由标识与请求执行状态，不保存消息正文或 parts，不拼接 delta；成功后删除待处理项。outbox 满时保留待处理事件，稍后重试；格式或归属错误的事件保存在 plugin_failed，后续事件继续处理。runtime 重启后继续消费已接收的队列。日志在消费事务成功后输出，stdout 本身不保证跨崩溃恰好一次。
+runtime 将收到的事件与去重标记事务性写入 runtime.sqlite 的 native_pending。独立消费者按接收顺序推导身份和请求归属，按 frontend.event_forwarding 过滤后写入发往 Gateway 的 outbox；路由状态只保存标识和请求执行状态，不额外保存消息历史或拼接 delta，待发送队列仍临时保留原始内容。消费成功后删除待处理项。outbox 满时保留待处理事件；格式或归属错误保存在 native_failed，后续事件继续处理。升级时迁移旧 plugin_pending/plugin_failed 及去重记录，重启后继续消费已接收队列。日志在消费事务成功后输出，stdout 本身不保证跨崩溃恰好一次。
 
-runtime 收到原生完成状态后结束对应执行，并通知 CU 请求已结束及附件信息。CU 使用已经收到的 message.part.updated 完整快照和 message.updated 完成信息生成最终回复与用量，只有最终结果进入渠道投递。原生 delta 仍转发、留作事件记录，但不参与最终正文拼接。对话持久化由 OpenCode 负责；runtime 不回查消息、不轮询回复。
+BU 在 SSE 的 server.connected 到达后才就绪，并在创建会话及提交 prompt 前等待连接。断线后撤销 SSE 就绪状态并自动重连，不重复提交 prompt。该接口没有已验证的历史回放保证，因此断线期间的原生事件可能缺失；若缺少完成事件，请求会在原有截止时间失败。已进入 BU 队列的事件仍由 WebSocket ACK/重发保障送达。BU 不用 Last-Event-ID 宣称可恢复缺失事件，也不轮询补查回复。
 
-runtime 与 CU 的 WebSocket 传可靠业务事件、ACK，以及不落 outbox 的会话迁移控制（停止会话执行、删除旧会话）。迁移控制用原生 session_id 关联响应，不增加迁移 ID，历史正文不通过 WS 传输。业务事件由 outbox 入队唤醒发送任务；重连重发尚未确认事件，接收端去重。大事件切成 256 KiB 片段，CU 持久化并完整重组。CU 最终投递和同步 HTTP 等待也使用事件通知。
+runtime 收到当前根会话 session.status 的 idle 后结束对应执行，向 CU 只报告执行状态，向 Gateway 发送本轮结果边界及附件信息。Gateway 使用 message/part 快照及选中的 delta 更新渠道消息状态，只有最终结果进入现有渠道投递。对话持久化由 OpenCode 负责；runtime 不回查消息、不轮询回复。
 
-插件握手版本为 5。CU、runtime 与构建后的插件使用同一版本源码。
+runtime 与 CU 的 WebSocket 传控制状态、ACK，以及不落 outbox 的会话迁移控制（停止会话执行、删除旧会话）。迁移控制用原生 session_id 关联响应，不增加迁移 ID，历史正文不通过 WS 传输。业务事件由 outbox 入队唤醒发送任务；重连重发尚未确认事件，接收端去重。内容走 BU→Gateway 独立 WebSocket。大事件切成 256 KiB 片段，Gateway 持久化并完整重组。Gateway 最终投递和同步 HTTP 等待也使用事件通知。
+
+插件握手版本为 9。CU、runtime 与构建后的插件使用同一版本源码。
 
 ## 身份和会话
 
 调用方必须提供 frontend_id、user_id、chat_id。runtime 在用户工作目录创建 OpenCode 会话，同一 frontend/user/chat 始终复用原生 session。不同 chat 使用不同 session，同一用户的文件目录相同。
 
-会话 metadata.bucket_runtime 包含 schema_version、frontend_id、user_id、identity_id、bucket_id、chat_id、input_message_id、requests。runtime 从自己记录的请求、原生会话和消息事件获取身份；无法确定请求的事件不猜测当前请求。子会话身份来自 parentID 关联，工具授权由 runtime 检查。
+会话 metadata.bucket_runtime 包含 schema_version、frontend_id、user_id、identity_id、bucket_id、chat_id、input_message_id、requests。runtime 从自己记录的请求、原生会话和消息事件获取身份；无法确定请求的事件不猜测当前请求。子会话身份来自 parentID 关联，工具权限由插件按 session ID 查询 BU，插件检查路径并封装命令；BU 为子会话解析父链。附件工具直接调用发布接口，由 BU 一次完成权限校验及上传。
 
 用户仅在有未完成请求或正在分配时占用 bucket 容量，全部请求结束即释放绑定。下次请求按本 frontend 活跃 bucket 的剩余容量分配；闲置后已停止的 bucket 不因用户曾经使用而重新分配给该用户。用户工作目录保持不变。
 

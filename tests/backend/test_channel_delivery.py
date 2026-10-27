@@ -5,7 +5,7 @@ import pytest
 
 from agent_backend.config import ControlConfig
 from agent_backend.models import Attachment, Result
-from container_up.channel_service import ChannelService
+from channel_gateway.channel_service import ChannelService
 
 
 @pytest.fixture

@@ -8,6 +8,7 @@ import httpx
 
 from agent_backend.config import OpenCodeConfig
 
+
 class OpenCodeClient:
     def __init__(self, config: OpenCodeConfig, password: str):
         self.config = config
@@ -31,6 +32,28 @@ class OpenCodeClient:
         response.raise_for_status()
         data = response.json()
         return bool(data.get("healthy"))
+
+    async def events(self):
+        """One global stream covers every workspace on this OpenCode server.
+
+        OpenCode has no replay contract here; reconnecting starts a live stream.
+        Dispatch only complete SSE frames, including multi-line JSON data.
+        """
+        async with self.http.stream("GET", "/global/event",
+                headers={"Accept": "text/event-stream"},
+                timeout=httpx.Timeout(30, read=45)) as response:
+            response.raise_for_status()
+            if response.headers.get("content-type", "").split(";", 1)[0] != "text/event-stream":
+                raise ValueError("OpenCode did not return an event stream")
+            data = []
+            async for line in response.aiter_lines():
+                if not line:
+                    if data:
+                        yield json.loads("\n".join(data))
+                        data.clear()
+                elif line.startswith("data:"):
+                    value = line[5:]
+                    data.append(value[1:] if value.startswith(" ") else value)
 
     async def create_session(self, permissions: list[dict], context: dict) -> str:
         response = await self.http.post("/session", params=self.params, json={"title": "Managed conversation",

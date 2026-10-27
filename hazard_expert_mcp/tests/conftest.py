@@ -6,7 +6,7 @@ from hazard_expert_mcp.config import Settings
 @pytest.fixture
 def settings():
     return Settings(
-        container_up_base_url="http://container-up:8080",
+        container_up_base_url="http://channel-gateway:8000",
         container_up_frontend_id="web-wd",
         minio_endpoint="http://minio:9000",
         minio_download_endpoint="https://files.example.com",

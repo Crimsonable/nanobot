@@ -5,16 +5,16 @@
 | 工具 | 用途 |
 | --- | --- |
 | `upload_attachment`（上传附件至 MinIO） | 接收文件内容的 Base64，上传 MinIO，返回预签名下载 URL |
-| `hazard_analysis_expert`（隐患识别与分析专家） | 将当前用户 ID、会话 ID、问题及附件 URL 转发给 container-up 的 `inbound-sync`，等待最终回答 |
+| `hazard_analysis_expert`（隐患识别与分析专家） | 将当前用户 ID、会话 ID、问题及附件 URL 转发给 channel-gateway 的 `inbound-sync`，等待最终回答 |
 
-专家能力由当前 frontend 的 OpenCode 模型、提示词及技能提供：模型/provider 配置位于 `common/<frontend_id>/config/opencode-server.json`，用户权限位于同目录的 `user-permissions.yaml`，业务资料和技能位于 `app/`。本服务是业务客户端的入口，内部分析工具调用 CU；不要将它注册为同一 CU 的 OpenCode 模型工具，以免递归调用自身。
-上传直接使用 MinIO S3 API，无需依赖 container-up 上传接口，也不自动创建桶。
+专家能力由当前 frontend 的 OpenCode 模型、提示词及技能提供：模型/provider 配置位于 `common/<frontend_id>/config/opencode-server.json`，用户权限位于同目录的 `user-permissions.yaml`，业务资料和技能位于 `app/`。本服务是业务客户端的入口，内部分析工具调用 Gateway；不要将它注册为同一后端的 OpenCode 模型工具，以免递归调用自身。
+上传直接使用 MinIO S3 API，无需依赖 channel-gateway 上传接口，也不自动创建桶。
 
 ## Docker Compose 部署
 
 修改本目录 **`docker-compose.yml`** 中的配置。本服务的环境变量集中在此文件，源码通过只读挂载加载，镜像只提供 Python 与依赖：
 
-1. 设置 `CONTAINER_UP_BASE_URL` 为已部署的 container-up 地址；示例通过宿主机的 NodePort 30080 访问 Kubernetes CU。本地直接启动 CU 时改用其实际监听端口，默认 8000。
+1. 设置 `CONTAINER_UP_BASE_URL` 为已部署的 channel-gateway 地址；示例通过宿主机的 NodePort 30081 访问 Kubernetes Gateway。本地直接启动 Gateway 时改用其实际监听端口，默认 8000。
 2. 设置 `CONTAINER_UP_FRONTEND_ID` 为 `common/frontends.json` 中已注册的 frontend，示例为 `web-test`。会话与工作空间按 frontend 和 user_id 隔离。
 3. 设置 MinIO API 地址、桶名、凭证。桶需存在，凭证需有该桶目标前缀的 `PutObject` 和 `GetObject` 权限。
 4. 设置 `MINIO_DOWNLOAD_ENDPOINT` 为调用方及 OpenCode 工具都可访问的同一 MinIO S3 服务地址。它是 `https://files.example.com` 这样的 origin，不包含桶名、路径前缀、查询参数。生成链接时直接对此地址签名，不能在生成后替换域名。留空则沿用 `MINIO_ENDPOINT`。
@@ -27,9 +27,11 @@ docker compose logs -f hazard-expert-mcp
 ```
 
 默认 MCP 地址：`http://localhost:8082/mcp`。健康检查：`http://localhost:8082/healthz`。
-Compose 只启动此 MCP 服务，复用现有 container-up 和 MinIO。
+Compose 只启动此 MCP 服务，复用现有 channel-gateway 和 MinIO。
 `host.docker.internal` 示例用于访问 Docker 宿主机发布的端口；如果后端在其他机器，直接填写实际地址。
 Compose 将项目源码只读挂载到 `/mnt/source`，镜像以 UID 10001 运行。更新源码后重启服务即可，依赖变化时重建镜像。
+
+渠道分层不改变本服务的调用代码、请求/响应协议及 `CONTAINER_UP_*` 配置名。本服务直接调用 Gateway 的普通 Web 同步接口；原外部入口地址保持不变时无需修改配置，否则只调整 `CONTAINER_UP_BASE_URL`。
 
 ## Kubernetes 部署
 
@@ -38,9 +40,9 @@ Compose 将项目源码只读挂载到 `/mnt/source`，镜像以 UID 10001 运�
 集群部署的全部运行配置位于该 YAML 的 Deployment `env` 中，无需额外 ConfigMap、Secret 或 JSON 配置文件。
 Compose 与 Kubernetes 是两种部署入口，分别编辑各自的环境变量。
 
-1. 按 [OpenCode 部署说明](../k8s/opencode/README.md) 准备 `storage.yaml` 中的 Namespace/PVC 和 `backend.yaml` 中的 CU，目标节点具有 `opencode-runtime=true` 标签。
+1. 按 [OpenCode 部署说明](../k8s/opencode/README.md) 准备 `storage.yaml` 中的 Namespace/PVC 和 `backend.yaml` 中的 Gateway/CU Pod，目标节点具有 `opencode-runtime=true` 标签。
 2. 将本目录同步到源码 PVC 根目录下的 `hazard_expert_mcp/`，使容器中的 `/mnt/source/hazard_expert_mcp/hazard_expert_mcp/app.py` 存在。与 engineering MCP 相同，Kubernetes 从挂载的源码目录启动。源目录和文件需允许镜像的 UID 10001 读取。
-3. 修改清单中的镜像地址、`CONTAINER_UP_FRONTEND_ID`、MCP 服务访问凭证和 MinIO 凭证；存储桶必须已创建。默认后端为 `http://container-up.opencode-sv.svc.cluster.local:8000`，调用 CU 不需要 API key。
+3. 修改清单中的镜像地址、`CONTAINER_UP_FRONTEND_ID`、MCP 服务访问凭证和 MinIO 凭证；存储桶必须已创建。默认后端为 `http://channel-gateway.opencode-sv.svc.cluster.local:8000`，调用 Gateway 不需要 API key。
 4. 外部客户端需要下载附件时，设置 `MINIO_DOWNLOAD_ENDPOINT` 为双方可访问的 S3 地址。
 
 从仓库根目录构建并部署：
@@ -58,7 +60,7 @@ kubectl logs -n opencode-sv deployment/hazard-expert-mcp -f
 - 探针地址：`/healthz`
 
 只更新挂载源码后，可执行 `kubectl rollout restart deployment/hazard-expert-mcp -n opencode-sv`；依赖发生变化时需要重建镜像。
-部署到其他命名空间时，同步修改 Namespace、PVC、节点选择、container-up 服务地址以及 NodePort。
+部署到其他命名空间时，同步修改 Namespace、PVC、节点选择、channel-gateway 服务地址以及 NodePort。
 
 ## 客户端连接
 
@@ -69,7 +71,7 @@ Authorization: Bearer <部署配置中的 MCP_API_KEY>
 ```
 
 这是服务级鉴权，不是用户登录或 OAuth。**调用方必须从当前登录用户获得 `user_id`，并绑定到工具调用，不能允许不可信客户端随意选择其他用户的 ID。**
-当前需求显式传入 `user_id`，本服务会原样转发，不额外引入账号映射。调用 CU 不发送 Bearer 凭据；MCP_API_KEY 仍仅用于客户端访问本 MCP 服务。
+当前需求显式传入 `user_id`，本服务会原样转发，不额外引入账号映射。调用 Gateway 不发送 Bearer 凭据；MCP_API_KEY 仍仅用于客户端访问本 MCP 服务。
 
 支持远程 HTTP MCP 的客户端配置通常类似下面这样，具体字段以客户端为准；不要选旧版 SSE 传输：
 
@@ -192,14 +194,14 @@ Content-Type: application/json
 工具返回 `status`、`user_id`、`chat_id`、`content`、`attachments`。上游桶 ID、实例 ID 和内部 metadata 不作为专家工具输出。
 后续调用使用同一 `user_id` 和 `chat_id`，例如 `query="第二项隐患应如何整改？"`，即可继续原会话；更换 `chat_id` 则使用另一个会话。
 
-会话由 OpenCode 后端按 `frontend_id + user_id + chat_id` 管理。MCP 连接 ID 不参与会话标识，重新连接或重启也不会生成新的 chat_id。运行中的 bucket 复用对应 OpenCode session，bucket 回收后由 CU 保存的近期上下文恢复会话。同一用户请求由 runtime 串行执行。
+会话由 OpenCode 后端按 `frontend_id + user_id + chat_id` 管理。MCP 连接 ID 不参与会话标识，重新连接或重启也不会生成新的 chat_id。运行中的 bucket 复用对应 OpenCode session，bucket 回收后由 CU 调度迁移持久化的 OpenCode 原生会话。同一用户请求由 runtime 串行执行。
 
 ## 超时和运行约束
 
 - `CONTAINER_UP_TIMEOUT_SECONDS` 默认 720 秒，覆盖上游默认 600 秒同步等待及实例冷启动。MCP 客户端、反向代理的请求/读取超时也需要相应调大。
 - 上游请求不自动重试。超时、断网或 MCP 客户端断开并不保证后端任务被取消；避免自动重复提交造成重复执行。
-- CU 通过 SQLite 保存请求和结果，bucket 通过 WebSocket 回传结果。当前部署使用单 CU 副本、单 worker，且数据库有单写锁；不能直接扩成多个 CU 副本共用状态目录。
-- `/healthz` 只检查 MCP 进程存活，不保证 container-up 或 MinIO 可用。
+- Gateway 保存请求、最终结果及渠道投递状态，BU 通过独立事件 WebSocket 回传；CU 只处理调度及控制状态。Gateway 与 CU 共用一个单副本 Pod、各自单 worker 和独立 SQLite，不能让多个写入进程共用同一数据库。
+- `/healthz` 只检查 MCP 进程存活，不保证 channel-gateway 或 MinIO 可用。
 
 ## 本地验证
 
@@ -211,6 +213,6 @@ python -m venv .venv
 ```
 
 测试通过 MCP HTTP JSON-RPC 验证工具发现、两个工具调用、鉴权、请求限制，并验证上游参数转发、超时处理和 MinIO 签名地址。
-测试使用模拟的 container-up 响应与 S3 Stubber，不依赖真实业务账号或对象存储凭证。
+测试使用模拟的 channel-gateway 响应与 S3 Stubber，不依赖真实业务账号或对象存储凭证。
 
 实现参考：[MCP Python SDK 1.26.0](https://github.com/modelcontextprotocol/python-sdk/tree/v1.26.0)、[Boto3 预签名下载链接](https://docs.aws.amazon.com/boto3/latest/guide/s3-presigned-urls.html)。

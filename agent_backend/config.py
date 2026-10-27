@@ -128,6 +128,36 @@ class StorageConfig(StrictModel):
         return value.get_secret_value() if value is not None else getattr(self, name + "_file").read_text().strip()
 
 
+class EventForwarding(StrictModel):
+    include_types: list[str] = Field(default_factory=lambda: [
+        "message.updated", "message.part.updated", "message.part.delta",
+        "message.part.removed", "message.removed", "session.status", "session.error"])
+    include_part_types: list[str] = Field(default_factory=lambda: ["text", "file", "tool"])
+    include_child_sessions: bool = False
+
+    @model_validator(mode="after")
+    def reply_dependencies(self):
+        required = {"message.updated", "message.part.updated", "session.status", "session.error"}
+        if not required.issubset(self.include_types) or "text" not in self.include_part_types:
+            raise ValueError("final channel replies require message snapshots, text, status and error events")
+        return self
+
+
+class GatewaySettings(StrictModel):
+    """Internal service defaults, independent of the frontend registry."""
+
+    host: str = "0.0.0.0"
+    port: int = Field(default=8000, ge=1, le=65535)
+    state_root: Path = Path("/data/gateway")
+    control_url: str = "http://127.0.0.1:8001"
+
+    @model_validator(mode="after")
+    def transport_urls(self):
+        if urlparse(self.control_url).scheme not in {"http", "https"}:
+            raise ValueError("gateway control_url must be http(s)")
+        return self
+
+
 class RuntimeSettings(StrictModel):
     control_url: str = "ws://container-up:8000/internal/buckets/ws"
     state_root: Path = Path("/data/runtime")
@@ -154,6 +184,13 @@ class RuntimeConfig(RuntimeSettings):
     frontend_id: str = Field(min_length=1)
     storage: StorageConfig | None = None
     frontend_config_file: Path | None = None
+    gateway_url: str = "ws://channel-gateway:8000/internal/events/ws"
+    event_forwarding: EventForwarding = Field(default_factory=EventForwarding)
+
+    @field_validator("gateway_url")
+    @classmethod
+    def validate_gateway_url(cls, value: str) -> str:
+        return cls.websocket_url(value)
 
     @model_validator(mode="after")
     def independent_roots(self) -> RuntimeConfig:
@@ -217,7 +254,7 @@ class BucketPoolConfig(StrictModel):
 
 class ControlConfig(StrictModel):
     host: str = "0.0.0.0"
-    port: int = Field(default=8000, ge=1, le=65535)
+    port: int = Field(default=8001, ge=1, le=65535)
     state_root: Path = Path("/data/control")
     frontends: dict[str, Frontend]
     limits: Limits = Field(default_factory=Limits)
@@ -237,7 +274,7 @@ class ControlConfig(StrictModel):
 
 class ControlSettings(StrictModel):
     host: str = "0.0.0.0"
-    port: int = Field(default=8000, ge=1, le=65535)
+    port: int = Field(default=8001, ge=1, le=65535)
     state_root: Path = Path("/data/control")
     bucket_pool: BucketPoolConfig = Field(default_factory=BucketPoolConfig)
     limits: Limits = Field(default_factory=Limits)
@@ -258,6 +295,7 @@ class FrontendSettings(StrictModel):
     attachment_url_prefix: str = ""
     channel: dict = Field(default_factory=dict, repr=False)
     runtime: DeploymentRuntimeSettings
+    event_forwarding: EventForwarding = Field(default_factory=EventForwarding)
 
     @model_validator(mode="after")
     def validate_frontend(self) -> FrontendSettings:
@@ -327,7 +365,8 @@ class FrontendConfig(FrontendSettings):
             raise ValueError("runtime requires a scheduler-issued --bucket-id")
         values["state_root"] = self.runtime.state_root / self.frontend_id / bucket_id
         return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id,
-                             storage=storage, frontend_config_file=path.resolve())
+                             storage=storage, frontend_config_file=path.resolve(),
+                             event_forwarding=self.event_forwarding)
 
 
 class FrontendsConfig(StrictModel):

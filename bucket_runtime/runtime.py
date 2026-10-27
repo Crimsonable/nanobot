@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import mimetypes
 import os
-import secrets
 import shutil
 import time
 from pathlib import Path
@@ -21,7 +19,7 @@ from agent_backend.wire import Peer
 from bucket_runtime.artifact_service import ArtifactService
 from bucket_runtime.file_lock import publication_lock
 from bucket_runtime.opencode_client import OpenCodeClient
-from bucket_runtime.permissions import check_native_paths, public_roots, session_rules
+from bucket_runtime.permissions import public_roots, session_rules
 from bucket_runtime.sandbox_executor import SandboxExecutor, contained
 
 log = logging.getLogger(__name__)
@@ -39,8 +37,8 @@ class Runtime:
                 raise ValueError("permission entry belongs to another frontend")
             public_roots(config, self.permissions.for_user(config.frontend_id, user.user_id))
         self.db = Journal(config.state_root / "runtime.sqlite", config.limits.outbox_messages)
-        # Remove the obsolete derived transcript cache. OpenCode owns history.
-        self.db.db.execute("DELETE FROM records WHERE kind='message'")
+        # Remove obsolete transcript and per-tool authorization caches.
+        self.db.db.execute("DELETE FROM records WHERE kind IN ('message', 'ticket', 'call', 'child_session')")
         self.artifacts = ArtifactService(config, self.db)
         self.peer: Peer | None = None
         self.tasks: dict[str, asyncio.Task] = {}
@@ -48,11 +46,12 @@ class Runtime:
         self.file_locks: dict[str, asyncio.Lock] = {}
         self.capacity = asyncio.Semaphore(config.limits.active)
         self.draining = False
+        self.intake_closed = False
         self.ready = False
         self.plugin_ready = False
         self.completions: dict[str, asyncio.Event] = {}
-        from bucket_runtime.plugin_events import PluginEvents
-        self.plugin_events = PluginEvents(self)
+        from bucket_runtime.native_events import NativeEvents
+        self.native_events = NativeEvents(self)
 
     def policy(self, submit: Submit):
         return self.permissions.for_user(submit.identity.frontend_id, submit.identity.user_id)
@@ -92,6 +91,45 @@ class Runtime:
                 "chat_id": submit.chat_id,
                 "input_message_id": message_id,
                 "requests": {message_id: submit.request_id}}
+
+    def execution_scope(self, submit: Submit) -> dict:
+        return {
+            "version": 1, "workspace": str(self.workspace(submit)),
+            "policy": self.policy(submit).model_dump(mode="json"),
+            "public_roots": [str(p) for p in self.public_roots(submit)],
+            "private_files": [str(p.resolve()) for p in self.private_files()],
+            "sandbox": self.config.sandbox.model_dump(mode="json"),
+            "lock_path": str(self.user_lock_path(submit)),
+            "deadline_at": submit.deadline_at,
+        }
+
+    async def tool_session(self, session_id: str, directory: str) -> Submit:
+        """Resolve an active request; only child ancestry needs OpenCode queries."""
+        if not isinstance(session_id, str) or not session_id or not isinstance(directory, str) or not directory:
+            raise ValueError("session ID and directory are required")
+        workspace = Path(directory).resolve()
+        rows = self.db.records("run")
+        # Do not query arbitrary workspaces or revive completed/cancelled runs.
+        active = [r for r in rows if r["status"] == "running" and not r.get("cancel_requested")]
+        if not any(self.workspace(Submit.model_validate(r["submit"])) == workspace for r in active):
+            raise PermissionError("session has no active request in this workspace")
+        seen = set()
+        while session_id and len(seen) < 64 and session_id not in seen:
+            seen.add(session_id)
+            row = next((r for r in reversed(active) if r.get("session_id") == session_id), None)
+            if row:
+                _, submit = self.active_request(row["request_id"])
+                if self.workspace(submit) != workspace:
+                    raise PermissionError("session workspace mismatch")
+                return submit
+            info = await self.client.for_directory(workspace).session(session_id)
+            if Path(info["directory"]).resolve() != workspace:
+                raise PermissionError("session workspace mismatch")
+            session_id = info.get("parentID")
+        raise PermissionError("session has no active managed ancestor")
+
+    async def tool_permissions(self, session_id: str, directory: str) -> dict:
+        return self.execution_scope(await self.tool_session(session_id, directory))
 
     async def cancel_request(self, request_id: str) -> None:
         row = self.db.get("run", request_id)
@@ -144,6 +182,14 @@ class Runtime:
                         request_id=request_id, payload=payload or {}))
 
     async def session_operation(self, payload: dict) -> None:
+        if payload.get("operation") == "drain":
+            if any(r["status"] not in TERMINAL for r in self.db.records("run")):
+                raise RuntimeError("bucket has active requests")
+            self.draining = True
+            if self.db.records("native_pending") or self.db.pending("gateway"):
+                raise RuntimeError("gateway events still pending")
+            self.intake_closed = True
+            return
         """CU holds the user lock and never migrates an outstanding request."""
         from agent_backend.models import Identity
         from agent_backend.session_history import forget_local_session
@@ -194,8 +240,11 @@ class Runtime:
         with self.db.transaction():
             self.db.put("run", result.request_id, {**row, "status": result.status,
                          "result": result.model_dump(mode="json")})
-            self.emit("request." + result.status, result.request_id, {**result.model_dump(mode="json"),
-                **({"native_reply": native_reply} if native_reply else {})})
+            self.gateway_emit(Envelope(type="runtime.result", bucket_id=self.config.bucket_id,
+                request_id=result.request_id, payload={**result.model_dump(mode="json"),
+                    **({"native_reply": native_reply} if native_reply else {})}))
+            self.emit("request." + result.status, result.request_id, {
+                "request_id": result.request_id, "status": result.status, "error": result.error})
         if completed := self.completions.get(result.request_id):
             completed.set()
         log.info("request terminal bucket_id=%s request_id=%s status=%s attachments=%d",
@@ -203,6 +252,10 @@ class Runtime:
         for intent in self.db.records("intent"):
             if intent["request_id"] == result.request_id:
                 (self.config.state_root / "snapshots" / intent["attachment"]["attachment_id"]).unlink(missing_ok=True)
+
+    def accepting(self) -> bool:
+        count = self.db.db.execute("SELECT COUNT(*) FROM outbox WHERE peer='gateway'").fetchone()[0]
+        return not self.draining and count < max(1, self.db.max_outbox // 2)
 
     async def on_command(self, event: Envelope) -> None:
         if event.type == "request.submit":
@@ -216,12 +269,15 @@ class Runtime:
                 if row["hash"] != digest(event.payload):
                     raise ValueError("request content changed")
                 self.workspace(submit)
-                return
-            with self.db.transaction():
-                self.db.put("run", submit.request_id, {"request_id": submit.request_id,
-                    "submit": submit.model_dump(mode="json"), "hash": digest(event.payload),
-                    "status": "queued", "artifacts": []})
-                self.emit("request.accepted", submit.request_id)
+                if row["status"] != "queued" or submit.request_id in self.tasks:
+                    return
+            else:
+                with self.db.transaction():
+                    self.db.put("run", submit.request_id, {"request_id": submit.request_id,
+                        "submit": submit.model_dump(mode="json"), "hash": digest(event.payload),
+                        "status": "queued", "artifacts": [],
+                        "event_forwarding": self.config.event_forwarding.model_dump()})
+                    self.emit("request.accepted", submit.request_id)
             try:
                 self.workspace(submit)
             except (OSError, ValueError):
@@ -235,7 +291,7 @@ class Runtime:
                     self.draining = True
                     self.finish(Result(request_id=submit.request_id, status="failed", error="CANCEL_FAILED"))
                 return
-            if (self.draining
+            if (not self.accepting()
                     or len(self.tasks) >= self.config.limits.queued + self.config.limits.active):
                 self.finish(Result(request_id=submit.request_id, status="failed", error="BUCKET_UNAVAILABLE"))
             else:
@@ -289,6 +345,7 @@ class Runtime:
                     async with self.capacity:
                         if self.draining or self.db.get("run", request_id).get("cancel_requested"):
                             raise asyncio.CancelledError()
+                        await self.native_events.connected.wait()
                         workspace = self.workspace(submit)
                         client = self.client.for_directory(workspace)
                         self.opencode_worktrees[workspace] = Path((await client.paths())["worktree"])
@@ -337,13 +394,17 @@ class Runtime:
                         with self.db.transaction():
                             self.db.put("run", request_id, {**row, "status": "running"})
                             self.emit("request.started", request_id, {"session_id": session_id})
+                        key = digest([str(workspace), session_id])
+                        native = self.db.get("native_session", key) or {}
+                        self.db.put("native_session", key, {**native, "active_input": message_id})
                         completed = self.completions.setdefault(request_id, asyncio.Event())
                         try:
+                            await self.native_events.connected.wait()
                             await client.submit(session_id, message_id, text)
                         except httpx.TransportError:
-                            # Submission may have reached OpenCode. Await the plugin;
+                            # Submission may have reached OpenCode. Await SSE;
                             # never query messages or resubmit an uncertain request.
-                            log.warning("prompt submission uncertain request_id=%s; awaiting plugin", request_id)
+                            log.warning("prompt submission uncertain request_id=%s; awaiting SSE", request_id)
                         await completed.wait()
         except asyncio.CancelledError:
             if session_id:
@@ -373,156 +434,80 @@ class Runtime:
         finally:
             self.completions.pop(request_id, None)
 
-    def plugin_event(self, body: dict) -> dict:
-        return self.plugin_events.accept(body)
+    def native_event(self, body: dict) -> dict:
+        return self.native_events.accept(body)
+
+    def gateway_emit(self, event: Envelope) -> None:
+        import base64
+
+        from agent_backend.wire import CHUNK_SIZE
+        encoded = event.model_dump_json().encode()
+        if len(encoded) <= CHUNK_SIZE * 2:
+            reserve = self.config.limits.active + self.config.limits.queued + 16 if event.type == "runtime.result" else 0
+            self.db.enqueue("gateway", event, reserve=reserve)
+            return
+        if event.type != "opencode.event":
+            raise ValueError("runtime result exceeds event size limit")
+        count = (len(encoded) + CHUNK_SIZE - 1) // CHUNK_SIZE
+        for index in range(count):
+            self.db.enqueue("gateway", Envelope(type="opencode.event.chunk", bucket_id=self.config.bucket_id,
+                request_id=event.request_id, payload={"event_id": event.event_id, "index": index,
+                "count": count, "data": base64.b64encode(encoded[index * CHUNK_SIZE:(index + 1) * CHUNK_SIZE]).decode("ascii")}))
 
     def reduce_event(self, event) -> None:
-        """Track execution completion only; CU resolves reply content from native events."""
-        native = event.event
-        kind, props = native["type"], native.get("properties", {})
-        if kind == "session.error" and event.request_id:
-            row = self.db.get("run", event.request_id)
-            if row["status"] == "running" and not row.get("cancel_requested"):
-                self.finish(Result(request_id=event.request_id, status="failed",
-                    error=props.get("error", {}).get("name", "MODEL_ERROR"), attachments=row["artifacts"]))
-            return
-        if kind != "message.updated" or not event.request_id:
-            return
-        info = props.get("info", {})
-        if (info.get("role") != "assistant" or info.get("summary")
-                or not info.get("time", {}).get("completed")):
+        """Consume native lifecycle signals; never infer completion from message text."""
+        if not event.request_id:
             return
         row = self.db.get("run", event.request_id)
-        if row["status"] != "running" or row.get("cancel_requested"):
+        if not row or row["status"] != "running" or row.get("session_id") != event.session_id:
             return
-        error = info.get("error", {}).get("name")
-        reason = info.get("finish")
-        if not error and reason not in {"stop", "end_turn", "length", "content-filter"}:
-            return
-        error = error or (None if reason in {"stop", "end_turn"} else "MODEL_" + reason.upper())
-        # Only execution state lives here. CU already receives the full native
-        # snapshots and uses those to construct the channel reply.
-        self.finish(Result(request_id=event.request_id, status="failed" if error else "completed",
-            error=error, attachments=row["artifacts"], partial=bool(error and row["artifacts"])),
-            native_reply={"session_id": event.session_id, "input_message_id": row["message_id"]})
+        kind, props = event.event["type"], event.event.get("properties", {})
+        if kind == "session.error":
+            self.db.put("run", event.request_id, {**row, "native_error": props.get("error", {}).get("name", "MODEL_ERROR")})
+        elif kind == "session.status":
+            status = props.get("status", {}).get("type")
+            if status in {"busy", "retry"}:
+                self.db.put("run", event.request_id, {**row, "native_started": True})
+            elif status == "idle" and (row.get("native_started") or row.get("native_error")):
+                error = row.get("native_error")
+                cancelled = row.get("cancel_requested", False)
+                if cancelled:
+                    error = None
+                self.finish(Result(request_id=event.request_id,
+                    status="cancelled" if cancelled else "failed" if error else "completed",
+                    error=error, attachments=row["artifacts"], partial=bool(error and row["artifacts"])),
+                    native_reply=None if error or cancelled else {
+                        "session_id": event.session_id, "input_message_id": row["message_id"]})
 
-    async def bind_tool_session(self, session_id: str, directory: str) -> None:
-        # Task tools create child sessions. Resolve ancestry from the trusted server,
-        # never from model-provided user IDs, before authorizing tools.
-        requested = Path(directory).resolve()
+    def active_request(self, request_id: str) -> tuple[dict, Submit]:
+        row = self.db.get("run", request_id)
+        if not row or row["status"] != "running" or row.get("cancel_requested"):
+            raise PermissionError("session has no active request")
+        submit = Submit.model_validate(row["submit"])
+        if submit.deadline_at <= time.time():
+            raise PermissionError("request deadline expired")
+        return row, submit
 
-        def check_directory(submit: Submit) -> None:
-            if requested != self.workspace(submit):
-                raise PermissionError("tool session workspace mismatch")
-
-        try:
-            _, submit = self.active_session(session_id)
-        except PermissionError:
-            if self.db.get("child_session", session_id):
-                raise
-        else:
-            check_directory(submit)
-            return
-        if not any(r["status"] == "running" and self.workspace(Submit.model_validate(r["submit"])) == requested
-                   for r in self.db.records("run")):
-            raise PermissionError("session has no active authorized workspace")
-        client = self.client.for_directory(requested)
-        parent = session_id
-        seen = set()
-        for _ in range(64):
-            if parent in seen:
-                break
-            seen.add(parent)
-            info = await client.session(parent)
-            if Path(info["directory"]).resolve() != requested:
-                raise PermissionError("tool session workspace mismatch")
-            parent = info.get("parentID")
-            if not parent:
-                break
-            try:
-                row, submit = self.active_session(parent)
-            except PermissionError:
-                continue
-            check_directory(submit)
-            self.db.put("child_session", session_id, {"request_id": row["request_id"]})
-            return
-        raise PermissionError("session has no active managed ancestor")
-
-    def active_session(self, session_id: str) -> tuple[dict, Submit]:
-        row = next((r for r in self.db.records("run") if r.get("session_id") == session_id
-                    and r["status"] == "running" and not r.get("cancel_requested")), None)
-        if not row:
-            child = self.db.get("child_session", session_id)
-            candidate = self.db.get("run", child["request_id"]) if child else None
-            if candidate and candidate["status"] == "running" and not candidate.get("cancel_requested"):
-                row = candidate
-        if not row:
-            raise PermissionError("session has no active authorized request")
-        return row, Submit.model_validate(row["submit"])
-
-    def authorize(self, session_id: str, call_id: str, tool: str, args: dict) -> dict:
-        row, submit = self.active_session(session_id)
+    async def publish(self, body: dict) -> dict:
+        # Publishing is one tool operation: resolve session, check permission,
+        # snapshot/upload, and record delivery without an authorization ticket.
+        submit = await self.tool_session(body["session_id"], body["directory"])
+        request_id = submit.request_id
         policy = self.policy(submit)
-        normalized = check_native_paths(tool, args, policy, self.workspace(submit), self.public_roots(submit), self.private_files())
-        if tool not in {"bash", "publish_attachment"}:
-            return {"args": normalized}
-        if tool == "bash":
-            command = args.get("command")
-            if not isinstance(command, str) or len(command) > 100000 or "\0" in command:
-                raise ValueError("invalid shell command")
-            timeout = args.get("timeout", 120000)
-            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
-                raise ValueError("invalid shell timeout")
-            remaining = (submit.deadline_at - time.time()) * 1000
-            if remaining <= 0:
-                raise PermissionError("request deadline expired")
-            if args.get("workdir") is not None and not isinstance(args["workdir"], str):
-                raise ValueError("invalid working directory")
-            workspace, public = self.workspace(submit), self.public_roots(submit)
-            cwd = self.executor.working_directory(workspace, public, args.get("workdir"), policy.filesystem.workspace)
-            # Return only trusted launch arguments. The plugin appends the original
-            # command as one quoted argument; no command execution RPC or ticket.
-            argv = self.executor.argv(workspace, public, cwd, "", sandbox=policy.sandbox,
-                workspace_access=policy.filesystem.workspace, private_files=self.private_files())[:-1]
-            # flock stays outside the sandbox; --close prevents exposing its descriptor.
-            argv = ["/usr/bin/flock", "--exclusive", "--close", str(self.user_lock_path(submit)), *argv]
-            return {"argv": argv, "host_workdir": str(workspace),
-                    "timeout_ms": max(1, math.ceil(min(timeout, remaining)))}
-        call_key = digest([session_id, call_id])
-        old = self.db.get("call", call_key)
-        if old:
-            if old["tool"] != tool or old["args"] != args or old["request_id"] != submit.request_id:
-                raise PermissionError("tool call identity changed")
-            return {"ticket": old["ticket"]}
-        ticket = secrets.token_urlsafe(32)
-        call = {"ticket": ticket, "request_id": submit.request_id, "session_id": session_id,
-                "call_id": call_id, "tool": tool, "args": args, "status": "authorized"}
-        with self.db.transaction():
-            self.db.put("call", call_key, call)
-            self.db.put("ticket", ticket, {"call_key": call_key})
-        return {"ticket": ticket}
-
-    def ticket(self, ticket: str, tool: str) -> tuple[str, dict, Submit]:
-        ref = self.db.get("ticket", ticket)
-        if not ref:
-            raise PermissionError("invalid execution ticket")
-        call = self.db.get("call", ref["call_key"])
-        if call["tool"] != tool:
-            raise PermissionError("ticket tool mismatch")
-        row, submit = self.active_session(call["session_id"])
-        if row["request_id"] != call["request_id"]:
-            raise PermissionError("ticket request mismatch")
-        return ref["call_key"], call, submit
-
-    async def publish(self, ticket: str) -> dict:
-        key, call, submit = self.ticket(ticket, "publish_attachment")
+        if (not policy.session.tools.get("publish_attachment", policy.session.default_tools)
+                or policy.filesystem.workspace == "none"):
+            raise PermissionError("attachment publication is disabled for this user")
+        if not isinstance(body.get("message_id"), str) or not body["message_id"]:
+            raise ValueError("publication requires a message ID")
+        files = body.get("files")
+        if not isinstance(files, list) or not 1 <= len(files) <= 32:
+            raise ValueError("publish requires 1..32 files")
+        key = digest([request_id, body["message_id"], files])
         async with self.file_locks.setdefault(submit.identity.identity_id, asyncio.Lock()), publication_lock(self.user_lock_path(submit)):
-            key, call, submit = self.ticket(ticket, "publish_attachment")
+            self.active_request(request_id)
+            call = self.db.get("publication", key) or {"status": "pending"}
             if call["status"] == "completed":
                 return call["result"]
-            files = call["args"].get("files")
-            if not isinstance(files, list) or not 1 <= len(files) <= 32:
-                raise ValueError("publish requires 1..32 files")
             published = []
             for index, item in enumerate(files):
                 attachment_id = "att_" + digest([key, index])
@@ -558,14 +543,14 @@ class Runtime:
                 published_attachment = await self.artifacts.upload(submit.identity, attachment_id, snapshot, attachment)
                 result = published_attachment.model_dump(mode="json")
                 # Cancellation may have raced with an awaited transfer.
-                self.active_session(call["session_id"])
+                self.active_request(request_id)
                 row = self.db.get("run", submit.request_id)
                 if not any(a["attachment_id"] == attachment_id for a in row["artifacts"]):
                     self.db.put("run", submit.request_id, {**row, "artifacts": [*row["artifacts"], result]})
                 published.append(result)
                 snapshot.unlink(missing_ok=True)
             result = {"status": "queued_for_reply", "attachments": published}
-            self.db.put("call", key, {**call, "status": "completed", "result": result})
+            self.db.put("publication", key, {"status": "completed", "result": result})
             return result
 
     async def shutdown(self) -> None:

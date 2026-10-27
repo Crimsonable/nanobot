@@ -72,6 +72,7 @@ class BucketScheduler:
             self.db.put("workspace_owner", workspace, {"identity_id": identity.identity_id})
             candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
                           and (b["status"] == "creating" or self.connected(b["bucket_id"]))
+                          and b.get("accepting", True)
                           and b["frontend_id"] == identity.frontend_id
                           and len(self.bindings(b["bucket_id"])) < self.config.max_users_per_bucket]
             if candidates:
@@ -137,6 +138,14 @@ class BucketScheduler:
                     self.db.put("bucket", bucket_id, {**bucket, "status": "draining"})
             # Draining is durable and excludes allocations while Kubernetes shuts down.
             # Other buckets must remain schedulable during a slow scale operation.
+            peer = self.service.peers.get(bucket_id)
+            if not peer or peer.closed:
+                await self.manager.ensure(bucket_id, frontend_id=bucket["frontend_id"])
+                continue
+            try:
+                await peer.session_call({"operation": "drain", "session_id": bucket_id})
+            except (RuntimeError, ConnectionError):
+                continue
             await self.manager.scale(bucket_id, 0)
             socket = self.service.sockets.get(bucket_id)
             if socket:

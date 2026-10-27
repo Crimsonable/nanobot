@@ -32,8 +32,8 @@ spec:
         - -m
         - web_server.app
         env:
-        - name: CONTAINER_UP_BASE_URL
-          value: http://container-up:8000
+        - name: GATEWAY_BASE_URL
+          value: http://channel-gateway:8000
         - name: WEB_SERVER_DEFAULT_FRONTEND_ID
           value: web-test
         ports:

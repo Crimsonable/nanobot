@@ -10,7 +10,7 @@ from agent_backend.logging_config import access_log_config
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Channel control service")
+    parser = argparse.ArgumentParser(description="Bucket control service")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--check-config", action="store_true",
                         help="Validate all frontend configurations and exit without starting CU")

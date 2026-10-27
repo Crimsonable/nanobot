@@ -13,7 +13,7 @@ def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
     config = FrontendConfig.model_validate({"frontend_id": "web-test", "provider": "web",
         "send_msg_url": "http://frontend/outbound",
         "runtime": {}})
-    assert config.control.port == 8000
+    assert config.control.port == 8001
     assert config.control.bucket_pool.namespace == "opencode-sv"
     assert config.control.bucket_pool.data_pvc == "opencode-data-pvc"
     assert config.runtime.opencode.port == 4096
@@ -77,19 +77,6 @@ def test_kubernetes_bucket_selection():
     with pytest.raises(ValueError, match="scheduler-issued"):
         config.runtime_config(EXAMPLE, "unregistered")
 
-
-def test_shared_config_can_live_in_common_but_native_tools_cannot_read_it():
-    from agent_backend.config import UserPolicy
-    from bucket_runtime.permissions import check_native_paths
-
-    config = selected_config()
-    runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
-    with pytest.raises(PermissionError, match="service configuration"):
-        check_native_paths("read", {"filePath": str(EXAMPLE)}, UserPolicy(),
-                           runtime.workspace_root, [EXAMPLE.parent], [EXAMPLE])
-    with pytest.raises(PermissionError, match="service configuration"):
-        check_native_paths("grep", {"path": str(EXAMPLE.parent), "pattern": "secret"}, UserPolicy(),
-                           runtime.workspace_root, [EXAMPLE.parent], [EXAMPLE])
 
 
 def test_no_duplicate_runtime_storage_and_profile_validation():

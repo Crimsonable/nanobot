@@ -10,7 +10,8 @@ from agent_backend.config import load_frontends
 from agent_backend.models import Envelope, Identity
 from agent_backend.workspaces import workspace_path
 from container_up.bucket_manager import BucketManager
-from container_up.server import ControlService, Inbound
+from agent_backend.ingress import Inbound
+from container_up.server import ControlService
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
 
@@ -28,7 +29,8 @@ class FakeManager:
         await asyncio.sleep(0.01)
         if self.fail_start:
             raise RuntimeError("Kubernetes unavailable")
-        self.service.peers[bucket_id] = SimpleNamespace(closed=False)
+        from unittest.mock import AsyncMock
+        self.service.peers[bucket_id] = SimpleNamespace(closed=False, session_call=AsyncMock())
 
     async def scale(self, bucket_id, replicas):
         if self.fail_stop:
@@ -58,7 +60,7 @@ async def complete(service, row):
     for event in service.db.pending(row["bucket_id"]):
         service.db.ack(row["bucket_id"], event.seq, event.event_id)
     await service.on_event(row["bucket_id"], Envelope(type="request.completed", bucket_id=row["bucket_id"],
-        request_id=row["request_id"], payload={"request_id": row["request_id"], "status": "completed", "content": "done"}))
+        request_id=row["request_id"], payload={"request_id": row["request_id"], "status": "completed"}))
 
 
 def expire(service):
@@ -98,6 +100,31 @@ async def test_completed_users_release_capacity_before_whole_bucket_retires(serv
     assert "previous_turns" not in new["submit"]
     assert "session_epoch" not in new["submit"]
     assert service.db.get("binding", Identity(frontend_id="web-test", user_id="a").identity_id)["workspace_path"] == str(before)
+
+
+@pytest.mark.asyncio
+async def test_gateway_handoff_must_finish_before_scale_down(service):
+    row = await submit(service, "a", "r")
+    await complete(service, row)
+    peer = service.peers[row["bucket_id"]]
+    peer.session_call.side_effect = RuntimeError("gateway events still pending")
+    expire(service)
+    await service.pool.sweep()
+    assert service.db.get("bucket", row["bucket_id"])["status"] == "draining"
+    assert not service.pool.manager.scaled
+    peer.session_call.side_effect = None
+    await service.pool.sweep()
+    assert service.pool.manager.scaled == [(row["bucket_id"], 0)]
+
+
+@pytest.mark.asyncio
+async def test_gateway_backpressure_excludes_bucket_from_new_placement(service):
+    first = await submit(service, "a", "r")
+    await complete(service, first)
+    await service.on_event(first["bucket_id"], Envelope(type="bucket.status", bucket_id=first["bucket_id"],
+                                                       payload={"accepting": False}))
+    second = await submit(service, "b", "r2")
+    assert second["bucket_id"] != first["bucket_id"]
 
 
 @pytest.mark.asyncio
@@ -201,7 +228,7 @@ async def test_duplicate_after_retirement_does_not_start_bucket(service):
     await service.pool.sweep()
     created = list(service.pool.manager.created)
     repeated = await submit(service, "a", "r")
-    assert repeated["result"]["content"] == "done"
+    assert repeated["result"]["status"] == "completed"
     assert service.pool.manager.created == created
 
 

@@ -3,7 +3,7 @@ import json
 
 import yaml
 
-from agent_backend.config import load_frontends
+from agent_backend.config import GatewaySettings, load_frontends
 from container_up.bucket_manager import BucketManager
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,7 +96,7 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
         "name": "workspace", "mountPath": "/mnt/env/workspaces/qxt-main", "subPath": "workspaces/qxt-main"}]
     assert config.runtime.workspace_root == Path("/mnt/env/workspaces")
     assert not any(d["kind"] == "StatefulSet" for d in docs)
-    assert len([d for d in docs if d["kind"] == "Deployment"]) == 1
+    assert {d["metadata"]["name"] for d in docs if d["kind"] == "Deployment"} == {"container-up"}
 
 
 def test_frontend_configuration_uses_common_pvc_without_global_credentials():
@@ -109,10 +109,51 @@ def test_frontend_configuration_uses_common_pvc_without_global_credentials():
         assert not any(v["name"] in {"config", "secrets"} for v in pod["volumes"])
         assert not any(m["mountPath"] in {"/etc/agent", "/run/secrets"}
                        for m in pod["containers"][0]["volumeMounts"])
-        assert pod["automountServiceAccountToken"] is (deployment is control)
+        assert pod["automountServiceAccountToken"] is False
     cfg = config.runtime_config(ROOT / "config/opencode/frontends.json", "opencode-bucket-0123456789ab")
     assert cfg.opencode.config_file == Path("/mnt/common/web-test/config/opencode-server.json")
     assert cfg.permissions_file == Path("/mnt/common/web-test/config/user-permissions.yaml")
+
+
+def test_gateway_and_control_share_pod_with_distinct_service_ports():
+    config = load_frontends(ROOT / "config/opencode/frontends.json")
+    gateway = GatewaySettings()
+    docs = list(yaml.safe_load_all((ROOT / "k8s/opencode/backend.yaml").read_text(encoding="utf-8")))
+    deployments = [d for d in docs if d["kind"] == "Deployment"]
+    assert len(deployments) == 1
+    deployment = deployments[0]
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
+    pod = deployment["spec"]["template"]["spec"]
+    containers = {c["name"]: c for c in pod["containers"]}
+    assert set(containers) == {"control", "gateway"}
+    services = {d["metadata"]["name"]: d["spec"] for d in docs if d["kind"] == "Service"}
+    for name, service_name, port in [("control", "container-up", config.control.port),
+                                     ("gateway", "channel-gateway", gateway.port)]:
+        container = containers[name]
+        service = services[service_name]
+        assert service["selector"] == deployment["spec"]["template"]["metadata"]["labels"]
+        target = service["ports"][0]["targetPort"]
+        assert container["ports"] == [{"name": target, "containerPort": port}]
+        assert service["ports"][0]["port"] == 8000
+        for probe in ["readinessProbe", "livenessProbe"]:
+            assert container[probe]["httpGet"]["port"] == target
+        assert "/mnt/common/frontends.json" in container["args"]
+    assert config.control.port != gateway.port
+    assert gateway.control_url == f"http://127.0.0.1:{config.control.port}"
+    assert config.control.state_root != gateway.state_root
+    runtime = config.frontend("web-test").runtime_config(ROOT / "config/opencode/frontends.json", "opencode-bucket-0123456789ab")
+    assert runtime.control_url == "ws://container-up:8000/internal/buckets/ws"
+    assert runtime.gateway_url == "ws://channel-gateway:8000/internal/events/ws"
+    assert services["container-up"]["type"] == "ClusterIP"
+    assert services["channel-gateway"]["ports"][0]["nodePort"] == 30081
+    assert pod["serviceAccountName"] == "container-up"
+    assert pod["automountServiceAccountToken"] is False
+    mounts = {m["mountPath"]: m for m in containers["control"]["volumeMounts"]}
+    token = mounts["/var/run/secrets/kubernetes.io/serviceaccount"]
+    volume = next(v for v in pod["volumes"] if v["name"] == token["name"])
+    assert volume["projected"]["sources"][0]["serviceAccountToken"]["path"] == "token"
+    assert not any(m["name"] == token["name"] for m in containers["gateway"]["volumeMounts"])
 
 
 def test_local_nfs_selector_and_unified_server_paths():
