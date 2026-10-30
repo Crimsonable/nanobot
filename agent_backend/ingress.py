@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, StrictBool, field_validator
 
 from agent_backend.models import StrictModel
 
@@ -21,6 +21,8 @@ class Inbound(StrictModel):
     attachments: list[str | dict[str, Any]] = Field(default_factory=list, max_length=32)
     metadata: dict[str, Any] = Field(default_factory=dict)
     request_id: str | None = None
+    # Omit false on the internal wire to preserve pre-stream request fingerprints.
+    stream: StrictBool = Field(default=False, exclude_if=lambda value: not value)
 
     @field_validator("chat_id", mode="before")
     @classmethod

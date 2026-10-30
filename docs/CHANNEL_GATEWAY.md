@@ -6,6 +6,8 @@
 
 Gateway 提供四种接入方式：QXT、飞书、Web 异步 `POST /inbound/{frontend_id}`、Web 同步 `POST /inbound-sync/{frontend_id}`。配置中的 provider 仍为 `qxt/feishu/web`；Web 同步与异步共用一个 provider，由请求接口决定响应方式。隐患专家 MCP 作为普通 Web 同步客户端，继续使用原来的请求和响应协议，不新增渠道或专用适配。
 
+Web 同步接口支持可选 `stream: true`，在同一个 POST 响应中发送请求级原生事件 SSE：`gateway.start` → `opencode.event` → `gateway.result`。Gateway 持久化事件序号、先重放再读取实时事件，支持同一请求携带 `Last-Event-ID` 续传；断开不取消任务。非流式调用保持最终 JSON 响应。具体格式及错误语义见 [Web 同步接口](WEB_FRONTEND_SYNC_API.md#7-流式接收-opencode-原生事件)。
+
 - `channel_gateway`：对外 `/inbound/{frontend_id}`、`/inbound-sync/{frontend_id}`、`/requests/{frontend_id}/{request_id}`、取消与订阅路由。渠道实现及最终 payload 沿用原版本，Web 的 `frontend_id/user_id/chat_id/content/attachments/metadata` 不变，QXT/飞书继续将附件对象 URL 转成文本链接。同步返回字段与原接口一致。
 - `container_up`：内部 `/internal/submit/{frontend_id}`、`/internal/requests/{frontend_id}/{request_id}` 及取消、bucket 登记查询；BU 控制连接仍为 `/internal/buckets/ws`。CU 不接收原生内容事件，也不拼装最终回复。
 - `bucket_runtime`：原生 SSE 接收、身份关联、过滤、权限与执行。`session.status` 的 busy/retry→idle 驱动当前根会话结束；消息完成快照不结束请求，子会话 idle 不结束父请求。错误和取消分类独立记录。
@@ -19,6 +21,8 @@ CU 终态只接受 `request_id/status/error`，拒绝正文、附件、用量等
 Gateway 的监听地址、端口、状态目录及内部通信地址使用代码默认值，不属于 frontend 配置。Gateway 默认监听 `0.0.0.0:8000`，状态目录为 `/data/gateway`，通过 `http://127.0.0.1:8001` 调用同 Pod 的 CU；CU 默认监听 8001，BU 默认连接 `ws://channel-gateway:8000/internal/events/ws`。`frontends.json` 不需要 `gateway` 配置块或 CU 端口配置。
 
 各 frontend 的 `event_forwarding` 配置 `include_types`、`include_part_types`、`include_child_sessions`。默认传消息/part 更新、delta、删除、会话状态及错误；part 默认 text/file/tool，不外发 reasoning 和子会话。未知事件默认不外发。按 part 类型过滤 delta 依赖 BU 持久化的 part 类型映射，不能只按事件名放行。每个请求在接受时保存过滤配置快照。
+
+流式 Web 同步请求例外：`stream` 随提交经 CU 传到 BU，BU 绕过上述内容过滤，转发可归属本请求的原生事件，包括 reasoning、未知类型和子会话；身份关联及工作目录校验保持不变，全局心跳和无法关联的事件不外发。Gateway 保留原生 JSON，不转换 AI SDK 协议；有序终态后的迟到事件不进入已结束的 SSE 日志。
 
 现有渠道最终回复依赖 text、message/part 快照、status 和 error，因此配置校验禁止删掉这些依赖。过滤仅作用于对外事件，不影响控制状态。日志配置不决定外发过滤。附件仍由 BU 上传 MinIO，Gateway 只接收对象引用。
 

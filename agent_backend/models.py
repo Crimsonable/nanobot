@@ -5,7 +5,7 @@ import json
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class StrictModel(BaseModel):
@@ -58,6 +58,7 @@ class Submit(StrictModel):
     attachments: list[Attachment] = Field(default_factory=list, max_length=32)
     deadline_at: float
     session_id: str | None = None
+    stream: StrictBool = Field(default=False, exclude_if=lambda value: not value)
     @property
     def session_key(self) -> str:
         return digest([self.identity.identity_id, self.chat_id])

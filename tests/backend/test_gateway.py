@@ -32,11 +32,11 @@ def system(tmp_path):
     runtime.db.close()
 
 
-async def accept(system, request_id="r", sync=False):
+async def accept(system, request_id="r", sync=False, stream=False):
     app, cu, bu = system
     gw = app.state.service
     row = await gw.submit("web", Inbound(user_id="alice", chat_id="chat", content="hello", request_id=request_id,
-        metadata={"reply_target": {"to_group_id": "group"}, "frontend_id": "forged"}), sync=sync)
+        metadata={"reply_target": {"to_group_id": "group"}, "frontend_id": "forged"}, stream=stream), sync=sync)
     submit = Submit.model_validate(cu.db.get("request", request_id)["submit"])
     bu.db.put("run", request_id, {"request_id": request_id, "status": "running", "session_id": "s",
         "message_id": "input", "directory": str(bu.workspace(submit)), "submit": submit.model_dump(mode="json"),

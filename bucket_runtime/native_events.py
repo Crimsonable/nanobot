@@ -148,6 +148,10 @@ class NativeEvents:
 
     def forward(self, event) -> bool:
         row = self.db.get("run", event.request_id)
+        if row["submit"].get("stream", False):
+            # Attribution/workspace checks still run before this policy. Keep all
+            # attributable native JSON, including unknown types and child sessions.
+            return True
         from agent_backend.config import EventForwarding
         policy = EventForwarding.model_validate(row.get("event_forwarding") or self.runtime.config.event_forwarding.model_dump())
         kind, props = event.event["type"], event.event.get("properties", {})

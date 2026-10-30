@@ -108,7 +108,8 @@ class ControlService:
         attachments = await self.normalize(attachments_input)
         submit = Submit(request_id=request_id, chat_id=inbound.chat_id,
                         identity=identity, content=inbound.content,
-                        attachments=attachments, deadline_at=time.time() + self.config.limits.request_seconds)
+                        attachments=attachments, deadline_at=time.time() + self.config.limits.request_seconds,
+                        stream=inbound.stream)
         if inbound.content.strip().lower() != "/cancel":
             submit.session_id = await self.sessions.prepare(submit, binding["bucket_id"])
             submit.deadline_at = time.time() + self.config.limits.request_seconds

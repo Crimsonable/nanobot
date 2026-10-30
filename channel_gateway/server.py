@@ -8,6 +8,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 
 from agent_backend.config import ControlConfig, GatewaySettings
 from agent_backend.ingress import Inbound
@@ -15,6 +16,7 @@ from agent_backend.journal import Journal
 from agent_backend.models import Envelope, Identity, OpenCodeEventChunk, Result, digest, uid
 from agent_backend.wire import Peer
 from channel_gateway.channel_service import ChannelService
+from channel_gateway.event_stream import RequestStreams
 from channel_gateway.native_reply import resolve_reply
 
 log = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ class GatewayService:
     def __init__(self, config: ControlConfig, settings: GatewaySettings, channels=None, control=None):
         self.config, self.settings = config, settings
         self.db = Journal(settings.state_root / "gateway.sqlite", config.limits.outbox_messages)
+        self.streams = RequestStreams(self.db)
         self.channels = channels or ChannelService(config)
         self.control = control or ControlClient(settings)
         self.delivery_ready = asyncio.Event()
@@ -65,6 +68,8 @@ class GatewayService:
 
     async def submit(self, frontend_id, inbound: Inbound, sync=False):
         self.require_frontend(frontend_id)
+        if inbound.stream and (not sync or self.config.frontends[frontend_id].provider != "web"):
+            raise HTTPException(400, "stream is only supported by the Web inbound-sync endpoint")
         request_id = inbound.request_id or uid("req_")
         inbound = inbound.model_copy(update={"request_id": request_id})
         fingerprint = digest({"frontend": frontend_id, "input": inbound.model_dump(), "sync": sync})
@@ -80,7 +85,12 @@ class GatewayService:
                        "input": inbound.model_dump(), "metadata": inbound.metadata, "chat_id": inbound.chat_id,
                        "submit": {"identity": {"frontend_id": frontend_id, "user_id": inbound.user_id}},
                        "sync": sync, "status": "queued", "delivery": "pending", "bucket_id": ""}
-                self.db.put("request", request_id, row)
+                with self.db.transaction():
+                    self.db.put("request", request_id, row)
+                    if inbound.stream:
+                        self.streams.append(request_id, "gateway.start", {
+                            "version": 1, "request_id": request_id, "frontend_id": frontend_id,
+                            "user_id": inbound.user_id, "chat_id": inbound.chat_id})
             if "rejected" in row:
                 raise HTTPException(409, row["rejected"])
             if not row["bucket_id"]:
@@ -102,6 +112,7 @@ class GatewayService:
             # Definitive rejection: never retry it as an uncertain transport failure.
             latest = self.db.get("request", row["request_id"])
             self.db.put("request", row["request_id"], {**latest, "rejected": exc.detail})
+            self.streams.notify(row["request_id"])
             raise
         latest = self.db.get("request", row["request_id"])
         self.db.put("request", row["request_id"], {**latest, "bucket_id": remote["bucket_id"],
@@ -180,6 +191,8 @@ class GatewayService:
                 key = digest([bucket_id, event.event_id])
                 if not self.db.get("opencode_event", key):
                     self.db.put("opencode_event", key, event.model_dump(mode="json"))
+                    if row["input"].get("stream") and not row.get("result"):
+                        self.streams.append(event.request_id, "opencode.event", payload["event"])
             elif event.type == "runtime.result":
                 payload = dict(event.payload)
                 source = payload.pop("native_reply", None)
@@ -193,7 +206,10 @@ class GatewayService:
                 value = result.model_dump(mode="json")
                 if row.get("result"):
                     return  # Replay cannot alter a result after later native events arrived.
-                self.db.put("request", event.request_id, {**row, "status": result.status, "result": value})
+                finished = {**row, "status": result.status, "result": value}
+                self.db.put("request", event.request_id, finished)
+                if row["input"].get("stream"):
+                    self.streams.append(event.request_id, "gateway.result", self.response(finished))
                 self.delivery_ready.set()
                 self.completed.setdefault(event.request_id, asyncio.Event()).set()
             else:
@@ -303,8 +319,24 @@ def create_app(config: ControlConfig, settings: GatewaySettings, channels=None, 
         return service.response(await service.submit(frontend_id, body))
 
     @app.post("/inbound-sync/{frontend_id}")
-    async def inbound_sync(frontend_id: str, body: Inbound):
+    async def inbound_sync(frontend_id: str, body: Inbound, request: Request):
+        cursor = request.headers.get("last-event-id")
+        after = 0
+        if cursor is not None:
+            if not body.stream or not cursor.isascii() or not cursor.isdecimal() or len(cursor) > 19:
+                raise HTTPException(400, "Last-Event-ID requires stream=true and a nonnegative integer")
+            after = int(cursor)
+            existing = service.db.get("request", body.request_id) if body.request_id else None
+            if not existing or existing["frontend_id"] != frontend_id:
+                raise HTTPException(404, "stream request not found; resume requires its request_id")
+            if after > service.streams.last_seq(body.request_id):
+                raise HTTPException(400, "Last-Event-ID exceeds the request stream")
         row = await service.submit(frontend_id, body, sync=True)
+        if body.stream:
+            return StreamingResponse(
+                service.streams.iterate(row["request_id"], after, config.limits.request_seconds),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         ready = service.completed.setdefault(row["request_id"], asyncio.Event())
         if not row.get("result"):
             try:
