@@ -1,10 +1,11 @@
+"""Mounted executable and plugin asset checks for the OpenCode facade."""
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from agent_backend.config import RuntimeConfig
-from bucket_runtime.supervisor import Supervisor
+from bucket_runtime.opencode_server import OpenCodeServer
 
 
 @pytest.mark.asyncio
@@ -39,22 +40,22 @@ async def test_mismatched_plugin_dependency_link_is_rejected(tmp_path, monkeypat
         return SimpleNamespace(returncode=1)
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
-    supervisor = Supervisor(config)
+    opencode = OpenCodeServer(config)
     try:
         with pytest.raises(RuntimeError, match="dependency directory"):
-            await supervisor.start()
+            await opencode._start_process()
         assert modules.resolve() == tmp_path / "old-image-plugin/node_modules"
     finally:
-        await supervisor.stop()
+        await opencode.close()
 
 
 @pytest.mark.asyncio
 async def test_missing_mounted_binary_fails_before_launch(tmp_path):
     config = RuntimeConfig(frontend_id="web", common_root=tmp_path / "common", bucket_id="b", state_root=tmp_path / "state",
         workspace_root=tmp_path / "users", opencode={"binary": tmp_path / "missing", "context_root": tmp_path / "context"})
-    supervisor = Supervisor(config)
+    opencode = OpenCodeServer(config)
     try:
         with pytest.raises(RuntimeError, match="executable missing"):
-            await supervisor.start()
+            await opencode._start_process()
     finally:
-        await supervisor.stop()
+        await opencode.close()

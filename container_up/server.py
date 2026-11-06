@@ -41,6 +41,67 @@ class ControlService:
         self.sessions = SessionManager(self)
         self.bucket_connected: dict[str, asyncio.Event] = {}
         self.submission_tasks: set[asyncio.Task] = set()
+        self.reset_tasks: set[asyncio.Task] = set()
+
+    async def reset_frontend_opencode(self, frontend_id: str) -> dict:
+        self.require_frontend(frontend_id)
+        task = asyncio.create_task(self._reset_frontend_opencode(frontend_id))
+        self.reset_tasks.add(task)
+
+        def finished(done):
+            self.reset_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    async def _reset_frontend_opencode(self, frontend_id: str) -> dict:
+        buckets = [row for row in self.db.records("bucket") if row["frontend_id"] == frontend_id]
+        targets = [row["bucket_id"] for row in buckets if row["status"] != "idle"]
+
+        async def reset(bucket_id):
+            try:
+                return await self._reset_opencode(bucket_id)
+            except HTTPException as exc:
+                return {"bucket_id": bucket_id, "status": "failed",
+                        "status_code": exc.status_code, "detail": exc.detail}
+
+        results = await asyncio.gather(*(reset(bucket_id) for bucket_id in targets))
+        status = "ready" if targets else "no_running_buckets"
+        if any(result["status"] == "failed" for result in results):
+            status = "partial_failure"
+        return {"frontend_id": frontend_id, "status": status, "buckets": results,
+                "skipped_buckets": [row["bucket_id"] for row in buckets if row["status"] == "idle"]}
+
+    async def _reset_opencode(self, bucket_id: str) -> dict:
+        async with self.pool.lock:
+            bucket = self.db.get("bucket", bucket_id)
+            if not bucket:
+                raise HTTPException(404, "bucket not registered")
+            if bucket["status"] != "running":
+                raise HTTPException(409, "bucket is not running")
+            peer = self.peers.get(bucket_id)
+            if not peer or peer.closed:
+                raise HTTPException(503, "bucket is disconnected")
+            if self.pool.busy(bucket_id) or self.db.pending(bucket_id):
+                raise HTTPException(409, "bucket is busy; retry after its requests finish")
+            # Exclude placement even if a stale bucket.status reports accepting=True.
+            finished = asyncio.Event()
+            self.pool.resetting[bucket_id] = finished
+            self.pool.pins[bucket_id] = self.pool.pins.get(bucket_id, 0) + 1
+        try:
+            await peer.session_call({"operation": "reset_opencode", "session_id": uid("reset_")})
+            return {"bucket_id": bucket_id, "status": "ready"}
+        except ConnectionError:
+            raise HTTPException(503, "bucket disconnected; reset outcome is unknown") from None
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc)) from None
+        finally:
+            self.pool.pins[bucket_id] -= 1
+            self.pool.resetting.pop(bucket_id, None)
+            finished.set()
+            self.pool.touch(bucket_id)
 
     def request(self, bucket_id: str, request_id: str) -> dict:
         row = self.db.get("request", request_id)
@@ -175,6 +236,9 @@ def create_app(config: ControlConfig) -> FastAPI:
             for task in service.submission_tasks:
                 task.cancel()
             await asyncio.gather(*service.submission_tasks, return_exceptions=True)
+            for task in service.reset_tasks:
+                task.cancel()
+            await asyncio.gather(*service.reset_tasks, return_exceptions=True)
             for socket in list(service.sockets.values()):
                 await socket.close()
             service.db.close()
@@ -258,5 +322,11 @@ def create_app(config: ControlConfig) -> FastAPI:
         if not row or row["status"] not in {"creating", "running", "draining"}:
             raise HTTPException(404, "bucket not registered")
         return row
+
+    @app.post("/internal/frontends/{frontend_id}/opencode/reset")
+    async def reset_opencode(frontend_id: str):
+        from fastapi.responses import JSONResponse
+        result = await service.reset_frontend_opencode(frontend_id)
+        return JSONResponse(result, status_code=207 if result["status"] == "partial_failure" else 200)
 
     return app

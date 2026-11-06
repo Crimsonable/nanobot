@@ -10,12 +10,23 @@
 channel_gateway.server             渠道接入、原生事件消费、最终外发
   → 内部 HTTP → container_up.server 用户→bucket、调度、迁移
                        ↕ /internal/buckets/ws 双向控制与执行状态
-                  bucket_runtime.runtime
-                       ├─ OpenCodeClient → opencode serve
-                       ├─ OpenCode SSE → 关联/过滤 → Gateway /internal/events/ws
+                  BucketRuntimeAdapter (bucket_runtime.adapter)
+                       ├─ OpenCodeServer → opencode serve
+                       ├─ OpenCodeServer 事件回调 → 关联/过滤 → Gateway /internal/events/ws
                        ├─ 插件 → BU /permissions
                        └─ publish_attachment → MinIO
 ```
+
+BU 只组装两个主要对象：`OpenCodeServer(config)` 和 `BucketRuntimeAdapter(config, opencode)`。
+
+| 对象 | 职责 |
+| --- | --- |
+| `OpenCodeServer` | 统一封装 OpenCode 子进程、配置加载/重置/回退、HTTP 会话 API、SSE 解析和重连、插件握手及就绪状态。它不读取 BU 业务请求数据库，不向 CU/Gateway 发送业务事件。 |
+| `BucketRuntimeAdapter` | 适配 CU/Gateway 的业务请求、身份和权限，维护请求状态及持久化队列，关联原生事件并判断业务请求完成，转发事件和结果，发布附件。 |
+
+入口 `bucket_runtime.server.serve()` 先启动插件 RPC、健康检查及适配器事件消费，再调用 `opencode.start(adapter.on_opencode_event)`。OpenCode 就绪后，适配器恢复请求并连接 CU/Gateway。原 `Runtime`、`Supervisor`、`OpenCodeClient`、`NativeEvents` 类已移除；进程和传输统一由代理管理，事件业务处理归适配器。会话 API 显式接收 `directory=`，不再复制客户端或修改共享客户端的工作目录。
+
+按 frontend 重置的 HTTP 接口保持不变。CU 发送 `reset_opencode` 控制调用，适配器检查空闲并暂停接单，再调用代理的 `reset()`；代理负责进程替换、订阅恢复和配置回退，适配器负责更新业务可用状态。
 
 分层部署、事件过滤、可靠移交和旧数据库迁移详见 [CHANNEL_GATEWAY.md](CHANNEL_GATEWAY.md)。CU 不再接收内容事件或组装最终回复；渠道最终外发字段保持原版本。
 
@@ -179,7 +190,7 @@ kubectl apply -f k8s/opencode/backend.yaml
 
 - QXT 支持 group_chat_at_bot，保留群 ID 为可信回复目标。QXT/飞书统一发送对象 URL，渠道不下载或重新上传附件。详见 ATTACHMENT_UPLOAD_API.md。
 - 新增 hazard_expert_mcp，业务客户端可上传 Base64 附件到 MinIO，再调用分析工具请求 Gateway /inbound-sync。部署已改用 opencode-sv、opencode-source-pvc、opencode-runtime=true 和 Gateway Service 8000 端口。它不是应注册给同一 OpenCode 的模型工具，否则可能递归请求自身。
-- 订阅失败记录 frontend/chat 上下文并传播错误；取消不被吞掉。Supervisor 使用继承的 stdout/stderr，runtime serve 在 finally 停止 OpenCode 子进程。
+- 订阅失败记录 frontend/chat 上下文并传播错误；取消不被吞掉。OpenCodeServer 使用继承的 stdout/stderr，runtime serve 在 finally 关闭代理及其 OpenCode 子进程。
 - Web 代理要求显式 frontend_id、user_id、chat_id，额外字段直接拒绝；代理不传递 Authorization。
 - 本地文件由 runtime publish_attachment 发布；附件引用接口支持 JSON 引用和 QXT outbound URL。业务客户端可通过 hazard_expert_mcp 上传 Base64 文件到 MinIO。
 

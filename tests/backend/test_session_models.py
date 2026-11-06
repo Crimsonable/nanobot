@@ -3,8 +3,8 @@ import json
 import httpx
 import pytest
 
-from agent_backend.config import OpenCodeConfig
-from bucket_runtime.opencode_client import OpenCodeClient
+from agent_backend.config import RuntimeConfig
+from bucket_runtime.opencode_server import OpenCodeServer
 
 
 @pytest.mark.asyncio
@@ -20,13 +20,12 @@ async def test_resumed_session_uses_latest_effective_model(tmp_path):
         assert request.url.path == "/session/existing-session/prompt_async"
         return httpx.Response(204)
 
-    client = OpenCodeClient(OpenCodeConfig(), "password")
+    client = OpenCodeServer(RuntimeConfig(frontend_id="web", bucket_id="b"), "password")
     await client.http.aclose()
     async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
-        scoped = client.for_directory(tmp_path)
-        await scoped.submit("existing-session", "m1", "first")
+        await client.submit("existing-session", "m1", "first", directory=tmp_path)
         model = "new-provider/family/new-model"
-        await scoped.submit("existing-session", "m2", "continue")
+        await client.submit("existing-session", "m2", "continue", directory=tmp_path)
     assert [r.method for r in calls] == ["GET", "POST", "GET", "POST"]
     assert json.loads(calls[1].content)["model"] == {"providerID": "old-provider", "modelID": "old-model"}
     assert json.loads(calls[3].content) == {
@@ -42,7 +41,7 @@ async def test_missing_or_invalid_default_model_does_not_submit(model):
         assert request.method == "GET" and request.url.path == "/config"
         return httpx.Response(200, json={} if model is None else {"model": model})
 
-    client = OpenCodeClient(OpenCodeConfig(), "password")
+    client = OpenCodeServer(RuntimeConfig(frontend_id="web", bucket_id="b"), "password")
     await client.http.aclose()
     async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
         with pytest.raises(RuntimeError, match="default model must be configured"):
@@ -61,7 +60,7 @@ async def test_config_failure_is_not_treated_as_ambiguous_prompt_submission(fail
         assert failure == "prompt_transport"
         raise httpx.ReadTimeout("response lost", request=request)
 
-    client = OpenCodeClient(OpenCodeConfig(), "password")
+    client = OpenCodeServer(RuntimeConfig(frontend_id="web", bucket_id="b"), "password")
     await client.http.aclose()
     expected = {"config_transport": RuntimeError, "config_status": httpx.HTTPStatusError,
                 "prompt_transport": httpx.ReadTimeout}[failure]

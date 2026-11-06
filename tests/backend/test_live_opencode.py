@@ -20,10 +20,10 @@ from websockets.asyncio.client import connect
 from support import register_bucket
 from agent_backend.config import ControlConfig, RuntimeConfig, GatewaySettings
 from agent_backend.wire import Peer
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.sandbox_executor import SandboxExecutor
 from bucket_runtime.server import rpc_app
-from bucket_runtime.supervisor import Supervisor
+from bucket_runtime.opencode_server import OpenCodeServer
 from container_up.server import create_app
 
 USED_PORTS: set[int] = set()
@@ -196,30 +196,29 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
             yield "data: [DONE]\n\n"
         return StreamingResponse(stream(), media_type="text/event-stream")
 
-    supervisor = Supervisor(runtime_config)
+    opencode = OpenCodeServer(runtime_config)
     executor = SandboxExecutor(runtime_config.sandbox, runtime_config.limits.output_bytes)
-    runtime = Runtime(runtime_config, supervisor.client, executor)
+    runtime = BucketRuntimeAdapter(runtime_config, opencode, executor)
     runtime.artifacts.upload = upload
     def forbid_reply_queries(request):
         assert not request.url.path.endswith("/message"), "runtime must not query replies"
     async def check_request(request):
         forbid_reply_queries(request)
-    supervisor.client.http.event_hooks["request"].append(check_request)
+    opencode.http.event_hooks["request"].append(check_request)
 
     peer_task = sse_task = gateway_task = None
-    async with running(model, model_port), running(app, cu_port), running(gateway, gateway_port), running(rpc_app(runtime, supervisor.rpc_token), rpc_port):
-        event_task = asyncio.create_task(runtime.native_events.run())
+    async with running(model, model_port), running(app, cu_port), running(gateway, gateway_port), running(rpc_app(runtime, opencode.rpc_token), rpc_port):
+        event_task = asyncio.create_task(runtime.process_events())
         try:
             await executor.probe(tmp_path / "probe")
-            await supervisor.start()
-            sse_task = asyncio.create_task(runtime.native_events.subscribe())
-            await asyncio.wait_for(runtime.native_events.connected.wait(), 10)
-            initialized = await supervisor.client.http.get("/config")
+            await opencode.start(runtime.on_opencode_event)
+            await asyncio.wait_for(runtime.opencode.connected.wait(), 10)
+            initialized = await opencode.http.get("/config")
             assert initialized.status_code == 200, initialized.text
             # The plugin initializes on tool discovery, not necessarily on config access.
-            initialized = await supervisor.client.http.get("/agent")
+            initialized = await opencode.http.get("/agent")
             assert initialized.status_code == 200, initialized.text
-            assert runtime.plugin_ready
+            assert runtime.opencode.plugin_ready.is_set()
             async with connect(runtime_config.control_url, proxy=None, additional_headers={
                 "X-Bucket-ID": "bucket-0"}) as socket_:
                 runtime.peer = Peer(socket_, runtime.db, "bucket-0", runtime.on_command)
@@ -256,7 +255,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                                e["properties"]["part"]["type"] == "tool" for e in own_events)
                     assert any(e["payload"]["event"]["type"] == "session.status" for e in raw_events)
                     alice_row = runtime.db.get("run", "req-test")
-                    session_info = await runtime.run_client(alice_row).session(alice_row["session_id"])
+                    session_info = await runtime.opencode.session(alice_row["session_id"], directory=Path(alice_row["directory"]))
                     context = session_info["metadata"]["bucket_runtime"]
                     assert "execution" not in context
                     assert context["frontend_id"] == "web" and context["user_id"] == "alice"
@@ -289,7 +288,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     assert other.json()["attachments"][0]["attachment_id"] != result["attachments"][0]["attachment_id"]
                     assert followup.json()["status"] == "completed", followup.text
                     assert runtime.db.get("run", "req-alice-next")["session_id"] == alice_row["session_id"]
-                    session_info = await runtime.run_client(alice_row).session(alice_row["session_id"])
+                    session_info = await runtime.opencode.session(alice_row["session_id"], directory=Path(alice_row["directory"]))
                     assert set(session_info["metadata"]["bucket_runtime"]["requests"].values()) == {"req-test", "req-alice-next"}
                     # A separate chat for the same user gets a different native session.
                     other_chat = await client.post("/inbound-sync/web", json={"user_id": "alice",
@@ -297,19 +296,18 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     assert other_chat.json()["status"] == "completed", other_chat.text
                     other_row = runtime.db.get("run", "req-alice-other")
                     assert other_row["session_id"] not in {alice_row["session_id"], bob_row["session_id"]}
-                    other_info = await runtime.run_client(other_row).session(other_row["session_id"])
+                    other_info = await runtime.opencode.session(other_row["session_id"], directory=Path(other_row["directory"]))
                     assert other_info["metadata"]["bucket_runtime"]["chat_id"] == "group-2"
                     assert other_info["directory"] == str(alice_workspace)
-                    bob_info = await runtime.run_client(bob_row).session(bob_row["session_id"])
+                    bob_info = await runtime.opencode.session(bob_row["session_id"], directory=Path(bob_row["directory"]))
                     assert bob_info["directory"] == bob_row["directory"]
                     assert bob_info["directory"] != str(alice_workspace)
                     # Restart the real OpenCode process with the same persisted home/session.
-                    supervisor.process.terminate()
-                    await asyncio.wait_for(supervisor.process.wait(), 10)
-                    runtime.plugin_ready = False
-                    await supervisor.start()
-                    await supervisor.client.http.get("/agent")
-                    assert runtime.plugin_ready
+                    await opencode.stop()
+                    runtime.opencode.plugin_ready.clear()
+                    await opencode.start(runtime.on_opencode_event)
+                    await opencode.http.get("/agent")
+                    assert runtime.opencode.plugin_ready.is_set()
                     resumed = await client.post("/inbound-sync/web", json={"chat_id": "chat",
                         "user_id": "alice", "content": "Repeat after restart", "request_id": "req-resumed"})
                     assert resumed.json()["status"] == "completed", resumed.text
@@ -356,7 +354,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                 if task:
                     task.cancel()
             await asyncio.gather(*(t for t in [peer_task, event_task, sse_task, gateway_task] if t), return_exceptions=True)
-            await supervisor.stop()
+            await opencode.close()
             runtime.db.close()
     output = capfd.readouterr().out
     logs = [json.loads(line) for line in output.splitlines() if line.startswith('{"user_id":')]

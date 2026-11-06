@@ -11,7 +11,7 @@ from agent_backend.config import ControlConfig, EventForwarding, GatewaySettings
 from agent_backend.ingress import Inbound
 from agent_backend.models import Envelope, Result, Submit, digest
 from agent_backend.wire import Peer
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.adapter import BucketRuntimeAdapter
 from channel_gateway.server import create_app
 from support import LocalControl, emit_answer
 
@@ -24,7 +24,7 @@ def system(tmp_path):
     app = create_app(config, GatewaySettings(state_root=tmp_path / "gw"), channels, control)
     common = tmp_path / "common"
     (common / "web/app").mkdir(parents=True)
-    runtime = Runtime(RuntimeConfig(frontend_id="web", bucket_id="b", common_root=common,
+    runtime = BucketRuntimeAdapter(RuntimeConfig(frontend_id="web", bucket_id="b", common_root=common,
         state_root=tmp_path / "bu", workspace_root=tmp_path / "users"), SimpleNamespace(), SimpleNamespace())
     yield app, control.service, runtime
     app.state.service.db.close()
@@ -95,7 +95,7 @@ async def test_idle_is_required_and_drain_waits_for_gateway_ack(system):
     def event(kind, props):
         bu.native_event({"type": "opencode.event", "event_id": str(time.time_ns()), "directory": row["directory"],
                          "event": {"type": kind, "properties": props}})
-        while bu.native_events.process_next():
+        while bu.process_next_event():
             pass
     event("session.status", {"sessionID": "s", "status": {"type": "idle"}})
     assert bu.db.get("run", "r")["status"] == "running"  # Unrelated pre-submit idle.
@@ -117,7 +117,7 @@ async def test_filter_applies_to_deltas_and_child_idle_does_not_end_parent(syste
     row = bu.db.get("run", "r")
     def send(event):
         bu.native_event({"type": "opencode.event", "event_id": str(time.time_ns()), "directory": row["directory"], "event": event})
-        while bu.native_events.process_next():
+        while bu.process_next_event():
             pass
     send({"type": "message.part.updated", "properties": {"part": {"id": "thought", "sessionID": "s",
         "messageID": "answer", "type": "reasoning", "text": "private"}}})

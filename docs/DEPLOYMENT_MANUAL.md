@@ -520,12 +520,13 @@ curl -fsS "$GATEWAY_URL/health/ready"
 | 插件 | 重新 npm ci/build，同步 dist、node_modules、package 文件，重启 bucket |
 | skills/模板/规则 | 更新实际 common/<frontend>/app；涉及启动配置时重启相关桶 |
 | 总表 frontends.json | 更新实际 common 文件，重启 CU 及相关桶 |
-| 模型/权限配置 | 更新该 frontend 的 config，处理已有会话后重启该 frontend 的桶 |
+| opencode-server.json（模型/provider/MCP 等） | 更新该 frontend 的 config，按 frontend_id 调用第 8.4 节批量重置接口 |
+| user-permissions.yaml | 更新该 frontend 的 config，处理已有会话后重启该 frontend 的桶 |
 | Python/系统依赖 | 重建镜像，使用新标签，导入或推送，修改清单和实际总表 |
 | bucket 镜像、挂载、启动参数 | 更新总表/源码，并重新生成已有 bucket Deployment；仅 restart 不会改 Pod 模板 |
 | OpenCode 程序 | 使用第 5.3 节 `.new` + rename 替换，重启 bucket |
 
-更新前停止提交、等待任务结束，再按第 7 章停服。备份 state 时必须停止所有写入者，复制整个状态目录；运行中的单个 SQLite db 文件不能作为一致备份。更新不需要删除 state。
+仅更新 opencode-server.json 可按第 8.4 节操作，无需整套停服。其他更新前停止提交、等待任务结束，再按第 7 章停服。备份 state 时必须停止所有写入者，复制整个状态目录；运行中的单个 SQLite db 文件不能作为一致备份。更新不需要删除 state。
 
 ### 8.2 同步源码与恢复
 
@@ -564,6 +565,41 @@ kubectl apply -f k8s/opencode/backend.yaml
 工具要求 bucket 有明确的 `opencode.io/frontend-id` annotation，保留当前副本数。旧统一启动器升级也需要重新生成模板；CU 启动入口是 `python -m container_up`，bucket 是 `python -m bucket_runtime`，`agent_backend` 仅为库。
 
 session 权限变化不能只靠重启修复：先完成对应 frontend 的整桶回收，再更新配置，下一次分配创建新 session；旧 session 权限回读不一致会拒绝执行。会话迁移与历史保留限制见 [日志与会话说明](SESSION_LOGGING.md)。
+
+### 8.4 手动重新加载 OpenCode 配置
+
+将新配置写入实际 `common/<frontend_id>/config/opencode-server.json` 后，调用 CU 内部接口：
+
+```bash
+curl --fail-with-body -X POST \
+  "http://container-up:8000/internal/frontends/<frontend_id>/opencode/reset"
+```
+
+此地址从集群内部访问；使用端口转发时将主机和端口替换为对应本地地址。接口无请求体，按 frontend_id 查找所属 bucket，并发重启其中的 OpenCode 子进程，等待健康检查、插件握手和事件订阅恢复；保留 runtime、Pod、控制连接、会话历史和工作目录。其他 frontend 不受影响。没有配置文件监听器，每次调用都重新读取配置。已回收的 idle bucket 没有运行进程，会列入 skipped_buckets；之后启动时直接加载最新配置。成功响应示例：
+
+```json
+{
+  "frontend_id": "web-test",
+  "status": "ready",
+  "buckets": [
+    {"bucket_id": "bucket-a", "status": "ready"},
+    {"bucket_id": "bucket-b", "status": "ready"}
+  ],
+  "skipped_buckets": []
+}
+```
+
+全部成功返回 HTTP `200`；没有运行中的 bucket 时返回 `200`、`status=no_running_buckets`；frontend 未注册返回 `404`。只要有 bucket 未成功重置，就返回 HTTP `207`、`status=partial_failure`，每个失败项包含 `bucket_id`、`status=failed`、`status_code` 和 `detail`。其余 bucket 仍独立完成重置，不能把 `207` 当作全部成功。失败项的 status_code 含义如下：
+
+| status_code | 含义及处理 |
+| --- | --- |
+| 409 | bucket 不在 running 状态、有未完成请求/会话操作/未确认命令，或正在重置；稍后重试 |
+| 502 | 配置读取或启动失败；响应说明是否已恢复旧配置，或 bucket 仍不可用 |
+| 503 | bucket 未连接或调用中断开；重置结果可能未知，应检查状态后再操作 |
+
+重置期间相应 bucket 不接收新分配，已有会话迁移等待重置结束。调用方 HTTP 断开不会取消已经开始的批量重置。配置解析失败时保留原进程；新配置启动失败时尝试使用内存中的上一份配置恢复。若恢复也失败，runtime 保持在线但不接单，修正配置后可再次调用。回退不会改写磁盘上的配置文件。再次按 frontend 调用会重新尝试当时所有非 idle bucket，包括上次已成功的 bucket。
+
+此接口仅重新读取 `opencode-server.json`，不重新加载 `frontends.json`、`user-permissions.yaml` 或日志配置，也不清空对话。首次部署本接口仍需更新并重启 CU 和 bucket runtime；之后修改 OpenCode 配置即可调用接口生效。
 
 ## 9. 删除命名空间与重装
 

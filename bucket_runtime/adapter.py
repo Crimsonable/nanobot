@@ -1,3 +1,4 @@
+"""Adapt CU/Gateway business requests and native events to OpenCode services."""
 from __future__ import annotations
 
 import asyncio
@@ -8,26 +9,41 @@ import os
 import shutil
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 
 from agent_backend.config import PermissionConfig, RuntimeConfig, load_config
 from agent_backend.files import file_hash
 from agent_backend.journal import Journal
-from agent_backend.models import TERMINAL, Attachment, Envelope, Result, Submit, digest, uid
+from agent_backend.models import (
+    TERMINAL,
+    Attachment,
+    Envelope,
+    NativeEvent,
+    OpenCodeEvent,
+    Result,
+    Submit,
+    digest,
+    uid,
+)
 from agent_backend.wire import Peer
 from bucket_runtime.artifact_service import ArtifactService
 from bucket_runtime.file_lock import publication_lock
-from bucket_runtime.opencode_client import OpenCodeClient
+from bucket_runtime.opencode_server import OpenCodeServer
 from bucket_runtime.permissions import public_roots, session_rules
 from bucket_runtime.sandbox_executor import SandboxExecutor, contained
+from bucket_runtime.session_logger import SessionLogger
 
 log = logging.getLogger(__name__)
 
 
-class Runtime:
-    def __init__(self, config: RuntimeConfig, client: OpenCodeClient, executor: SandboxExecutor):
-        self.config, self.client, self.executor = config, client, executor
+class BucketRuntimeAdapter:
+    """Own BU request policy, durable business state and event/result delivery."""
+
+    def __init__(self, config: RuntimeConfig, opencode: OpenCodeServer, executor: SandboxExecutor | None = None):
+        self.config, self.opencode = config, opencode
+        self.executor = executor or SandboxExecutor(config.sandbox, config.limits.output_bytes)
         self.permissions = (load_config(config.permissions_file, PermissionConfig)
                             if config.permissions_file else PermissionConfig())
         self.opencode_worktrees: dict[Path, Path] = {}
@@ -48,10 +64,13 @@ class Runtime:
         self.draining = False
         self.intake_closed = False
         self.ready = False
-        self.plugin_ready = False
+        self.resetting = False
         self.completions: dict[str, asyncio.Event] = {}
-        from bucket_runtime.native_events import NativeEvents
-        self.native_events = NativeEvents(self)
+        self._control_lock = asyncio.Lock()
+        self._reset_task: asyncio.Task | None = None
+        self._events_changed = asyncio.Event()
+        self.session_logger = SessionLogger(config.logging_file)
+        self._migrate_event_queue()
 
     def policy(self, submit: Submit):
         return self.permissions.for_user(submit.identity.frontend_id, submit.identity.user_id)
@@ -80,10 +99,6 @@ class Runtime:
     def worktree(self, submit: Submit) -> Path:
         workspace = self.workspace(submit)
         return self.opencode_worktrees.get(workspace, workspace)
-
-    def run_client(self, row: dict) -> OpenCodeClient:
-        directory = Path(row["directory"])
-        return self.client.for_directory(directory)
 
     def session_context(self, submit: Submit, message_id: str) -> dict:
         return {"schema_version": 1, **submit.identity.model_dump(),
@@ -122,7 +137,7 @@ class Runtime:
                 if self.workspace(submit) != workspace:
                     raise PermissionError("session workspace mismatch")
                 return submit
-            info = await self.client.for_directory(workspace).session(session_id)
+            info = await self.opencode.session(session_id, directory=workspace)
             if Path(info["directory"]).resolve() != workspace:
                 raise PermissionError("session workspace mismatch")
             session_id = info.get("parentID")
@@ -145,7 +160,7 @@ class Runtime:
                 raise RuntimeError("CANCEL_FAILED")
         else:
             if row.get("session_id"):
-                await self.run_client(row).abort(row["session_id"])
+                await self.opencode.abort(row["session_id"], directory=Path(row["directory"]))
         self.finish(Result(request_id=request_id, status="cancelled"))
 
     async def cancel_conversation(self, submit: Submit) -> None:
@@ -203,9 +218,9 @@ class Runtime:
                    for row in self.db.records("run")):
                 raise RuntimeError("user still has outstanding requests")
             from agent_backend.workspaces import workspace_path
-            client = self.client.for_directory(workspace_path(self.config.workspace_root, identity))
+            directory = workspace_path(self.config.workspace_root, identity)
             try:
-                info = await client.session(session_id)
+                info = await self.opencode.session(session_id, directory=directory)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 404:
                     raise
@@ -216,19 +231,19 @@ class Runtime:
                     **identity.model_dump(), "chat_id": payload["chat_id"],
                 }.items()):
                     raise PermissionError("session ownership mismatch")
-                if Path(info["directory"]).resolve() != client.directory:
+                if Path(info["directory"]).resolve() != directory:
                     raise PermissionError("session workspace mismatch")
             if payload["operation"] == "quiesce":
                 if info is None:
                     return  # A retried delete may already have removed the source.
                 sessions = [session_id]
                 for current in sessions:
-                    await client.abort(current)
-                    sessions.extend(child["id"] for child in await client.children(current)
+                    await self.opencode.abort(current, directory=directory)
+                    sessions.extend(child["id"] for child in await self.opencode.children(current, directory=directory)
                                     if child["id"] not in sessions)
             elif payload["operation"] == "delete":
                 if info is not None:
-                    await client.delete_session(session_id)
+                    await self.opencode.delete_session(session_id, directory=directory)
                 forget_local_session(self.db, key, payload["session_ids"])
             else:
                 raise ValueError("unsupported session operation")
@@ -255,7 +270,7 @@ class Runtime:
 
     def accepting(self) -> bool:
         count = self.db.db.execute("SELECT COUNT(*) FROM outbox WHERE peer='gateway'").fetchone()[0]
-        return not self.draining and count < max(1, self.db.max_outbox // 2)
+        return not self.draining and not self.resetting and count < max(1, self.db.max_outbox // 2)
 
     async def on_command(self, event: Envelope) -> None:
         if event.type == "request.submit":
@@ -328,10 +343,9 @@ class Runtime:
                 else:
                     self.launch(row["request_id"])
             else:
-                # A new supervisor process cannot prove prior side effects did not happen.
+                # A restarted adapter cannot prove prior side effects did not happen.
                 if row.get("session_id"):
-                    client = self.run_client(row)
-                    await client.abort(row["session_id"])
+                    await self.opencode.abort(row["session_id"], directory=Path(row["directory"]))
                 self.finish(Result(request_id=row["request_id"], status="failed",
                     error="EXECUTION_INTERRUPTED", partial=bool(row["artifacts"]), attachments=row["artifacts"]))
 
@@ -345,10 +359,9 @@ class Runtime:
                     async with self.capacity:
                         if self.draining or self.db.get("run", request_id).get("cancel_requested"):
                             raise asyncio.CancelledError()
-                        await self.native_events.connected.wait()
+                        await self.opencode.connected.wait()
                         workspace = self.workspace(submit)
-                        client = self.client.for_directory(workspace)
-                        self.opencode_worktrees[workspace] = Path((await client.paths())["worktree"])
+                        self.opencode_worktrees[workspace] = Path((await self.opencode.paths(directory=workspace))["worktree"])
                         session = self.db.get("session", submit.session_key)
                         if submit.session_id:
                             session = {"session_id": submit.session_id,
@@ -359,14 +372,14 @@ class Runtime:
                             if session["identity_id"] != submit.identity.identity_id:
                                 raise PermissionError("conversation ownership mismatch")
                             session_id = session["session_id"]
-                            info = await client.session(session_id)
+                            info = await self.opencode.session(session_id, directory=workspace)
                             if Path(info["directory"]).resolve() != workspace:
                                 session_id = None
                                 raise RuntimeError("SESSION_WORKSPACE_MISMATCH: existing chat belongs to another directory; start a new chat")
-                            client.check_permissions(info, self.session_permissions(submit))
-                            await client.set_context(session_id, context, info)
+                            self.opencode.check_permissions(info, self.session_permissions(submit))
+                            await self.opencode.set_context(session_id, context, info, directory=workspace)
                         else:
-                            session_id = await client.create_session(self.session_permissions(submit), context)
+                            session_id = await self.opencode.create_session(self.session_permissions(submit), context, directory=workspace)
                         self.db.put("session", submit.session_key, {"session_id": session_id,
                             "identity_id": submit.identity.identity_id, "directory": str(workspace)})
                         row = self.db.get("run", request_id)
@@ -399,8 +412,8 @@ class Runtime:
                         self.db.put("native_session", key, {**native, "active_input": message_id})
                         completed = self.completions.setdefault(request_id, asyncio.Event())
                         try:
-                            await self.native_events.connected.wait()
-                            await client.submit(session_id, message_id, text)
+                            await self.opencode.connected.wait()
+                            await self.opencode.submit(session_id, message_id, text, directory=workspace)
                         except httpx.TransportError:
                             # Submission may have reached OpenCode. Await SSE;
                             # never query messages or resubmit an uncertain request.
@@ -409,7 +422,7 @@ class Runtime:
         except asyncio.CancelledError:
             if session_id:
                 try:
-                    await client.abort(session_id)
+                    await self.opencode.abort(session_id, directory=workspace)
                 except Exception:
                     # Fail closed: no new request may use a possibly still running server.
                     self.draining = True
@@ -422,7 +435,7 @@ class Runtime:
         except Exception as exc:
             try:
                 if session_id:
-                    await client.abort(session_id)
+                    await self.opencode.abort(session_id, directory=workspace)
             except Exception:
                 self.draining = True
             finally:
@@ -433,9 +446,6 @@ class Runtime:
 
         finally:
             self.completions.pop(request_id, None)
-
-    def native_event(self, body: dict) -> dict:
-        return self.native_events.accept(body)
 
     def gateway_emit(self, event: Envelope) -> None:
         import base64
@@ -555,7 +565,207 @@ class Runtime:
 
     async def shutdown(self) -> None:
         self.draining = True
+        if self._reset_task:
+            self._reset_task.cancel()
+            await asyncio.gather(self._reset_task, return_exceptions=True)
+        self.ready = False
         tasks = list(self.tasks.values())
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _migrate_event_queue(self) -> None:
+        # Preserve already accepted events when upgrading from plugin transport.
+        with self.db.transaction():
+            for old, new in [("plugin_pending", "native_pending"), ("plugin_failed", "native_failed")]:
+                self.db.db.execute("UPDATE records SET kind=? WHERE kind=?", (new, old))
+            self.db.db.execute("INSERT OR IGNORE INTO inbox SELECT 'opencode', event_id FROM inbox WHERE peer='plugin'")
+            self.db.db.execute("DELETE FROM inbox WHERE peer='plugin'")
+
+    async def on_opencode_event(self, frame: dict) -> None:
+        while self.db.db.execute("SELECT COUNT(*) FROM records WHERE kind='native_pending'").fetchone()[0] >= self.config.limits.outbox_messages:
+            await asyncio.sleep(0.1)
+        native = frame["payload"]
+        self.native_event({"type": "opencode.event", "event_id": native.get("id") or uuid4().hex,
+                           "directory": frame.get("directory") or "global", "event": native})
+
+    async def control(self, payload: dict) -> None:
+        if payload.get("operation") != "reset_opencode":
+            async with self._control_lock:
+                if self.resetting:
+                    raise RuntimeError("OpenCode is unavailable")
+                return await self.session_operation(payload)
+        if self._reset_task and not self._reset_task.done():
+            raise RuntimeError("OpenCode reset already in progress")
+        self._reset_task = asyncio.create_task(self.reset_opencode())
+        self._reset_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        await asyncio.shield(self._reset_task)
+
+    async def reset_opencode(self) -> None:
+        async with self._control_lock:
+            if self.draining or self.tasks or any(row["status"] not in TERMINAL for row in self.db.records("run")):
+                raise RuntimeError("bucket has active requests or is draining")
+            self.resetting = True
+            self.ready = False
+            self.emit("bucket.status", "", {"accepting": False})
+            try:
+                await self.opencode.reset()
+            finally:
+                self.ready = self.opencode.ready
+                self.resetting = not self.ready
+                self.opencode_worktrees.clear()
+                self.emit("bucket.status", "", {"accepting": self.accepting()})
+
+    def native_event(self, body: dict) -> dict:
+        if self.intake_closed:
+            return {"ok": True, "ignored": True}
+        event = NativeEvent.model_validate(body)
+        if not isinstance(event.event.get("type"), str):
+            raise ValueError("native event type is required")
+        with self.db.transaction():
+            if self.db.seen("opencode", event.event_id):
+                return {"ok": True, "duplicate": True}
+            self.db.put("native_pending", event.event_id, event.model_dump(mode="json"))
+            self.db.accept("opencode", event.event_id)
+        self._events_changed.set()
+        return {"ok": True}
+
+    def _attribute_event(self, raw: dict) -> tuple[OpenCodeEvent, dict]:
+        native = raw["event"]
+        kind, props = native["type"], native.get("properties", {})
+        info, part = props.get("info") or {}, props.get("part") or {}
+        session = (props.get("sessionID") or part.get("sessionID") or info.get("sessionID")
+                   or (info.get("id") if kind.startswith("session.") else "") or "")
+        key = digest([raw["directory"], session])
+        state = self.db.get("native_session", key) or {}
+        if kind in {"session.created", "session.updated"}:
+            context = info.get("metadata", {}).get("bucket_runtime", {})
+            if context.get("schema_version") == 1:
+                state["context"] = context
+            if info.get("parentID"):
+                state["parent"] = info["parentID"]
+        message = (props.get("messageID") or part.get("messageID")
+                   or (info.get("id") if kind == "message.updated" else "") or "")
+        if part.get("callID"):
+            self.db.put("native_call", digest([key, part["callID"]]), {"message": message})
+        if not message and props.get("callID"):
+            message = (self.db.get("native_call", digest([key, props["callID"]])) or {}).get("message", "")
+        message_key = digest([session, message])
+        if kind == "message.updated":
+            # Routing identifiers only; never persist message text, parts or deltas.
+            self.db.put("native_message_route", message_key, {
+                "id": info.get("id"), "role": info.get("role"), "parentID": info.get("parentID")})
+        message_info = self.db.get("native_message_route", message_key) or {}
+        input_id = (message_info.get("id") if message_info.get("role") == "user"
+                    else message_info.get("parentID")) or ""
+        if kind == "message.updated" and info.get("role") == "user":
+            state["active_input"] = info["id"]
+        if kind in {"session.error", "session.status", "session.idle"}:
+            input_id = state.get("active_input", "")
+        context = state.get("context", {})
+        parent = state.get("parent")
+        seen = {session}
+        while not context and parent and parent not in seen:
+            seen.add(parent)
+            ancestor = self.db.get("native_session", digest([raw["directory"], parent])) or {}
+            context, parent = ancestor.get("context", {}), ancestor.get("parent")
+        rows = [r for r in self.db.records("run") if r.get("session_id") == session]
+        row = next((r for r in rows if input_id and r.get("message_id") == input_id), None)
+        owner_row = row or (rows[-1] if rows else None)
+        if owner_row is None:
+            # Child sessions share the parent's business chat, including when the
+            # parent has no metadata event in this runtime's received stream.
+            ancestors = [r for r in self.db.records("run") if r.get("session_id") in seen - {session}]
+            owner_row = ancestors[-1] if ancestors else None
+        if row is None and owner_row and kind in {"session.status", "session.error", "session.idle"}:
+            if owner_row["status"] == "running":
+                row = owner_row
+        if row is None and owner_row and session != owner_row.get("session_id"):
+            row = owner_row
+        if row is None and owner_row and owner_row["status"] == "running" and not message_info:
+            row = owner_row
+        owner = {}
+        if owner_row:
+            if Path(raw["directory"]).resolve() != Path(owner_row["directory"]).resolve():
+                raise PermissionError("native event workspace mismatch")
+            submit = Submit.model_validate(owner_row["submit"])
+            owner = {**submit.identity.model_dump(), "chat_id": submit.chat_id}
+        elif context:
+            from agent_backend.models import Identity
+            from agent_backend.workspaces import workspace_path
+            identity = Identity(frontend_id=context["frontend_id"], user_id=context["user_id"])
+            if (identity.frontend_id != self.config.frontend_id or
+                    Path(raw["directory"]).resolve() != workspace_path(
+                        self.config.workspace_root, identity).resolve()):
+                raise PermissionError("native session ownership mismatch")
+            owner = {**identity.model_dump(), "chat_id": context["chat_id"]}
+        if session:
+            self.db.put("native_session", key, state)
+        return OpenCodeEvent(**raw, session_id=session, message_id=message,
+                             input_message_id=input_id, request_id=row["request_id"] if row else ""), owner
+
+    def _forward_event(self, event) -> bool:
+        row = self.db.get("run", event.request_id)
+        if row["submit"].get("stream", False):
+            # Attribution/workspace checks still run before this policy. Keep all
+            # attributable native JSON, including unknown types and child sessions.
+            return True
+        from agent_backend.config import EventForwarding
+        policy = EventForwarding.model_validate(row.get("event_forwarding") or self.config.event_forwarding.model_dump())
+        kind, props = event.event["type"], event.event.get("properties", {})
+        part = props.get("part") or {}
+        part_key = digest([event.session_id, event.message_id, part.get("id") or props.get("partID")])
+        if part.get("type"):
+            self.db.put("native_part_type", part_key, {"type": part["type"]})
+        if kind not in policy.include_types:
+            return False
+        if not policy.include_child_sessions and event.session_id != row.get("session_id"):
+            return False
+        if kind.startswith("message.part."):
+            part_type = part.get("type") or (self.db.get("native_part_type", part_key) or {}).get("type")
+            return part_type in policy.include_part_types
+        return True
+
+    def process_next_event(self) -> bool:
+        # SELECT only the head; avoid loading the entire durable queue per event.
+        record = self.db.db.execute(
+            "SELECT value FROM records WHERE kind='native_pending' ORDER BY rowid LIMIT 1").fetchone()
+        if record is None:
+            return False
+        raw = json.loads(record[0])
+        try:
+            with self.db.transaction():
+                event, owner = self._attribute_event(raw)
+                line = self.session_logger.format(event, owner)
+                if owner and event.request_id and self._forward_event(event):
+                    envelope = Envelope(type="opencode.event", event_id=event.event_id,
+                        bucket_id=self.config.bucket_id, request_id=event.request_id,
+                        payload={**event.model_dump(mode="json"), **owner})
+                    self.gateway_emit(envelope)
+                self.reduce_event(event)
+                self.db.delete("native_pending", event.event_id)
+        except RuntimeError as exc:
+            if str(exc) == "OUTBOX_FULL":
+                return False  # Backpressure: retain ordered input until CU drains the outbox.
+            raise
+        except (ValueError, KeyError, TypeError, AttributeError, PermissionError) as exc:
+            # A malformed event cannot hold all later sessions hostage. Keep it for inspection.
+            with self.db.transaction():
+                self.db.put("native_failed", raw["event_id"], {"body": raw, "error": str(exc)})
+                self.db.delete("native_pending", raw["event_id"])
+            log.warning("native event retained after processing failure: %s", raw["event_id"])
+            return True
+        if line is not None:
+            self.session_logger.write(line)
+        return True
+
+    async def process_events(self):
+        while True:
+            self._events_changed.clear()
+            if self.process_next_event():
+                await asyncio.sleep(0)
+                continue
+            try:
+                await asyncio.wait_for(self._events_changed.wait(), timeout=1)
+            except TimeoutError:
+                pass

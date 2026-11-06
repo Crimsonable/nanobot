@@ -8,7 +8,7 @@ import pytest
 
 from agent_backend.config import RuntimeConfig
 from agent_backend.models import Identity, Submit
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.server import rpc_app
 
 
@@ -17,7 +17,7 @@ def callback_runtime(tmp_path):
     config = RuntimeConfig(frontend_id="web", common_root=tmp_path / "common", bucket_id="b", state_root=tmp_path / "state", workspace_root=tmp_path / "users")
     config.event_forwarding.include_types.extend(["future.event", "future.reasoning", "future.large"])
     config.event_forwarding.include_part_types.append("reasoning")
-    runtime = Runtime(config, SimpleNamespace(), SimpleNamespace())
+    runtime = BucketRuntimeAdapter(config, SimpleNamespace(connected=asyncio.Event(), plugin_ready=asyncio.Event()), SimpleNamespace())
     for user in ["alice", "bob"]:
         submit = Submit(request_id=user, chat_id="chat", identity=Identity(frontend_id="web", user_id=user),
                         content="hello", deadline_at=time.time() + 30)
@@ -31,7 +31,7 @@ def callback_runtime(tmp_path):
 
 @pytest.mark.asyncio
 async def test_sse_parser_handles_fragmented_multiline_frames(callback_runtime):
-    from bucket_runtime.opencode_client import OpenCodeClient
+    from bucket_runtime.opencode_server import OpenCodeServer
 
     class Stream(httpx.AsyncByteStream):
         async def __aiter__(self):
@@ -47,7 +47,7 @@ async def test_sse_parser_handles_fragmented_multiline_frames(callback_runtime):
         assert request.headers["accept"] == "text/event-stream"
         return httpx.Response(200, headers={"content-type": "text/event-stream; charset=utf-8"}, stream=Stream())
 
-    client = OpenCodeClient(callback_runtime.config.opencode, "password")
+    client = OpenCodeServer(callback_runtime.config, "password")
     await client.http.aclose()
     async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
         frames = [frame async for frame in client.events()]
@@ -75,13 +75,16 @@ async def test_global_stream_reconnects_deduplicates_and_routes_users(callback_r
         resumed.set()
         await hold.wait()
 
-    runtime.client.events = events
-    task = asyncio.create_task(runtime.native_events.subscribe())
+    from bucket_runtime.opencode_server import OpenCodeServer
+    runtime.opencode = OpenCodeServer(runtime.config)
+    runtime.opencode.events = events
+    runtime.opencode._on_event = runtime.on_opencode_event
+    task = asyncio.create_task(runtime.opencode._subscribe())
     try:
         await asyncio.wait_for(disconnected.wait(), 2)
-        assert not runtime.native_events.connected.is_set()
+        assert not runtime.opencode.connected.is_set()
         await asyncio.wait_for(resumed.wait(), 3)
-        assert runtime.native_events.connected.is_set()
+        assert runtime.opencode.connected.is_set()
         drain(runtime)
         outgoing = runtime.db.pending("gateway")
         own = [e for e in outgoing if e.payload["event"]["type"] == "future.event"]
@@ -94,16 +97,16 @@ async def test_global_stream_reconnects_deduplicates_and_routes_users(callback_r
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    assert not runtime.native_events.connected.is_set()
+    assert not runtime.opencode.connected.is_set()
+    await runtime.opencode.close()
 
 
 def test_upgrade_preserves_accepted_plugin_queue(callback_runtime):
-    from bucket_runtime.native_events import NativeEvents
     runtime = callback_runtime
     raw = raw_event(runtime)
     runtime.db.put("plugin_pending", raw["event_id"], raw)
     runtime.db.accept("plugin", raw["event_id"])
-    runtime.native_events = NativeEvents(runtime)
+    runtime._migrate_event_queue()
     assert not runtime.db.records("plugin_pending")
     assert runtime.native_event(raw)["duplicate"]
     drain(runtime)
@@ -164,7 +167,7 @@ def raw_event(runtime, **updates):
 
 
 def drain(runtime):
-    while runtime.native_events.process_next():
+    while runtime.process_next_event():
         pass
 
 
@@ -223,7 +226,7 @@ def test_durable_intake_survives_restart_and_outbox_backpressure(callback_runtim
     runtime = callback_runtime
     runtime.db.max_outbox = 0
     assert runtime.native_event(raw_event(runtime)) == {"ok": True}
-    assert not runtime.native_events.process_next()
+    assert not runtime.process_next_event()
     assert runtime.db.records("native_pending")
     runtime.db.close()
     runtime.db = Journal(runtime.config.state_root / "runtime.sqlite")
@@ -290,7 +293,7 @@ def test_child_session_and_compact_incremental_logs(callback_runtime, capsys):
 @pytest.mark.asyncio
 async def test_worker_consumes_durable_events(callback_runtime):
     runtime = callback_runtime
-    worker = asyncio.create_task(runtime.native_events.run())
+    worker = asyncio.create_task(runtime.process_events())
     try:
         runtime.native_event(raw_event(runtime))
         for _ in range(20):
@@ -317,12 +320,12 @@ def test_child_without_parent_metadata_uses_runtime_ownership(callback_runtime, 
 def test_runtime_log_settings_do_not_filter_transport(callback_runtime, capsys):
     import json
     runtime = callback_runtime
-    runtime.native_events.logger.settings.reasoning = False
+    runtime.session_logger.settings.reasoning = False
     send(runtime, "reasoning", "message.part.updated", {"part": {"id": "p", "sessionID": "s-alice",
         "messageID": "answer", "type": "reasoning", "text": "private reasoning"}})
     assert not capsys.readouterr().out
     assert runtime.db.pending("gateway")[-1].payload["event"]["properties"]["part"]["text"] == "private reasoning"
-    runtime.native_events.logger.settings.max_chars = 256
+    runtime.session_logger.settings.max_chars = 256
     send(runtime, "text", "message.part.updated", {"part": {"id": "text", "sessionID": "s-alice",
         "messageID": "answer", "type": "text", "text": "x" * 1000}})
     line = json.loads(capsys.readouterr().out)
@@ -352,7 +355,7 @@ async def test_large_events_survive_fragmentation_replay_and_cu_restart(callback
     raw = raw_event(runtime, event={"type": "future.large", "properties": {"sessionID": "s-alice", "text": '工具输出："\\\n' * 100000}})
     runtime.db.max_outbox = 1
     runtime.native_event(raw)
-    assert not runtime.native_events.process_next()
+    assert not runtime.process_next_event()
     assert not runtime.db.pending("gateway")  # No partial outgoing event was committed.
     assert runtime.db.seen("opencode", raw["event_id"])
     runtime.db.max_outbox = 100

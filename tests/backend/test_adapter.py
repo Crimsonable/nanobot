@@ -7,25 +7,20 @@ import pytest
 
 from agent_backend.config import RuntimeConfig
 from agent_backend.models import Envelope, Identity, Submit
-from bucket_runtime.opencode_client import OpenCodeClient
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.opencode_server import OpenCodeServer
+from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.sandbox_executor import SandboxExecutor
 
 
 class Client:
     def __init__(self):
         self.aborted = []
+        self.connected = asyncio.Event()
 
-    def for_directory(self, directory):
-        from copy import copy
-        scoped = copy(self)
-        scoped.directory = directory
-        return scoped
-
-    async def paths(self):
+    async def paths(self, *, directory=None):
         return {"worktree": self.worktree}
 
-    async def abort(self, session_id):
+    async def abort(self, session_id, *, directory=None):
         self.aborted.append(session_id)
 
 
@@ -45,9 +40,9 @@ def runtime(tmp_path):
                      "context_root": str(tmp_path / "context"), "config_file": str(tmp_path / "model.json"),
                      "plugin_file": str(tmp_path / "plugin"), "dependency_dir": str(tmp_path / "deps")},
     })
-    instance = Runtime(config, Client(), Executor())
-    instance.native_events.connected.set()
-    instance.client.worktree = str(tmp_path)
+    instance = BucketRuntimeAdapter(config, Client(), Executor())
+    instance.opencode.connected.set()
+    instance.opencode.worktree = str(tmp_path)
     yield instance
     instance.db.close()
 
@@ -59,7 +54,7 @@ def runtime(tmp_path):
     ({"healthy": False, "version": "1.18.31"}, False),
 ])
 async def test_opencode_health_does_not_require_a_version(runtime, payload, expected):
-    client = OpenCodeClient(runtime.config.opencode, "test-password")
+    client = OpenCodeServer(runtime.config, "test-password")
     await client.http.aclose()
     async with httpx.AsyncClient(
         base_url="http://opencode.test",
@@ -87,23 +82,23 @@ async def test_migration_stops_native_session_tree_and_removes_only_local_histor
     runtime.db.put("run", "r", {**row, "status": "completed"})
     operations = []
 
-    async def session(session_id):
+    async def session(session_id, *, directory=None):
         return {"id": session_id, "directory": row["directory"],
                 "metadata": {"bucket_runtime": {**submit.identity.model_dump(), "chat_id": submit.chat_id}}}
 
-    async def children(session_id):
+    async def children(session_id, *, directory=None):
         return [{"id": "child"}] if session_id == "s" else []
 
-    async def abort(session_id):
+    async def abort(session_id, *, directory=None):
         operations.append(("abort", session_id))
 
-    async def delete(session_id):
+    async def delete(session_id, *, directory=None):
         operations.append(("delete", session_id))
 
-    runtime.client.session = session
-    runtime.client.children = children
-    runtime.client.abort = abort
-    runtime.client.delete_session = delete
+    runtime.opencode.session = session
+    runtime.opencode.children = children
+    runtime.opencode.abort = abort
+    runtime.opencode.delete_session = delete
     runtime.db.put("session", submit.session_key, {"session_id": "s"})
     runtime.db.put("message", "one", {"session_id": "s"})
     runtime.db.put("message", "two", {"session_id": "other"})
@@ -319,7 +314,7 @@ async def test_slash_cancel_scoped_to_frontend_user_chat_and_idempotent(runtime)
     event = Envelope(type="request.submit", bucket_id="b", request_id="cancel",
                      payload=cancel.model_dump(mode="json"))
     await runtime.on_command(event)
-    assert runtime.client.aborted == ["s"]
+    assert runtime.opencode.aborted == ["s"]
     assert runtime.db.get("run", "r")["status"] == "cancelled"
     assert runtime.db.get("run", "bob-run")["status"] == "running"
     assert runtime.db.get("run", "other-run")["status"] == "queued"
@@ -327,7 +322,7 @@ async def test_slash_cancel_scoped_to_frontend_user_chat_and_idempotent(runtime)
     assert runtime.db.get("run", "cancel")["status"] == "completed"
     assert "cancel" not in runtime.tasks
     await runtime.on_command(event)
-    assert runtime.client.aborted == ["s"]
+    assert runtime.opencode.aborted == ["s"]
 
 
 @pytest.mark.asyncio
@@ -338,7 +333,7 @@ async def test_slash_cancel_idle_does_not_start_model(runtime):
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="cancel",
                                      payload=cancel.model_dump(mode="json")))
     assert runtime.db.get("run", "cancel")["status"] == "completed"
-    assert runtime.client.aborted == []
+    assert runtime.opencode.aborted == []
     assert not runtime.tasks
 
 
@@ -358,10 +353,10 @@ def test_permission_file_overrides_are_bound_to_frontend_and_user(runtime, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_supervisor_preserves_server_features(runtime, monkeypatch):
+async def test_opencode_process_preserves_server_features(runtime, monkeypatch):
     import json
 
-    from bucket_runtime.supervisor import Supervisor
+    from bucket_runtime.opencode_server import OpenCodeServer
     oc = runtime.config.opencode
     oc.binary.write_text("#!/bin/sh\nexit 0\n")
     oc.binary.chmod(0o555)
@@ -384,16 +379,26 @@ async def test_supervisor_preserves_server_features(runtime, monkeypatch):
 
     async def spawn(*args, **kwargs):
         captured.update(kwargs)
-        return type("Process", (), {"returncode": None})()
+
+        class Process:
+            returncode = None
+
+            def terminate(self):
+                self.returncode = 0
+
+            async def wait(self):
+                return self.returncode
+
+        return Process()
 
     async def healthy():
         return True
 
-    supervisor = Supervisor(runtime.config)
-    monkeypatch.setattr("bucket_runtime.supervisor.asyncio.create_subprocess_exec", spawn)
-    monkeypatch.setattr(supervisor.client, "health", healthy)
+    opencode = OpenCodeServer(runtime.config)
+    monkeypatch.setattr("bucket_runtime.opencode_server.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr(opencode, "health", healthy)
     try:
-        await supervisor.start()
+        await opencode._start_process()
         env = captured["env"]
         raw = json.loads(env["OPENCODE_CONFIG_CONTENT"])
         for key, value in features.items():
@@ -402,24 +407,24 @@ async def test_supervisor_preserves_server_features(runtime, monkeypatch):
         assert raw["plugin"] == ["custom-plugin", oc.plugin_file.resolve().as_uri()]
         assert not any("DISABLE" in key for key in env)
     finally:
-        await supervisor.client.close()
+        await opencode.close()
 
 
 @pytest.mark.asyncio
 async def test_slash_cancel_running_task_calls_abort(runtime):
     started = asyncio.Event()
 
-    async def create_session(permissions, context):
+    async def create_session(permissions, context, *, directory=None):
         assert context["user_id"] == "u"
         assert context["requests"][context["input_message_id"]] == "live"
         return "live-session"
 
-    async def submit_message(*args):
+    async def submit_message(*args, **kwargs):
         started.set()
         await asyncio.Event().wait()
 
-    runtime.client.create_session = create_session
-    runtime.client.submit = submit_message
+    runtime.opencode.create_session = create_session
+    runtime.opencode.submit = submit_message
     submit = Submit(request_id="live", chat_id="chat", identity=Identity(frontend_id="web", user_id="u"),
                     content="hello", deadline_at=time.time() + 60)
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="live",
@@ -428,7 +433,7 @@ async def test_slash_cancel_running_task_calls_abort(runtime):
     cancel = submit.model_copy(update={"request_id": "stop", "content": "/cancel"})
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="stop",
                                      payload=cancel.model_dump(mode="json")))
-    assert runtime.client.aborted == ["live-session"]
+    assert runtime.opencode.aborted == ["live-session"]
     assert runtime.db.get("run", "live")["status"] == "cancelled"
     assert runtime.db.get("run", "stop")["status"] == "completed"
 
@@ -588,11 +593,11 @@ async def test_session_permission_lookup_and_publication_check_current_request(r
     directory = str(runtime.workspace(submit))
     queried = []
 
-    async def session(session_id):
+    async def session(session_id, *, directory=None):
         queried.append(session_id)
         return {"directory": directory, "parentID": "s" if session_id == "child" else None}
 
-    runtime.client.session = session
+    runtime.opencode.session = session
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rpc_app(runtime, "key")),
                                  base_url="http://runtime", headers={"Authorization": "Bearer key"}) as client:
         body = {"session_id": "s", "directory": directory}

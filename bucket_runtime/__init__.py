@@ -1,1 +1,1 @@
-"""Managed OpenCode server, per-user permissions, tools and event adapter."""
+"""BucketRuntimeAdapter for business integration; OpenCodeServer for process and API access."""

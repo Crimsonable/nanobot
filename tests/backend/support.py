@@ -24,7 +24,7 @@ def emit_answer(runtime, session_id, request_id, input_id, directory, message):
     if message["info"].get("time", {}).get("completed") and message["info"].get("finish") in {"stop", "end_turn", "length", "content-filter"}:
         runtime.native_event({**base, "event_id": uuid4().hex, "event": {"type": "session.status",
             "properties": {"sessionID": session_id, "status": {"type": "idle"}}}})
-    while runtime.native_events.process_next():
+    while runtime.process_next_event():
         pass
     return event
 

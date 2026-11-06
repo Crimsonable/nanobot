@@ -12,9 +12,9 @@ from agent_backend.common import frontend_segment
 from agent_backend.config import RuntimeConfig, UserPolicy
 from agent_backend.models import Envelope, Identity, Submit
 from bucket_runtime.permissions import public_roots
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.sandbox_executor import SandboxExecutor
-from bucket_runtime.supervisor import Supervisor
+from bucket_runtime.opencode_server import OpenCodeServer
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def tenants(tmp_path):
             state_root=tmp_path / frontend / "state", workspace_root=tmp_path / "users",
             opencode={"context_root": tmp_path / "context"},
             frontend_config_file=common / "frontend.json")
-        runtime = Runtime(cfg, SimpleNamespace(), SandboxExecutor(cfg.sandbox, 4096))
+        runtime = BucketRuntimeAdapter(cfg, SimpleNamespace(), SandboxExecutor(cfg.sandbox, 4096))
         submit = Submit(request_id=frontend, chat_id=frontend,
             identity=Identity(frontend_id=frontend, user_id="alice"), content="test",
             deadline_at=time.time()+60)
@@ -150,20 +150,20 @@ async def test_skill_discovery_is_scoped_and_broad_configuration_rejected(tenant
     for runtime, submit in pairs:
         path = tmp_path / (submit.identity.frontend_id + ".json")
         runtime.config.opencode.config_file = path
-        supervisor = Supervisor(runtime.config)
+        opencode = OpenCodeServer(runtime.config)
         try:
             instructions = [str(common / submit.identity.frontend_id / "app/templates/AGENTS.md")]
             path.write_text(json.dumps({"instructions": instructions,
                 "skills": {"paths": [str(common / "{frontend_id}/app/skills")]}}))
-            assert supervisor.server_config()["instructions"] == instructions
-            assert supervisor.server_config()["skills"]["paths"] == [str(common / submit.identity.frontend_id / "app/skills")]
+            assert opencode.server_config()["instructions"] == instructions
+            assert opencode.server_config()["skills"]["paths"] == [str(common / submit.identity.frontend_id / "app/skills")]
             for wrong in [common, common / submit.identity.frontend_id, common / submit.identity.frontend_id / "config",
                           common / ("web-b" if submit.identity.frontend_id == "web-a" else "web-a") / "app"]:
                 path.write_text(json.dumps({"skills": {"paths": [str(wrong)]}}))
                 with pytest.raises(ValueError, match="current frontend"):
-                    supervisor.server_config()
+                    opencode.server_config()
         finally:
-            await supervisor.stop()
+            await opencode.close()
 
 
 @pytest.mark.parametrize("frontend", ["../other", "/other", "a/b", "a\\b", "..", "*", "frontend.json"])

@@ -9,9 +9,9 @@ import pytest
 
 from agent_backend.config import FrontendsConfig, load_frontends
 from agent_backend.models import Identity, Submit
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.sandbox_executor import SandboxExecutor
-from bucket_runtime.supervisor import Supervisor
+from bucket_runtime.opencode_server import OpenCodeServer
 from container_up.bucket_manager import BucketManager
 from agent_backend.ingress import Inbound
 from container_up.server import ControlService
@@ -52,7 +52,7 @@ def runtime_for(path, registry, frontend, tmp_path):
     config.state_root = tmp_path / "state" / frontend
     config.workspace_root = tmp_path / "workspaces"
     config.opencode.context_root = tmp_path / "context"
-    runtime = Runtime(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
+    runtime = BucketRuntimeAdapter(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
     submit = Submit(request_id=frontend, chat_id=frontend,
         identity=Identity(frontend_id=frontend, user_id="alice"), content="hello",
         deadline_at=time.time() + 60)
@@ -66,9 +66,9 @@ async def test_models_permissions_and_templates_are_selected_per_frontend(regist
     path, config = registry
     for frontend in ["web-a", "web-b"]:
         runtime, submit = runtime_for(path, config, frontend, tmp_path)
-        supervisor = Supervisor(runtime.config)
+        opencode = OpenCodeServer(runtime.config)
         try:
-            native = supervisor.server_config()
+            native = opencode.server_config()
             assert native["model"] == "local/" + frontend
             assert native["provider"]["local"]["options"]["apiKey"] == "model-secret-" + frontend
             assert native["skills"]["paths"] == [str(path.parent / frontend / "app/skills")]
@@ -86,7 +86,7 @@ async def test_models_permissions_and_templates_are_selected_per_frontend(regist
             plugin_scope(runtime, frontend, "search", "grep", {"path": str(path.parent / frontend / "app"), "pattern": "secret"})
         finally:
             runtime.db.close()
-            await supervisor.stop()
+            await opencode.close()
 
 
 @pytest.mark.asyncio

@@ -108,16 +108,16 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
     from websockets.asyncio.client import connect
     from agent_backend.config import ControlConfig, RuntimeConfig, GatewaySettings
     from agent_backend.wire import Peer
-    from bucket_runtime.runtime import Runtime
+    from bucket_runtime.adapter import BucketRuntimeAdapter
     from bucket_runtime.server import rpc_app
-    from bucket_runtime.supervisor import Supervisor
+    from bucket_runtime.opencode_server import OpenCodeServer
     from bucket_runtime.sandbox_executor import SandboxExecutor
     from container_up.server import create_app
     from support import register_bucket
     from test_live_opencode import Channels, port, running
 
     model_port, cu_port = port(), port()
-    calls, runtimes, supervisors, tasks = [], [], [], []
+    calls, runtimes, servers, tasks = [], [], [], []
     unblock = asyncio.Event()
     blocked = asyncio.Event()
     model = FastAPI()
@@ -171,22 +171,22 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
                 opencode={"binary": os.environ["OPENCODE_TEST_BINARY"], "port": port(),
                     "context_root": tmp_path / "context", "config_file": config_path,
                     "plugin_file": plugin, "dependency_dir": plugin.parent.parent})
-            supervisor = Supervisor(config)
-            supervisors.append(supervisor)
-            runtime = Runtime(config, supervisor.client, SandboxExecutor(config.sandbox, config.limits.output_bytes))
+            opencode = OpenCodeServer(config)
+            servers.append(opencode)
+            runtime = BucketRuntimeAdapter(config, opencode, SandboxExecutor(config.sandbox, config.limits.output_bytes))
             runtimes.append(runtime)
-            await stack.enter_async_context(running(rpc_app(runtime, supervisor.rpc_token), config.rpc_port))
-            await supervisor.start()
-            (await supervisor.client.http.get("/agent")).raise_for_status()
-            assert runtime.plugin_ready
+            await stack.enter_async_context(running(rpc_app(runtime, opencode.rpc_token), config.rpc_port))
+            await opencode.start(runtime.on_opencode_event)
+            (await opencode.http.get("/agent")).raise_for_status()
+            assert runtime.opencode.plugin_ready.is_set()
             register_bucket(app.state.service, bucket_id)
             template = control.runtime_templates["web"]
             template.state_root, template.workspace_root = tmp_path / "runtime", tmp_path / "users"
             socket_ = await stack.enter_async_context(connect(config.control_url, proxy=None,
                                                               additional_headers={"X-Bucket-ID": bucket_id}))
-            runtime.peer = Peer(socket_, runtime.db, bucket_id, runtime.on_command, runtime.session_operation)
-            tasks.extend([asyncio.create_task(runtime.peer.run()), asyncio.create_task(runtime.native_events.run()),
-                          asyncio.create_task(runtime.native_events.subscribe())])
+            runtime.peer = Peer(socket_, runtime.db, bucket_id, runtime.on_command, runtime.control)
+            tasks.extend([asyncio.create_task(runtime.peer.run()), asyncio.create_task(runtime.process_events()),
+                          asyncio.create_task(opencode.watch())])
             gw_socket = await stack.enter_async_context(connect(f"ws://127.0.0.1:{gateway_port}/internal/events/ws", proxy=None,
                                                                additional_headers={"X-Bucket-ID": bucket_id}))
             async def reject(event):
@@ -213,7 +213,7 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
             assert target.db.get("run", "second")["session_id"] == session_id
             assert "ORIGINAL_MEMORY_721" in str(calls[-1]["messages"])
             assert "Memory retained." in str(calls[-1]["messages"])
-            response = await source.client.for_directory(tmp_path / "users/web/alice").http.get(
+            response = await source.opencode.http.get(
                 f"/session/{session_id}", params={"directory": str(tmp_path / "users/web/alice")})
             assert response.status_code == 404
             key = Submit.model_validate(source.db.get("run", "first")["submit"]).session_key
@@ -226,7 +226,7 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            for supervisor in supervisors:
-                await supervisor.stop()
+            for opencode in servers:
+                await opencode.close()
             for runtime in runtimes:
                 runtime.db.close()

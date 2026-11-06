@@ -25,6 +25,7 @@ class BucketScheduler:
         self.reservations: dict[str, int] = {}
         self.task = None
         self.stopped: dict[str, asyncio.Event] = {}
+        self.resetting: dict[str, asyncio.Event] = {}
 
     def connected(self, bucket_id: str) -> bool:
         peer = self.service.peers.get(bucket_id)
@@ -71,6 +72,7 @@ class BucketScheduler:
                 raise ValueError("workspace path collides with another user")
             self.db.put("workspace_owner", workspace, {"identity_id": identity.identity_id})
             candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
+                          and b["bucket_id"] not in self.resetting
                           and (b["status"] == "creating" or self.connected(b["bucket_id"]))
                           and b.get("accepting", True)
                           and b["frontend_id"] == identity.frontend_id
@@ -91,6 +93,8 @@ class BucketScheduler:
 
     async def ready(self, bucket_id: str):
         async with self.start_locks.setdefault(bucket_id, asyncio.Lock()), asyncio.timeout(self.config.ready_timeout_seconds):
+            if reset := self.resetting.get(bucket_id):
+                await reset.wait()
             bucket = self.db.get("bucket", bucket_id)
             if bucket["status"] == "draining":
                 await self.stopped.setdefault(bucket_id, asyncio.Event()).wait()

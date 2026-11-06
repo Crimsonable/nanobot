@@ -3,8 +3,8 @@ import json
 import httpx
 import pytest
 
-from agent_backend.config import OpenCodeConfig
-from bucket_runtime.opencode_client import OpenCodeClient
+from agent_backend.config import OpenCodeConfig, RuntimeConfig
+from bucket_runtime.opencode_server import OpenCodeServer
 
 
 @pytest.mark.asyncio
@@ -26,7 +26,7 @@ async def test_create_and_reuse_metadata_preserves_identity_and_never_patches_pe
             info["metadata"] = body["metadata"]
         return httpx.Response(200, json=info)
 
-    client = OpenCodeClient(OpenCodeConfig(), "password")
+    client = OpenCodeServer(RuntimeConfig(frontend_id="web", bucket_id="b"), "password")
     await client.http.aclose()
     async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
         assert await client.create_session([], context) == "ses_generated"

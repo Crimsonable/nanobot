@@ -107,7 +107,7 @@ async def test_stream_policy_forwards_reasoning_unknown_parts_and_children_only_
     ]
     for i, native in enumerate(natives + [{"type": "future.event", "properties": {"sessionID": "foreign"}}]):
         bu.native_event({"type": "opencode.event", "event_id": str(i), "directory": run["directory"], "event": native})
-        while bu.native_events.process_next():
+        while bu.process_next_event():
             pass
     outgoing = bu.db.pending("gateway")
     assert [e.payload["event"] for e in outgoing] == natives

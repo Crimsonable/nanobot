@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from agent_backend.config import FrontendConfig, RuntimeConfig
 from agent_backend.models import Identity, Submit
 from agent_backend.workspaces import workspace_path
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.sandbox_executor import SandboxExecutor
 from container_up.bucket_manager import BucketManager
 
@@ -22,7 +22,7 @@ def workspaces(tmp_path):
         config = RuntimeConfig(common_root=tmp_path / "common", bucket_id=frontend, frontend_id=frontend,
             state_root=tmp_path / frontend / "state", workspace_root=tmp_path / "workspaces",
              opencode={"context_root": tmp_path / "context"})
-        runtime = Runtime(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
+        runtime = BucketRuntimeAdapter(config, SimpleNamespace(), SandboxExecutor(config.sandbox, 4096))
         for user in ["alice", "bob"]:
             identity = Identity(frontend_id=frontend, user_id=user)
             submit = Submit(identity=identity, request_id=identity.identity_id, chat_id="default",

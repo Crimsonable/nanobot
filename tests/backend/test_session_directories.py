@@ -10,8 +10,8 @@ import pytest
 
 from agent_backend.config import RuntimeConfig
 from agent_backend.models import Identity, Submit
-from bucket_runtime.opencode_client import OpenCodeClient
-from bucket_runtime.runtime import Runtime
+from bucket_runtime.opencode_server import OpenCodeServer
+from bucket_runtime.adapter import BucketRuntimeAdapter
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
             info["metadata"] = body["metadata"]
         return httpx.Response(200, json=info)
 
-    client = OpenCodeClient(config.opencode, "password")
+    client = OpenCodeServer(config, "password")
     await client.http.aclose()
 
     async def kill(request_id):
@@ -76,8 +76,8 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
 
     async with httpx.AsyncClient(base_url="http://opencode", params={"directory": str(config.opencode.context_root)},
                                 transport=httpx.MockTransport(handle)) as client.http:
-        runtime = Runtime(config, client, SimpleNamespace(kill=kill))
-        runtime.native_events.connected.set()
+        runtime = BucketRuntimeAdapter(config, client, SimpleNamespace(kill=kill))
+        runtime.opencode.connected.set()
 
         async def send(user, chat, request_id):
             submit = Submit(request_id=request_id, chat_id=chat,
@@ -98,14 +98,13 @@ async def test_concurrent_users_chat_reuse_and_all_requests_keep_their_directory
             assert alice["directory"] == again["directory"] == other["directory"]
             assert bob["directory"] != alice["directory"]
             assert client.http.params["directory"] == str(config.opencode.context_root)
-            assert client.directory == config.opencode.context_root.resolve()
             for row in [alice, bob]:
-                await runtime.run_client(row).abort(row["session_id"])
+                await runtime.opencode.abort(row["session_id"], directory=Path(row["directory"]))
                 assert runtime.worktree(Submit.model_validate(row["submit"])) == Path(row["directory"])
             assert {directory for _, _, directory in calls} == {alice["directory"], bob["directory"]}
             runtime.db.close()
-            runtime = Runtime(config, client, SimpleNamespace(kill=kill))
-            runtime.native_events.connected.set()
+            runtime = BucketRuntimeAdapter(config, client, SimpleNamespace(kill=kill))
+            runtime.opencode.connected.set()
             resumed = await send("alice", "chat-1", "after-restart")
             assert resumed["session_id"] == alice["session_id"]
             assert len(sessions) == 3
@@ -148,11 +147,11 @@ async def test_recovery_and_cancellation_use_persisted_request_directory(tmp_pat
     async def kill(request_id):
         pass
 
-    client = OpenCodeClient(config.opencode, "password")
+    client = OpenCodeServer(config, "password")
     await client.http.aclose()
     async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
-        runtime = Runtime(config, client, SimpleNamespace(kill=kill))
-        runtime.native_events.connected.set()
+        runtime = BucketRuntimeAdapter(config, client, SimpleNamespace(kill=kill))
+        runtime.opencode.connected.set()
         try:
             for user in ["alice", "bob"]:
                 submit = Submit(request_id=user, chat_id="same", identity=Identity(frontend_id="web", user_id=user),
