@@ -1,55 +1,45 @@
-"""MinIO publication backend for the publish_attachment tool, inside the bucket."""
+"""Publish workspace snapshots through Gateway; BU does not own channel uploads."""
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
+
+import httpx
 
 from agent_backend.config import RuntimeConfig
-from agent_backend.journal import Journal
-from agent_backend.models import Attachment, Identity, digest
+from agent_backend.models import Attachment, Submit
 
 
 class ArtifactService:
-    def __init__(self, config: RuntimeConfig, journal: Journal):
-        self.config, self.journal = config, journal
+    def __init__(self, config: RuntimeConfig):
+        self.config = config
 
     def client(self):
-        import boto3
-        from botocore.config import Config
-        storage = self.config.storage
-        if storage is None:
-            raise RuntimeError("publish_attachment storage is not configured")
-        return boto3.client("s3", endpoint_url=storage.endpoint,
-                            aws_access_key_id=storage.credential("access_key"),
-                            aws_secret_access_key=storage.credential("secret_key"),
-                            region_name=storage.region, config=Config(signature_version="s3v4"))
+        target = urlsplit(self.config.gateway_url)
+        base = urlunsplit(("https" if target.scheme == "wss" else "http", target.netloc, "", "", ""))
+        return httpx.AsyncClient(base_url=base, timeout=180, trust_env=False)
 
-    def url(self, key: str) -> str:
-        storage = self.config.storage
-        if storage is None:
-            raise RuntimeError("publish_attachment storage is not configured")
-        if storage.public_base_url:
-            return storage.public_base_url.rstrip("/") + "/" + quote(key)
-        return self.client().generate_presigned_url("get_object", Params={
-            "Bucket": storage.bucket, "Key": key}, ExpiresIn=storage.presign_expiry_seconds)
-
-    async def upload(self, identity: Identity, attachment_id: str, path: Path,
+    async def upload(self, submit: Submit, attachment_id: str, path: Path,
                      attachment: Attachment) -> Attachment:
-        if self.config.storage is None:
-            raise RuntimeError("publish_attachment storage is not configured")
-        key = "/".join([self.config.storage.key_prefix.strip("/"), identity.identity_id,
-                        digest(attachment_id), attachment.sha256, attachment.filename])
-        existing = self.journal.get("artifact", attachment_id)
-        if existing:
-            if existing["identity_id"] != identity.identity_id or existing["attachment"]["sha256"] != attachment.sha256:
-                raise ValueError("upload identity mismatch")
-            result = Attachment.model_validate(existing["attachment"])
-            return result.model_copy(update={"url": await asyncio.to_thread(self.url, result.object_key)})
-        await asyncio.to_thread(self.client().upload_file, str(path), self.config.storage.bucket,
-                                key, ExtraArgs={"ContentType": attachment.content_type})
-        result = attachment.model_copy(update={"url": await asyncio.to_thread(self.url, key),
-                                                "storage": "minio", "object_key": key})
-        self.journal.put("artifact", attachment_id, {"identity_id": identity.identity_id,
-                         "attachment": result.model_dump(mode="json")})
+        if submit.identity.frontend_id != self.config.frontend_id:
+            raise PermissionError("attachment belongs to another frontend")
+
+        async def chunks():
+            with path.open("rb") as source:
+                while chunk := await asyncio.to_thread(source.read, 256 * 1024):
+                    yield chunk
+
+        route = "/internal/attachments/" + "/".join(quote(value, safe="") for value in (
+            submit.identity.frontend_id, submit.request_id, attachment_id))
+        async with self.client() as client:
+            response = await client.post(route, content=chunks(),
+                params={"filename": attachment.filename, "content_type": attachment.content_type,
+                        "sha256": attachment.sha256},
+                headers={"x-bucket-id": self.config.bucket_id, "content-type": "application/octet-stream"})
+            response.raise_for_status()
+            result = Attachment.model_validate(response.json())
+        if (result.attachment_id != attachment_id or result.sha256 != attachment.sha256
+                or result.size != attachment.size or result.filename != attachment.filename):
+            raise ValueError("Gateway returned a different attachment")
         return result

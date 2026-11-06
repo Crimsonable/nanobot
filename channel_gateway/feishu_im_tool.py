@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import re
 import threading
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -357,8 +359,13 @@ class FeishuIMParser:
         reply_target = self._resolve_reply_target(
             metadata=metadata,
         )
-        if payload.get("attachments"):
-            raise ValueError("channel attachments must be rendered as object URLs")
+        attachments = payload.get("attachments") or []
+        for attachment in attachments:
+            kind = attachment.get("upload_type")
+            key = "image_key" if kind == "image" else "file_key"
+            if (attachment.get("storage") != "feishu" or attachment.get("frontend_id") != self.frontend_id
+                    or kind not in {"image", "file", "audio", "video"} or not attachment.get(key)):
+                raise ValueError("Feishu requires media uploaded for this frontend")
 
         content = str(payload.get("content") or "")
         result: dict[str, object] = {"message": None, "attachments": []}
@@ -385,7 +392,41 @@ class FeishuIMParser:
                 message_results[0] if len(message_results) == 1 else message_results
             )
 
+        for attachment in attachments:
+            kind = attachment["upload_type"]
+            key = "image_key" if kind == "image" else "file_key"
+            response = await asyncio.to_thread(self._send_or_reply_message_sync,
+                reply_target, kind, json.dumps({key: attachment[key]}, ensure_ascii=False))
+            result["attachments"].append({key: attachment[key], "response": response})
         return result
+
+    async def upload_outbound_attachment(self, *, data: bytes, filename: str, content_type: str) -> dict:
+        return await asyncio.to_thread(self._upload_attachment_sync, data, filename, content_type)
+
+    def _upload_attachment_sync(self, data: bytes, filename: str, content_type: str) -> dict:
+        from lark_oapi.api.im.v1 import (
+            CreateFileRequest, CreateFileRequestBody, CreateImageRequest, CreateImageRequestBody,
+        )
+        client = self._get_api_client()
+        suffix = Path(filename).suffix.lower()
+        with io.BytesIO(data) as stream:
+            if suffix in self._IMAGE_SUFFIXES or content_type.startswith("image/"):
+                response = client.im.v1.image.create(CreateImageRequest.builder().request_body(
+                    CreateImageRequestBody.builder().image_type("message").image(stream).build()).build())
+                kind, key = "image", "image_key"
+            else:
+                file_type = {".opus": "opus", ".mp4": "mp4", ".pdf": "pdf", ".doc": "doc",
+                    ".docx": "doc", ".xls": "xls", ".xlsx": "xls", ".ppt": "ppt", ".pptx": "ppt"}.get(suffix, "stream")
+                response = client.im.v1.file.create(CreateFileRequest.builder().request_body(
+                    CreateFileRequestBody.builder().file_type(file_type).file_name(filename).file(stream).build()).build())
+                kind = "audio" if suffix in self._AUDIO_SUFFIXES else "video" if suffix in self._VIDEO_SUFFIXES else "file"
+                key = "file_key"
+        if not response.success():
+            raise RuntimeError(f"Feishu media upload failed: {response.code} {response.msg}")
+        value = getattr(getattr(response, "data", None), key, None)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError(f"Feishu media upload response is missing {key}")
+        return {"storage": "feishu", "frontend_id": self.frontend_id, "upload_type": kind, key: value}
 
     @classmethod
     def _resolve_reply_target(

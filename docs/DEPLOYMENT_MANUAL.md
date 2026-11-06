@@ -76,7 +76,7 @@ export GATEWAY_URL="http://${NODE_IP}:30081"
 export DEPLOY_ROOT=/data/opencode_backend_k8s
 ```
 
-新开终端要重新设置变量。集群中应能解析 Service DNS；CU 能访问 Kubernetes API，bucket 能访问 CU、Gateway、模型服务、MinIO 与实际附件 URL。操作机须能访问节点 30081；OpenCode 4096 和插件 RPC 4097 仅在桶内回环监听，不需要对外开放。
+新开终端要重新设置变量。集群中应能解析 Service DNS；CU 能访问 Kubernetes API，bucket 能访问 CU、Gateway、模型服务与实际入站附件 URL。Gateway 须能访问 Web frontend 的 MinIO 以及 QXT/飞书的令牌、上传和发送接口，出站附件统一由 Gateway 上传。操作机须能访问节点 30081；OpenCode 4096 和插件 RPC 4097 仅在桶内回环监听，不需要对外开放。
 
 ## 2. 节点配置
 

@@ -82,7 +82,8 @@ export const BucketRuntimePlugin: Plugin = async ({ directory }) => {
     },
     tool: {
       publish_attachment: tool({
-        description: "Upload generated files from your workspace directly to MinIO, return their object URLs, and include them in this reply. " +
+        description: "Publish generated workspace files through Gateway for the current channel and include them in this reply. " +
+          "Web returns downloadable URLs; messaging channels return media references. Only use a URL when one is returned. " +
           "Success means queued for delivery, not already delivered to the recipient.",
         args: {
           files: tool.schema.array(tool.schema.object({

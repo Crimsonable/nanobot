@@ -13,7 +13,7 @@
 
 - `channel_gateway`：渠道接入、BU 事件消费、渠道最终回复与投递状态。
 - `container_up`：按 frontend 活跃桶容量分配用户、会话位置维护与跨桶历史迁移、控制命令和执行状态。
-- `bucket_runtime`：`BucketRuntimeAdapter` 负责业务请求、事件归属、用户权限、MinIO 附件发布及 `/cancel`；`OpenCodeServer` 统一封装进程、HTTP API、事件订阅和配置重置。插件查询 BU 后校验文件操作并封装沙箱命令。
+- `bucket_runtime`：`BucketRuntimeAdapter` 负责业务请求、事件归属、用户权限、调用 Gateway 发布附件及 `/cancel`；`OpenCodeServer` 统一封装进程、HTTP API、事件订阅和配置重置。插件查询 BU 后校验文件操作并封装沙箱命令。
 - `agent_backend`：CU 与 runtime 共用的配置、协议和持久化工具库，不包含服务启动器。
 - `opencode_plugin`：工具调用 hook、权限查询与命令封装、附件发布工具。原生事件由 BU 订阅 OpenCode server 的 SSE，再附加用户与 chat_id 后经过 frontend 过滤后通过独立 WebSocket 转发 Gateway；会话日志由 BU 输出。
 - `config/opencode/<frontend_id>/app/skills`：frontend 的技能与报告脚本。

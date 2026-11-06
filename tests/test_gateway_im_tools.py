@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from typing import Any
 
@@ -211,6 +212,38 @@ async def test_qxt_post_message_accepts_unified_payload_format(
 
 
 @pytest.mark.parametrize(
+    "token_config",
+    [{}, {"callback_token": ""}, {"callback_token": None}, {"callback_token": "token-1"}],
+)
+def test_qxt_callback_token_is_optional(token_config: dict[str, Any]) -> None:
+    parser = im_tools.QxtIMParser(
+        frontend_id="qxt",
+        frontend_config={
+            "app_id": "app-1",
+            "app_secret": "0123456789abcdef",
+            "corp_id": "corp-1",
+            "access_url": "https://im.example.com/access_token",
+            "send_msg_url": "https://im.example.com/send",
+            **token_config,
+        },
+    )
+    parser.start()
+    token = token_config.get("callback_token") or ""
+    encrypted = parser.encrypt(text=json.dumps({"event_type": "check_url"}), token=token)
+    response, payload = parser.process_subscribe_form(type("SubForm", (), encrypted)())
+    assert payload is None
+    assert parser.decrypt(
+        signature=response["msgSignature"], timeStamp=response["timeStamp"],
+        nonce=response["nonce"], encrypt=response["encrypt"], token=token,
+    ) == "success"
+    with pytest.raises(ValueError, match="Signature verification error"):
+        parser.process_subscribe_form(
+            type("SubForm", (), {**encrypted, "msgSignature": "invalid"})()
+        )
+
+
+@pytest.mark.parametrize("callback_token", ["", "token-1"])
+@pytest.mark.parametrize(
     ("event_type", "chat_type", "recipient"),
     [
         ("p2p_chat_receive_msg", "single", {"to_single_uid": "user-1"}),
@@ -218,10 +251,10 @@ async def test_qxt_post_message_accepts_unified_payload_format(
     ],
 )
 def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
-    event_type: str, chat_type: str, recipient: dict[str, str],
+    event_type: str, chat_type: str, recipient: dict[str, str], callback_token: str,
 ) -> None:
     parser = im_tools.QxtIMParser(frontend_id="qxt", frontend_config={})
-    parser.token = "token-1"
+    parser.token = callback_token
     parser.appsecret = "0123456789abcdef"
 
     encrypted = parser.encrypt(
@@ -231,6 +264,7 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
                 "timestamp": "123456",
                 "event": {
                     "sender_uid": "user-1",
+                    "sender_account": "account-1",
                     "message": {
                         "chat_id": "chat-1",
                         "content": "hello",
@@ -257,7 +291,7 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
         "event_type": "im_message_receive",
         "event": {
             "chat_id": "chat-1",
-            "user_id": "user-1",
+            "user_id": "account-1",
             "content": "hello",
             "attachments": [],
             "metadata": {
@@ -278,3 +312,68 @@ def test_qxt_subscribe_payload_is_normalized_to_unified_im_event(
         },
     }
     assert response["encrypt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recipient", [{"to_single_uid": "user-1"}, {"to_group_id": "group-1"}])
+@pytest.mark.parametrize("content", ["", "report ready"])
+async def test_qxt_sends_uploaded_media_without_reupload(monkeypatch, recipient, content):
+    parser = im_tools.QxtIMParser(frontend_id="qxt", frontend_config={"send_msg_url": "https://qxt.example/send"})
+    monkeypatch.setattr(parser, "get_access_token", AsyncMock(return_value="token"))
+    session = FakeSession([FakeResponse(), FakeResponse()])
+    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
+    await parser.post_message(payload={"content": content,
+        "metadata": {"reply_target": {"type": "qxt", **recipient}},
+        "attachments": [{"storage": "qxt", "frontend_id": "qxt", "media_id": "media-1"}]})
+    assert len(session.calls) == (2 if content else 1)
+    assert session.calls[-1]["json"] == {**recipient, "type": "file", "message": {"media_id": "media-1"}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [{}, {"media_id": ""}, {"media_id": 123}])
+async def test_qxt_upload_requires_a_valid_media_id(monkeypatch, reply):
+    parser = im_tools.QxtIMParser(frontend_id="qxt", frontend_config={"send_msg_url": "https://qxt.example/send"})
+    monkeypatch.setattr(parser, "get_access_token", AsyncMock(return_value="token"))
+    session = FakeSession([FakeResponse(json_data=reply)])
+    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
+    with pytest.raises(RuntimeError, match="missing media_id"):
+        await parser.upload_outbound_attachment(data=b"pdf", filename="report.pdf", content_type="application/pdf")
+    call = session.calls[0]
+    assert call["url"] == "https://qxt.example/v2/media/upload"
+    assert call["params"] == {"access_token": "token"}
+    fields = call["data"]._fields
+    assert fields[0][0]["name"] == "type" and fields[0][2] == "file"
+    assert fields[1][0]["name"] == "media" and fields[1][0]["filename"] == "report.pdf"
+    assert fields[1][2] == b"pdf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename,content_type,kind,key,file_type", [
+    ("report.pdf", "application/pdf", "file", "file_key", "pdf"),
+    ("photo.png", "image/png", "image", "image_key", None),
+    ("voice.opus", "audio/ogg", "audio", "file_key", "opus"),
+    ("video.mp4", "video/mp4", "video", "file_key", "mp4"),
+])
+async def test_feishu_upload_and_media_reply(monkeypatch, filename, content_type, kind, key, file_type):
+    parser = CapturingFeishuParser()
+    uploads = []
+    def upload(request):
+        body = request.request_body
+        stream = body.image if kind == "image" else body.file
+        uploads.append(stream.read())
+        if file_type:
+            assert body.file_type == file_type and body.file_name == filename
+        else:
+            assert body.image_type == "message"
+        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(**{key: "media-key"}))
+    api = SimpleNamespace(create=upload)
+    monkeypatch.setattr(parser, "_get_api_client", lambda: SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(image=api, file=api))))
+    media = await parser.upload_outbound_attachment(data=b"file bytes", filename=filename, content_type=content_type)
+    assert media == {"storage": "feishu", "frontend_id": "feishu", "upload_type": kind, key: "media-key"}
+    await parser.post_message(payload={"content": "", "attachments": [media],
+        "metadata": {"reply_target": {"type": "feishu", "message_id": "om_1", "receive_id": "oc_1"}}})
+    assert uploads == [b"file bytes"]
+    assert len(parser.sent) == 1 and parser.sent[0]["mode"] == "reply"
+    assert parser.sent[0]["message_type"] == kind
+    assert json.loads(parser.sent[0]["content"]) == {key: "media-key"}

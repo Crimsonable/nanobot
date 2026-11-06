@@ -182,7 +182,6 @@ class RuntimeSettings(StrictModel):
 class RuntimeConfig(RuntimeSettings):
     bucket_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     frontend_id: str = Field(min_length=1)
-    storage: StorageConfig | None = None
     frontend_config_file: Path | None = None
     gateway_url: str = "ws://channel-gateway:8000/internal/events/ws"
     event_forwarding: EventForwarding = Field(default_factory=EventForwarding)
@@ -210,8 +209,6 @@ class RuntimeConfig(RuntimeSettings):
             protected.append(self.logging_file)
         if self.frontend_config_file and self.frontend_config_file.resolve().is_relative_to(workspace):
             raise ValueError("frontend config must not be inside workspace_root")
-        if self.storage:
-            protected.extend(p for p in [self.storage.access_key_file, self.storage.secret_key_file] if p)
         if any(p.resolve().is_relative_to(workspace) for p in protected):
             raise ValueError("service files must not be inside workspace_root")
         if len({self.rpc_port, self.health_port, self.opencode.port}) != 3:
@@ -231,6 +228,7 @@ class Frontend(StrictModel):
     provider: Literal["web", "qxt", "feishu"]
     channel_config: dict = Field(default_factory=dict, repr=False)
     attachment_url_prefix: str = ""
+    attachment_storage: StorageConfig | None = Field(default=None, repr=False)
 
 
 class BucketPoolConfig(StrictModel):
@@ -326,10 +324,30 @@ class FrontendConfig(FrontendSettings):
         channel = {**self.channel, "send_msg_url": self.send_msg_url}
         frontend = Frontend(provider=self.provider,
                             channel_config=channel,
+                            attachment_storage=self.gateway_storage(),
                             attachment_url_prefix=self.attachment_url_prefix)
         return ControlConfig(**self.control.model_dump(), frontends={self.frontend_id: frontend},
                              runtime_templates={self.frontend_id: self.runtime},
                              frontend_idle_ttl_seconds={self.frontend_id: self.instance_idle_ttl_seconds})
+
+    def gateway_storage(self) -> StorageConfig | None:
+        storage = self.attachment_storage
+        if storage is None:
+            return None
+        root = frontend_common_root(self.runtime.common_root, self.frontend_id) / "config"
+        values = {}
+        for name in ("access_key_file", "secret_key_file"):
+            value = getattr(storage, name)
+            if value is None:
+                continue
+            text = value.as_posix().replace("{frontend_id}", self.frontend_id)
+            if text.startswith("/mnt/common/"):
+                text = self.runtime.common_root.as_posix() + text[len("/mnt/common"):]
+            target = Path(os.path.abspath(text))
+            if not target.is_relative_to(root) or target == root or target.resolve() != target:
+                raise ValueError("storage credentials must belong to this frontend config directory without symbolic links")
+            values[name] = target
+        return storage.model_copy(update=values)
 
     def runtime_config(self, path: Path, bucket_id: str) -> RuntimeConfig:
         values = self.runtime.model_dump()
@@ -355,17 +373,14 @@ class FrontendConfig(FrontendSettings):
         values["opencode"]["config_file"] = frontend_path(self.runtime.opencode.config_file, "config")
         values["permissions_file"] = frontend_path(self.runtime.permissions_file, "config")
         values["logging_file"] = frontend_path(self.runtime.logging_file, "config")
-        storage = self.attachment_storage
-        if storage:
-            storage = storage.model_copy(update={name: frontend_path(getattr(storage, name), "config")
-                for name in ["access_key_file", "secret_key_file"]})
+        self.gateway_storage()  # Validate deployment paths; upload credentials stay in Gateway.
         import re
         pool = self.control.bucket_pool
         if not re.fullmatch(re.escape(pool.name_prefix) + r"-[0-9a-f]{12}", bucket_id):
             raise ValueError("runtime requires a scheduler-issued --bucket-id")
         values["state_root"] = self.runtime.state_root / self.frontend_id / bucket_id
         return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id,
-                             storage=storage, frontend_config_file=path.resolve(),
+                             frontend_config_file=path.resolve(),
                              event_forwarding=self.event_forwarding)
 
 

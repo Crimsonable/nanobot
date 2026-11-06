@@ -6,7 +6,11 @@ import json
 import secrets
 import string
 import time
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+import aiohttp
 
 from Crypto.Cipher import AES
 from loguru import logger
@@ -44,7 +48,8 @@ class QxtIMParser:
         self.appid = str(frontend_config.get("app_id", "")).strip()
         self.appsecret = str(frontend_config.get("app_secret", "")).strip()
         self.corpid = str(frontend_config.get("corp_id", "")).strip()
-        self.token = str(frontend_config.get("callback_token", "")).strip()
+        # Match the k8s channel contract: callback_token is optional and defaults to empty.
+        self.token = str(frontend_config.get("callback_token") or "").strip()
         self.access_url = str(frontend_config.get("access_url", "")).strip()
         self.send_msg_url = str(frontend_config.get("send_msg_url", "")).strip()
 
@@ -53,7 +58,6 @@ class QxtIMParser:
             "appid",
             "appsecret",
             "corpid",
-            "token",
             "access_url",
             "send_msg_url",
         ):
@@ -317,15 +321,42 @@ class QxtIMParser:
         }
         if len(recipient) != 1:
             raise ValueError("qxt requires exactly one recipient")
-        if payload.get("attachments"):
-            raise ValueError("channel attachments must be rendered as object URLs")
+        attachments = payload.get("attachments") or []
+        for attachment in attachments:
+            if (attachment.get("storage") != "qxt" or attachment.get("frontend_id") != self.frontend_id
+                    or not str(attachment.get("media_id") or "").strip()):
+                raise ValueError("QXT requires media uploaded for this frontend")
         if not self.send_msg_url:
             raise RuntimeError("send_msg_url is not configured")
         token = await self.get_access_token()
-        result = await self._send_message(
-            send_meta=recipient,
-            access_token=token,
-            message_type="text",
-            message={"content": payload["content"]},
-        )
-        return {"message": result, "attachments": []}
+        result = {"message": None, "attachments": []}
+        if str(payload.get("content") or "").strip():
+            result["message"] = await self._send_message(send_meta=recipient, access_token=token,
+                message_type="text", message={"content": payload["content"]})
+        for attachment in attachments:
+            response = await self._send_message(send_meta=recipient, access_token=token,
+                message_type="file", message={"media_id": attachment["media_id"]})
+            result["attachments"].append({"media_id": attachment["media_id"], "response": response})
+        return result
+
+    async def upload_outbound_attachment(self, *, data: bytes, filename: str, content_type: str) -> dict:
+        parsed = urlparse(self.send_msg_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError("send_msg_url is not configured")
+        token = await self.get_access_token()
+        upload_type = ("audio" if content_type.startswith("audio/") else "image"
+                       if Path(filename).suffix.lower() in {".jpg", ".jpeg", ".png"}
+                       or content_type in {"image/jpeg", "image/png"} else "file")
+        form = aiohttp.FormData()
+        form.add_field("type", upload_type)
+        form.add_field("media", data, filename=filename, content_type=content_type)
+        async with get_dispatch_session().post(f"{parsed.scheme}://{parsed.netloc}/v2/media/upload",
+                params={"access_token": token}, data=form) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"QXT media upload failed with {response.status}")
+            payload = await response.json(content_type=None)
+        media_id = payload.get("media_id") or payload.get("mediaId")
+        if not isinstance(media_id, str) or not media_id.strip():
+            raise RuntimeError("QXT media upload response is missing media_id")
+        return {"storage": "qxt", "frontend_id": self.frontend_id,
+                "media_id": media_id, "upload_type": upload_type}

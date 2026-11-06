@@ -67,8 +67,8 @@ async def test_attachment_publication_cannot_use_other_frontend_workspace(worksp
     for runtime, submit, workspace in workspaces:
         uploads = []
 
-        async def upload(identity, attachment_id, path, attachment):
-            uploads.append((identity, path.read_text()))
+        async def upload(submit, attachment_id, path, attachment):
+            uploads.append((submit.identity, path.read_text()))
             return attachment.model_copy(update={"url": "https://files.test/report.txt"})
 
         runtime.artifacts.upload = upload

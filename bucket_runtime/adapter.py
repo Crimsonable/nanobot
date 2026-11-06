@@ -55,7 +55,7 @@ class BucketRuntimeAdapter:
         self.db = Journal(config.state_root / "runtime.sqlite", config.limits.outbox_messages)
         # Remove obsolete transcript and per-tool authorization caches.
         self.db.db.execute("DELETE FROM records WHERE kind IN ('message', 'ticket', 'call', 'child_session')")
-        self.artifacts = ArtifactService(config, self.db)
+        self.artifacts = ArtifactService(config)
         self.peer: Peer | None = None
         self.tasks: dict[str, asyncio.Task] = {}
         self.request_locks: dict[str, asyncio.Lock] = {}
@@ -88,8 +88,6 @@ class BucketRuntimeAdapter:
     def private_files(self) -> list[Path]:
         paths = [self.config.frontend_config_file, self.config.opencode.config_file,
                  self.config.permissions_file, self.config.logging_file]
-        if self.config.storage:
-            paths.extend([self.config.storage.access_key_file, self.config.storage.secret_key_file])
         return [path for path in paths if path is not None]
 
     def session_permissions(self, submit: Submit) -> list[dict]:
@@ -550,7 +548,7 @@ class BucketRuntimeAdapter:
                     intent = {"attachment": attachment.model_dump(mode="json"), "request_id": submit.request_id}
                     self.db.put("intent", attachment_id, intent)
                 attachment = Attachment.model_validate(intent["attachment"])
-                published_attachment = await self.artifacts.upload(submit.identity, attachment_id, snapshot, attachment)
+                published_attachment = await self.artifacts.upload(submit, attachment_id, snapshot, attachment)
                 result = published_attachment.model_dump(mode="json")
                 # Cancellation may have raced with an awaited transfer.
                 self.active_request(request_id)

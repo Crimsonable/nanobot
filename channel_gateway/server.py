@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 from contextlib import asynccontextmanager
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -15,6 +16,7 @@ from agent_backend.ingress import Inbound
 from agent_backend.journal import Journal
 from agent_backend.models import Envelope, Identity, OpenCodeEventChunk, Result, digest, uid
 from agent_backend.wire import Peer
+from channel_gateway.artifact_service import ArtifactService
 from channel_gateway.channel_service import ChannelService
 from channel_gateway.event_stream import RequestStreams
 from channel_gateway.native_reply import resolve_reply
@@ -55,6 +57,7 @@ class GatewayService:
         self.db = Journal(settings.state_root / "gateway.sqlite", config.limits.outbox_messages)
         self.streams = RequestStreams(self.db)
         self.channels = channels or ChannelService(config)
+        self.artifacts = ArtifactService(config, self.db, self.channels)
         self.control = control or ControlClient(settings)
         self.delivery_ready = asyncio.Event()
         self.completed: dict[str, asyncio.Event] = {}
@@ -72,13 +75,17 @@ class GatewayService:
             raise HTTPException(400, "stream is only supported by the Web inbound-sync endpoint")
         request_id = inbound.request_id or uid("req_")
         inbound = inbound.model_copy(update={"request_id": request_id})
+        original = inbound
+        previous_fingerprint = digest({"frontend": frontend_id, "input": original.model_dump(), "sync": sync})
+        inbound = inbound.model_copy(update={"metadata": {**inbound.metadata,
+            "provider": self.config.frontends[frontend_id].provider, "frontend_id": frontend_id}})
         fingerprint = digest({"frontend": frontend_id, "input": inbound.model_dump(), "sync": sync})
         async with self.locks.setdefault(request_id, asyncio.Lock()):
             row = self.db.get("request", request_id)
             legacy_match = row and row.get("legacy_hash") == digest({
                 "identity": {"frontend_id": frontend_id, "user_id": inbound.user_id},
-                "input": inbound.model_dump(exclude={"request_id"}), "sync": sync})
-            if row and row["hash"] != fingerprint and not legacy_match:
+                "input": original.model_dump(exclude={"request_id"}), "sync": sync})
+            if row and row["hash"] not in {fingerprint, previous_fingerprint} and not legacy_match:
                 raise HTTPException(409, "request_id already used for different input")
             if not row:
                 row = {"request_id": request_id, "hash": fingerprint, "frontend_id": frontend_id,
@@ -201,8 +208,7 @@ class GatewayService:
                     raise ValueError("result identity mismatch")
                 if source and result.status != "cancelled":
                     result = resolve_reply(self.db, bucket_id, source, result)
-                if any(urlparse(a.url).scheme not in {"http", "https"} for a in result.attachments):
-                    raise ValueError("published attachment requires an object URL")
+                self.artifacts.validate_result(row, result.attachments)
                 value = result.model_dump(mode="json")
                 if row.get("result"):
                     return  # Replay cannot alter a result after later native events arrived.
@@ -308,6 +314,38 @@ def create_app(config: ControlConfig, settings: GatewaySettings, channels=None, 
     async def unavailable(request, exc):
         from fastapi.responses import JSONResponse
         return JSONResponse({"detail": "control unavailable; accepted requests remain queued"}, status_code=503)
+
+    @app.exception_handler(PermissionError)
+    async def forbidden(request, exc):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "operation is not permitted"}, status_code=403)
+
+    @app.post("/internal/attachments/{frontend_id}/{request_id}/{attachment_id}")
+    async def upload_attachment(frontend_id: str, request_id: str, attachment_id: str,
+                                filename: str, sha256: str, request: Request,
+                                content_type: str = "application/octet-stream"):
+        service.require_frontend(frontend_id)
+        bucket_id = request.headers.get("x-bucket-id", "")
+        if not bucket_id:
+            raise PermissionError("bucket identity is required")
+        row = await service.event_request(bucket_id, Envelope(type="attachment.upload",
+            bucket_id=bucket_id, request_id=request_id), frontend_id)
+        if (row.get("result") or row.get("cancel_requested")
+                or row["submit"]["deadline_at"] <= time.time()):
+            raise HTTPException(409, "request is no longer accepting attachments")
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > config.limits.file_bytes:
+                raise HTTPException(413, "attachment exceeds limit")
+            data.extend(chunk)
+        try:
+            result = await service.artifacts.upload(row, attachment_id, bytes(data), filename, content_type, sha256)
+        except (ValueError, PermissionError):
+            raise
+        except Exception:
+            log.exception("attachment upload failed frontend_id=%s request_id=%s", frontend_id, request_id)
+            raise HTTPException(502, "channel attachment upload failed") from None
+        return result.model_dump(mode="json")
 
     @app.get("/health/live")
     @app.get("/health/ready")

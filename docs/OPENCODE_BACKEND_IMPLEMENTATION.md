@@ -14,7 +14,7 @@ channel_gateway.server             渠道接入、原生事件消费、最终外
                        ├─ OpenCodeServer → opencode serve
                        ├─ OpenCodeServer 事件回调 → 关联/过滤 → Gateway /internal/events/ws
                        ├─ 插件 → BU /permissions
-                       └─ publish_attachment → MinIO
+                       └─ publish_attachment → Gateway → MinIO / 渠道媒体接口
 ```
 
 BU 只组装两个主要对象：`OpenCodeServer(config)` 和 `BucketRuntimeAdapter(config, opencode)`。
@@ -30,7 +30,7 @@ BU 只组装两个主要对象：`OpenCodeServer(config)` 和 `BucketRuntimeAdap
 
 分层部署、事件过滤、可靠移交和旧数据库迁移详见 [CHANNEL_GATEWAY.md](CHANNEL_GATEWAY.md)。CU 不再接收内容事件或组装最终回复；渠道最终外发字段保持原版本。
 
-container_up 不直接调用 OpenCode HTTP API，也不接收模型指定的路由元数据。会话换桶时，CU 通过共享本地 state PVC 读取和迁移原生会话数据库；在线旧桶的停止与删除操作交由 runtime 调用 OpenCode。入站附件仅转发 URL/路径，不获取文件字节。publish_attachment 的 runtime 端实现持有 MinIO 凭据、校验本地文件并上传；凭据不交给模型或 bash 沙箱。CU 控制 WS 传执行状态与会话迁移控制，Gateway 事件 WS 传原生事件与附件引用；两者都不传迁移历史正文。
+container_up 不直接调用 OpenCode HTTP API，也不接收模型指定的路由元数据。会话换桶时，CU 通过共享本地 state PVC 读取和迁移原生会话数据库；在线旧桶的停止与删除操作交由 runtime 调用 OpenCode。入站附件仅转发 URL/路径，不获取文件字节。publish_attachment 的 runtime 端校验本地文件并把快照提交到 Gateway；Gateway 持有 MinIO/渠道凭据并按注册渠道上传，凭据不交给模型或 bash 沙箱。CU 原样透传入站 metadata，不实现渠道上传和组装。CU 控制 WS 传执行状态与会话迁移控制，Gateway 事件 WS 传原生事件与附件引用；两者都不传迁移历史正文。
 
 三个组件各自提供启动入口，`agent_backend` 仅提供配置、协议和持久化等公共库：
 
@@ -76,11 +76,11 @@ python -m bucket_runtime --config /mnt/common/frontends.json --bucket-id "$BUCKE
 
 飞书原始 image_key/file_key 转为带 requires_auth 标记的资源 API URL，不自动下载。此类私有 URL 需要具备渠道授权的工具才能访问；既不视为公开链接，也不将渠道凭据发送给模型。
 
-出站由 OpenCode 主动调用 `publish_attachment(files=[{path, filename?}])`。runtime 验证会话、用户、工具开关、票据、路径和文件大小；仅接受用户工作目录内的普通非链接文件，生成本地快照后直接上传 MinIO，取得对象 URL。幂等记录保存在 bucket 数据库，重复调用不重复上传。存储失败会返回工具错误，不登记成功 URL。
+出站由 OpenCode 主动调用 `publish_attachment(files=[{path, filename?}])`。runtime 验证会话、用户、工具开关、路径和文件大小；仅接受用户工作目录内的普通非链接文件，生成本地快照后调用 Gateway 统一上传接口。Gateway 校验请求、桶归属和文件摘要，Web 上传 MinIO，QXT 上传原生媒体接口，飞书上传文件/图片。BU 保存工具发布记录，Gateway 保存每个附件的上传结果；重复请求复用已保存结果，上传失败不登记成功引用。
 
-上传成功后，工具返回对象 URL，runtime 将附件元数据加入本轮结果，经独立事件 WS 发给 Gateway。Web 返回正文和 attachments；QXT/飞书将对象 URL 作为文本链接发送，Gateway 不重新下载上传文件。工具成功代表对象已上传并加入待回复附件，最终渠道投递状态由 Gateway 记录。
+上传成功后，工具返回 URL 或媒体引用，runtime 将返回值加入本轮 attachments，经独立事件 WS 发给 Gateway。Web 返回正文和 attachments；QXT 用 media_id 发送 file 消息，飞书用 image_key/file_key 发送对应媒体消息。Gateway 校验媒体引用归属，不重新上传文件。工具成功代表附件已上传并加入待回复附件，最终渠道投递状态由 Gateway 记录。
 
-MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，使用 access_key、secret_key、key_prefix、presign_expiry_seconds 字段。bucket 内的发布工具读取它并上传；Gateway 仅使用 URL。public_base_url 为空时返回签名 URL，Gateway 不续签。
+Web 的 MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，使用 access_key、secret_key、key_prefix、presign_expiry_seconds 字段。Gateway 读取配置并上传；BU 不加载存储配置。public_base_url 为空时返回签名 URL，重放已发布结果不续签。QXT/飞书使用本 frontend 的 channel 配置，不依赖 MinIO。接口和返回字段见 ATTACHMENT_UPLOAD_API.md。
 
 `config/opencode/web-test/app/skills/` 提供报告、HTML→PDF、图片压缩及附件发布工具说明。模型可自行获取需要的资源，再把本地路径交给报告脚本；报告脚本不自动下载远程图片。
 
@@ -88,7 +88,7 @@ MinIO 配置位于 frontends.json 中各 frontend 的 attachment_storage，使�
 
 `common/frontends.json` 是统一入口总表，`frontends` 数组中每项定义一个 frontend，`control` 是 CU/集群的公共基础设施参数。一个 CU 接入多个 frontend，按 frontend 创建独立桶，不同 frontend 的模型、权限或模板不会混用。
 
-- `config/opencode/frontends.json`：每项使用 frontend_id、provider、send_msg_url、attachment_storage、instance_idle_ttl_seconds、channel 和 runtime。模型通过该 frontend 的 opencode-server.json 的 model 选择，规则通过 instructions 指定的 AGENTS.md 加载；渠道凭据放在自己的 channel 中。飞书仅使用 app_id/app_secret；QXT 使用 app_id/app_secret/corp_id/callback_token/access_url，发送地址统一使用 frontend 的 send_msg_url。其他 channel 字段直接拒绝。
+- `config/opencode/frontends.json`：每项使用 frontend_id、provider、send_msg_url、attachment_storage、instance_idle_ttl_seconds、channel 和 runtime。模型通过该 frontend 的 opencode-server.json 的 model 选择，规则通过 instructions 指定的 AGENTS.md 加载；渠道凭据放在自己的 channel 中。飞书仅使用 app_id/app_secret；QXT 使用 app_id/app_secret/corp_id/access_url，callback_token 与 k8s merge 版本一致为可选项，未配置或为 null 时按空字符串参与回调验签和回复签名，不影响启动，发送地址统一使用 frontend 的 send_msg_url。其他 channel 字段直接拒绝。
 - `config/opencode/web-test/config/opencode-server.json`：部署到 common/web-test/config/，包含仅该 frontend 生效的模型 provider、API key、MCP、LSP、formatter、skills 等原生配置。自动更新关闭，二进制统一从服务器目录更新。
 - `config/opencode/web-test/config/user-permissions.yaml`：部署到 common/web-test/config/，defaults 仅作用于该 frontend 的用户，users 可只写 user_id。显式 frontend_id 不匹配时启动失败。新 session 加载当前策略；已有 session 复用时核对策略，不匹配则明确报错，不自动重建会话或修改已有策略。
 - `config/opencode/web-test/config/session-logging.json`：部署到该 frontend 的 config/，由 runtime.logging_file 指定，控制 runtime 向 bucket stdout 输出四字段精简日志（user_id、frontend_id、chat_id、content）。身份由 runtime 关联请求和 OpenCode 会话 metadata，详见 [日志与 ID 约定](SESSION_LOGGING.md)。
@@ -184,11 +184,11 @@ cp config/opencode/frontends.json /data/opencode_backend_k8s/common/frontends.js
 kubectl apply -f k8s/opencode/backend.yaml
 ```
 
-现有 bwrap 节点要求不变：允许非特权 user namespace，并配置兼容的 seccomp/AppArmor 策略。附件仅传引用；publish_attachment 继续在 bucket 内上传 MinIO，CU 不下载文件。
+现有 bwrap 节点要求不变：允许非特权 user namespace，并配置兼容的 seccomp/AppArmor 策略。入站附件仅传引用；publish_attachment 在 BU 校验文件后统一调用 Gateway 上传，CU 不下载或上传文件。
 
 ## 渠道与业务服务
 
-- QXT 支持 group_chat_at_bot，保留群 ID 为可信回复目标。QXT/飞书统一发送对象 URL，渠道不下载或重新上传附件。详见 ATTACHMENT_UPLOAD_API.md。
+- QXT 支持 group_chat_at_bot，保留群 ID 为可信回复目标。入站 metadata 的 provider/frontend_id 由 Gateway 确定；QXT/飞书附件由 Gateway 上传，BU 保存引用后回传，Gateway 直接发送原生媒体消息。详见 ATTACHMENT_UPLOAD_API.md。
 - 新增 hazard_expert_mcp，业务客户端可上传 Base64 附件到 MinIO，再调用分析工具请求 Gateway /inbound-sync。部署已改用 opencode-sv、opencode-source-pvc、opencode-runtime=true 和 Gateway Service 8000 端口。它不是应注册给同一 OpenCode 的模型工具，否则可能递归请求自身。
 - 订阅失败记录 frontend/chat 上下文并传播错误；取消不被吞掉。OpenCodeServer 使用继承的 stdout/stderr，runtime serve 在 finally 关闭代理及其 OpenCode 子进程。
 - Web 代理要求显式 frontend_id、user_id、chat_id，额外字段直接拒绝；代理不传递 Authorization。

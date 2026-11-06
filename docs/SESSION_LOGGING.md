@@ -32,7 +32,7 @@ runtime 与 CU 的 WebSocket 传控制状态、ACK，以及不落 outbox 的会�
 
 调用方必须提供 frontend_id、user_id、chat_id。runtime 在用户工作目录创建 OpenCode 会话，同一 frontend/user/chat 始终复用原生 session。不同 chat 使用不同 session，同一用户的文件目录相同。
 
-会话 metadata.bucket_runtime 包含 schema_version、frontend_id、user_id、identity_id、bucket_id、chat_id、input_message_id、requests。runtime 从自己记录的请求、原生会话和消息事件获取身份；无法确定请求的事件不猜测当前请求。子会话身份来自 parentID 关联，工具权限由插件按 session ID 查询 BU，插件检查路径并封装命令；BU 为子会话解析父链。附件工具直接调用发布接口，由 BU 一次完成权限校验及上传。
+会话 metadata.bucket_runtime 包含 schema_version、frontend_id、user_id、identity_id、bucket_id、chat_id、input_message_id、requests。runtime 从自己记录的请求、原生会话和消息事件获取身份；无法确定请求的事件不猜测当前请求。子会话身份来自 parentID 关联，工具权限由插件按 session ID 查询 BU，插件检查路径并封装命令；BU 为子会话解析父链。附件工具调用 BU 发布接口完成权限校验，再由 BU 提交文件快照到 Gateway 统一上传接口；Gateway 按入站请求所属渠道处理并返回附件引用。
 
 用户仅在有未完成请求或正在分配时占用 bucket 容量，全部请求结束即释放绑定。下次请求按本 frontend 活跃 bucket 的剩余容量分配；闲置后已停止的 bucket 不因用户曾经使用而重新分配给该用户。用户工作目录保持不变。
 

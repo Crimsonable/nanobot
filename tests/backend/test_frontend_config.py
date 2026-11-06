@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_backend.config import FrontendConfig, StorageConfig, load_frontends
-from bucket_runtime.artifact_service import ArtifactService
+from channel_gateway.artifact_service import ArtifactService
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
 
@@ -54,8 +54,9 @@ def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
     frontend = cu.frontends["web-test"]
     assert frontend.channel_config["send_msg_url"] == config.send_msg_url
     assert runtime.bucket_id == "opencode-bucket-0123456789ab"
-    assert runtime.storage.key_prefix == "web-outbound"
-    assert runtime.storage.presign_expiry_seconds == 3600
+    assert not hasattr(runtime, "storage")
+    assert frontend.attachment_storage.key_prefix == "web-outbound"
+    assert frontend.attachment_storage.presign_expiry_seconds == 3600
     assert config.instance_idle_ttl_seconds == 3600
     assert runtime.frontend_config_file == EXAMPLE.resolve()
 
@@ -66,7 +67,7 @@ def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
         return object()
 
     monkeypatch.setattr("boto3.client", client)
-    ArtifactService(runtime, None).client()
+    ArtifactService(cu, None, None).client(frontend.attachment_storage)
     assert captured["aws_access_key_id"] == config.attachment_storage.access_key.get_secret_value()
     assert captured["aws_secret_access_key"] == config.attachment_storage.secret_key.get_secret_value()
     assert captured["aws_secret_access_key"] not in repr(runtime)

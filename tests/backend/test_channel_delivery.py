@@ -15,7 +15,7 @@ def config(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_qxt_delivery_uses_trusted_group_target_and_configured_attachment_mode(config):
+async def test_qxt_delivery_preserves_media_and_trusted_group_target(config):
     channels = ChannelService(config)
     send = AsyncMock()
     channels.parsers["qxt"] = SimpleNamespace(post_message=send)
@@ -23,8 +23,9 @@ async def test_qxt_delivery_uses_trusted_group_target_and_configured_attachment_
     await channels.deliver({"submit": {"identity": {"frontend_id": "qxt", "user_id": "alice"}},
         "chat_id": "group-1", "metadata": {"reply_target": target}},
         Result(request_id="r", status="completed", content="report",
-               attachments=[Attachment(url="https://files.example/report.pdf", filename="report.pdf")]))
+               attachments=[Attachment(storage="qxt", frontend_id="qxt", media_id="media-1", filename="report.pdf")]))
     payload = send.call_args.kwargs["payload"]
     assert payload["metadata"]["reply_target"] == target
-    assert payload["attachments"] == []
-    assert "https://files.example/report.pdf" in payload["content"]
+    assert payload["attachments"][0]["media_id"] == "media-1"
+    assert payload["metadata"]["provider"] == "qxt"
+    assert payload["content"] == "report"

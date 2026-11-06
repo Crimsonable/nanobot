@@ -40,16 +40,12 @@ class ChannelService:
         identity = record["submit"]["identity"]
         # Routing metadata comes from the inbound request, never the model.
         metadata = {**record["metadata"], "frontend_id": identity["frontend_id"],
+                    "provider": self.config.frontends[identity["frontend_id"]].provider,
                     "user_id": identity["user_id"], "request_id": result.request_id}
         if result.usage:
             metadata["usage"] = result.usage.model_dump()
         content = result.content
         attachments = [a.model_dump(mode="json") for a in result.attachments]
-        frontend = self.config.frontends[identity["frontend_id"]]
-        if frontend.provider != "web":
-            links = "\n".join(f"{a.filename}: {a.url}" for a in result.attachments)
-            content = "\n\n".join(part for part in [content, links] if part)
-            attachments = []  # Deliver object URLs without downloading/re-uploading channel files.
         await self.parsers[identity["frontend_id"]].post_message(payload={
             "chat_id": record["chat_id"], "content": content,
             "attachments": attachments,

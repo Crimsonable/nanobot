@@ -27,7 +27,7 @@ Base：`http://<节点地址>:30081`。参考环境为 `http://192.168.199.168:3
 | `request_id` | `string` | 否 | 单条消息的唯一编号，用于重试去重、查询及取消。建议前端生成全局唯一 UUID，非空时最长 100 字符；省略、`null` 或空字符串时后端生成。每条新消息使用新编号 |
 | `content` | `string` | 是 | 用户文本或附件处理要求，最长 200000 字符。仅传附件时也须提供，可填空字符串 |
 | `attachments` | `array` | 否 | 附件引用列表，默认 `[]`，最多 32 个。支持 URL 字符串或附件对象，详见第 4 节；不传文件二进制或 Base64 |
-| `metadata` | `object` | 否 | 业务扩展信息，例如流水号、页面来源。默认 `{}`，随请求记录并在响应中返回，不用于选择会话 |
+| `metadata` | `object` | 否 | 业务扩展信息，例如流水号、页面来源。默认 `{}`，随请求记录并在响应中返回，不用于选择会话；provider/frontend_id 为 Gateway 按注册配置填入的保留字段 |
 | `stream` | `boolean` | 否 | 默认 `false`，等待完成后返回 JSON；设为 `true` 时在同一响应中接收原生事件 SSE，见第 7 节。仅接受 JSON 布尔值 |
 
 未知请求字段会被忽略。参考异步文档中的 `raw` 不是本接口支持的业务字段，需要保留的信息放入 `metadata`。
@@ -87,7 +87,7 @@ Base：`http://<节点地址>:30081`。参考环境为 `http://192.168.199.168:3
 | `identity_id` | `string` | 后端根据 `frontend_id + user_id` 生成的身份哈希，前端无需生成 |
 | `content` | `string` | AI 最终回复文本，纯附件回复时可能为空；结果尚未到达时没有此字段 |
 | `attachments` | `array<object>` | 回复附件列表，默认 `[]`，使用对象中的 `url` 下载；结果尚未到达时没有此字段 |
-| `metadata` | `object` | 提交时的业务扩展信息，对未知业务字段保持兼容 |
+| `metadata` | `object` | 提交时的业务扩展信息，加上 Gateway 确定的 provider/frontend_id；对其他业务字段保持兼容 |
 | `delivery_state` | `string` | 渠道回调投递状态。同步请求不发送回调，通常保持 `pending`，不表示 AI 仍在执行。异步请求还可能为 `sending`、`sent`、`unknown`、`skipped` |
 | `error` | `string / null` | 错误说明，无错误时为 `null`；结果到达前可能没有此字段 |
 | `partial` | `boolean` | 是否为不完整结果，默认 `false`；为 `true` 时不能把正文当作完整成果。结果到达前可能没有此字段 |
@@ -164,7 +164,7 @@ POST /requests/web-test/web-msg-20261028-001/cancel
 
 ### 4.1 发送附件
 
-先上传至 MinIO，再把下载 URL 放入 `attachments`。Gateway 只接收引用，不负责上传或下载文件，也没有独立附件上传接口。
+入站文件由业务服务先上传至 MinIO，再把下载 URL 放入 `attachments`；Gateway 的入站接口只接收引用，不下载文件。AI 生成的出站文件则由 BU 调用 Gateway 内部统一上传接口处理，详见 [附件链路](ATTACHMENT_UPLOAD_API.md)。
 
 简单格式：
 
@@ -186,7 +186,7 @@ POST /requests/web-test/web-msg-20261028-001/cancel
 
 ### 4.2 接收附件
 
-AI 生成文件由后端 `publish_attachment` 上传到该 frontend 配置的 MinIO。前端用 `filename` 展示、用 `url` 下载。
+AI 生成文件由 `publish_attachment` 经 BU 调用 Gateway，Gateway 将 Web 附件上传到该 frontend 配置的 MinIO。前端用 `filename` 展示、用 `url` 下载。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |

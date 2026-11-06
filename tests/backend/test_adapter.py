@@ -518,51 +518,44 @@ def test_individual_write_switch_enables_shared_edit_permission(runtime):
 
 
 @pytest.mark.asyncio
-async def test_publish_tool_uploads_to_storage_without_control_peer(runtime, tmp_path, monkeypatch):
-    from agent_backend.config import StorageConfig
+async def test_publish_tool_uploads_through_gateway_without_control_peer(runtime, tmp_path, monkeypatch):
+    import hashlib
+    from agent_backend.models import Attachment
     submit = active(runtime)
     own = runtime.workspace(submit)
     source = own / "report.txt"
     source.write_bytes(b"report bytes")
-    runtime.config.storage = StorageConfig(endpoint="http://minio:9000", bucket="reports",
-        access_key_file=tmp_path / "access", secret_key_file=tmp_path / "secret",
-        public_base_url="https://objects.example/reports")
     uploaded = []
-
-    class Storage:
-        def upload_file(self, path, bucket, key, ExtraArgs):
-            from pathlib import Path
-            uploaded.append((Path(path).read_bytes(), bucket, key))
-
-    monkeypatch.setattr(runtime.artifacts, "client", lambda: Storage())
+    async def gateway(request):
+        data = await request.aread()
+        uploaded.append(data)
+        assert request.url.path.startswith("/internal/attachments/web/r/att_")
+        assert request.headers["x-bucket-id"] == "b"
+        assert request.url.params["sha256"] == hashlib.sha256(data).hexdigest()
+        return httpx.Response(200, json=Attachment(attachment_id=request.url.path.rsplit("/", 1)[1],
+            filename=request.url.params["filename"], size=len(data), sha256=request.url.params["sha256"],
+            storage="minio", url="https://objects.example/reports/report.txt").model_dump())
+    monkeypatch.setattr(runtime.artifacts, "client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(gateway), base_url="http://gateway"))
     body = publication(runtime, "s", "publish", [{"path": "report.txt"}])
     result = await runtime.publish(body)
     assert runtime.peer is None
-    assert uploaded[0][0] == b"report bytes"
-    assert uploaded[0][1] == "reports"
+    assert uploaded == [b"report bytes"]
     attachment = result["attachments"][0]
     assert attachment["url"].startswith("https://objects.example/reports/")
-    assert submit.identity.identity_id in uploaded[0][2]
     assert runtime.db.get("run", "r")["artifacts"] == result["attachments"]
     assert await runtime.publish(body) == result
     assert len(uploaded) == 1
 
 
 @pytest.mark.asyncio
-async def test_failed_minio_upload_does_not_publish_a_url(runtime, tmp_path, monkeypatch):
-    from agent_backend.config import StorageConfig
+async def test_failed_gateway_upload_does_not_register_an_attachment(runtime, tmp_path, monkeypatch):
     submit = active(runtime)
     (runtime.workspace(submit) / "report.txt").write_text("report")
-    runtime.config.storage = StorageConfig(endpoint="http://minio:9000", bucket="reports",
-        access_key_file=tmp_path / "access", secret_key_file=tmp_path / "secret")
-
-    class Storage:
-        def upload_file(self, *args, **kwargs):
-            raise ConnectionError("MinIO unavailable")
-
-    monkeypatch.setattr(runtime.artifacts, "client", lambda: Storage())
+    monkeypatch.setattr(runtime.artifacts, "client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(502)), base_url="http://gateway"))
     body = publication(runtime, "s", "publish", [{"path": "report.txt"}])
-    with pytest.raises(ConnectionError):
+    with pytest.raises(httpx.HTTPStatusError):
         await runtime.publish(body)
     assert runtime.db.get("run", "r")["artifacts"] == []
 

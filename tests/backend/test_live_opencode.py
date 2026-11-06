@@ -123,11 +123,11 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     register_bucket(app.state.service, "bucket-0")
     uploaded = []
 
-    async def upload(identity, attachment_id, path, attachment):
+    async def upload(submit, attachment_id, path, attachment):
         uploaded.append(path.read_bytes())
         result = attachment.model_copy(update={"url": "https://files.invalid/" + attachment_id,
                                                "object_key": attachment_id, "storage": "minio"})
-        runtime.db.put("artifact", attachment_id, {"identity_id": identity.identity_id, "attachment": result.model_dump()})
+        runtime.db.put("artifact", attachment_id, {"identity_id": submit.identity.identity_id, "attachment": result.model_dump()})
         return result
 
     model = FastAPI()

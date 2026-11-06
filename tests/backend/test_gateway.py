@@ -36,7 +36,7 @@ async def accept(system, request_id="r", sync=False, stream=False):
     app, cu, bu = system
     gw = app.state.service
     row = await gw.submit("web", Inbound(user_id="alice", chat_id="chat", content="hello", request_id=request_id,
-        metadata={"reply_target": {"to_group_id": "group"}, "frontend_id": "forged"}, stream=stream), sync=sync)
+        metadata={"reply_target": {"to_group_id": "group"}, "frontend_id": "forged", "provider": "forged"}, stream=stream), sync=sync)
     submit = Submit.model_validate(cu.db.get("request", request_id)["submit"])
     bu.db.put("run", request_id, {"request_id": request_id, "status": "running", "session_id": "s",
         "message_id": "input", "directory": str(bu.workspace(submit)), "submit": submit.model_dump(mode="json"),
@@ -82,7 +82,7 @@ async def test_final_external_fields_unchanged_and_cu_has_no_content(system):
     await channels.deliver(gw.db.get("request", "r"), Result.model_validate(gw.db.get("request", "r")["result"]))
     assert send.call_args.kwargs["payload"] == {
         "chat_id": "chat", "content": "done", "attachments": [], "metadata": {
-            "reply_target": {"to_group_id": "group"}, "frontend_id": "web", "user_id": "alice", "request_id": "r",
+            "reply_target": {"to_group_id": "group"}, "frontend_id": "web", "provider": "web", "user_id": "alice", "request_id": "r",
             "usage": {"input_tokens": 12, "output_tokens": 4, "reasoning_tokens": 0,
                       "cache_read_tokens": 0, "cache_write_tokens": 0}}}
 

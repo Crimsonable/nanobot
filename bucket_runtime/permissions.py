@@ -19,8 +19,6 @@ def public_roots(config: RuntimeConfig, policy: UserPolicy) -> list[Path]:
                  config.opencode.context_root, config.opencode.plugin_file,
                  config.opencode.dependency_dir]
     private = [config.opencode.config_file, config.permissions_file, config.logging_file, config.frontend_config_file]
-    if config.storage:
-        private.extend([config.storage.access_key_file, config.storage.secret_key_file])
     result = []
     for root in roots:
         resolved = scoped_public_path(root, config.common_root, config.frontend_id)

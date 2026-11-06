@@ -41,6 +41,11 @@ class Attachment(StrictModel):
     sha256: str = ""
     storage: str = ""
     object_key: str = ""
+    frontend_id: str = Field(default="", exclude_if=lambda value: not value)
+    media_id: str = Field(default="", exclude_if=lambda value: not value)
+    upload_type: str = Field(default="", exclude_if=lambda value: not value)
+    file_key: str = Field(default="", exclude_if=lambda value: not value)
+    image_key: str = Field(default="", exclude_if=lambda value: not value)
 
     @field_validator("filename")
     @classmethod
@@ -56,6 +61,7 @@ class Submit(StrictModel):
     identity: Identity
     content: str = Field(max_length=200_000)
     attachments: list[Attachment] = Field(default_factory=list, max_length=32)
+    metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
     deadline_at: float
     session_id: str | None = None
     stream: StrictBool = Field(default=False, exclude_if=lambda value: not value)
