@@ -1,0 +1,253 @@
+{
+  "control": {
+    "bucket_pool": {
+      "namespace": "opencode-sv-formal",
+      "name_prefix": "opencode-bucket",
+      "image": "agent-bucket-runtime:opencode-1.18.31-bwrap011",
+      "image_pull_policy": "IfNotPresent",
+      "max_users_per_bucket": 16,
+      "opencode_host_path": "/data/mnt/opencode-sv-formal/opencode",
+      "data_pvc": "opencode-formal-data-pvc",
+      "source_pvc": "opencode-formal-source-pvc",
+      "common_pvc": "opencode-formal-common-pvc",
+      "state_pvc": "opencode-formal-state-pvc",
+      "node_selector": {
+        "opencode-sv-formal": "true"
+      }
+    }
+  },
+  "frontends": [
+    {
+      "frontend_id": "qxt-main",
+      "provider": "qxt",
+      "send_msg_url": "https://im.chidi.com.cn:8888/v2/message/bot_send_to_conversation",
+      "channel": {
+        "app_id": "14781834433937184",
+        "app_secret": "REPLACE_WITH_QXT_APP_SECRET",
+        "corp_id": "14777504996792969",
+        "access_url": "https://im.chidi.com.cn:8888/v2/gettoken"
+      },
+      "attachment_storage": {
+        "provider": "minio",
+        "endpoint": "http://minio.minio.svc.cluster.local:9000",
+        "access_key": "REPLACE_WITH_MINIO_ACCESS_KEY",
+        "secret_key": "REPLACE_WITH_MINIO_SECRET_KEY",
+        "bucket": "attachments",
+        "public_base_url": "http://192.168.199.167:9000/attachments",
+        "key_prefix": "web-outbound",
+        "presign_expiry_seconds": 86400
+      },
+      "instance_idle_ttl_seconds": 86400,
+      "runtime": {
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
+      },
+      "event_forwarding": {
+        "include_types": [
+          "message.updated",
+          "message.part.updated",
+          "message.part.delta",
+          "message.part.removed",
+          "message.removed",
+          "session.status",
+          "session.error"
+        ],
+        "include_part_types": [
+          "text",
+          "file",
+          "tool"
+        ],
+        "include_child_sessions": false
+      }
+    },
+    {
+      "frontend_id": "qxt-zb",
+      "provider": "qxt",
+      "send_msg_url": "https://im2test.chidi.com.cn:8888/v2/message/bot_send_to_conversation",
+      "channel": {
+        "app_id": "14781834408503489",
+        "app_secret": "REPLACE_WITH_QXT_APP_SECRET",
+        "corp_id": "14781834408466801",
+        "access_url": "https://im2test.chidi.com.cn:8888/v2/gettoken"
+      },
+      "attachment_storage": {
+        "provider": "minio",
+        "endpoint": "http://minio.minio.svc.cluster.local:9000",
+        "access_key": "REPLACE_WITH_MINIO_ACCESS_KEY",
+        "secret_key": "REPLACE_WITH_MINIO_SECRET_KEY",
+        "bucket": "attachments",
+        "public_base_url": "http://192.168.199.167:9000/attachments",
+        "key_prefix": "web-outbound",
+        "presign_expiry_seconds": 86400
+      },
+      "instance_idle_ttl_seconds": 86400,
+      "runtime": {
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
+      },
+      "event_forwarding": {
+        "include_types": [
+          "message.updated",
+          "message.part.updated",
+          "message.part.delta",
+          "message.part.removed",
+          "message.removed",
+          "session.status",
+          "session.error"
+        ],
+        "include_part_types": [
+          "text",
+          "file",
+          "tool"
+        ],
+        "include_child_sessions": false
+      }
+    },
+    {
+      "frontend_id": "web-main",
+      "provider": "web",
+      "send_msg_url": "http://192.168.199.166:48080/app-api/ai/llm/callback",
+      "channel": {},
+      "attachment_storage": {
+        "provider": "minio",
+        "endpoint": "http://minio.minio.svc.cluster.local:9000",
+        "access_key": "REPLACE_WITH_MINIO_ACCESS_KEY",
+        "secret_key": "REPLACE_WITH_MINIO_SECRET_KEY",
+        "bucket": "attachments",
+        "public_base_url": "http://192.168.199.167:9000/attachments",
+        "key_prefix": "web-outbound",
+        "presign_expiry_seconds": 3600
+      },
+      "instance_idle_ttl_seconds": 3600,
+      "runtime": {
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
+      },
+      "event_forwarding": {
+        "include_types": [
+          "message.updated",
+          "message.part.updated",
+          "message.part.delta",
+          "message.part.removed",
+          "message.removed",
+          "session.status",
+          "session.error"
+        ],
+        "include_part_types": [
+          "text",
+          "file",
+          "tool"
+        ],
+        "include_child_sessions": false
+      }
+    },
+    {
+      "frontend_id": "web-wd",
+      "provider": "web",
+      "send_msg_url": "http://192.168.186.13:51000/anon/znjz/ai-inbound/callback",
+      "channel": {},
+      "attachment_storage": {
+        "provider": "minio",
+        "endpoint": "http://minio.minio.svc.cluster.local:9000",
+        "access_key": "REPLACE_WITH_MINIO_ACCESS_KEY",
+        "secret_key": "REPLACE_WITH_MINIO_SECRET_KEY",
+        "bucket": "attachments",
+        "public_base_url": "http://192.168.199.167:9000/attachments",
+        "key_prefix": "web-outbound",
+        "presign_expiry_seconds": 3600
+      },
+      "instance_idle_ttl_seconds": 86400,
+      "runtime": {
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
+      },
+      "event_forwarding": {
+        "include_types": [
+          "message.updated",
+          "message.part.updated",
+          "message.part.delta",
+          "message.part.removed",
+          "message.removed",
+          "session.status",
+          "session.error"
+        ],
+        "include_part_types": [
+          "text",
+          "file",
+          "tool"
+        ],
+        "include_child_sessions": false
+      }
+    },
+    {
+      "frontend_id": "web-stream",
+      "provider": "web",
+      "send_msg_url": "http://192.168.48.104:8090/outbound",
+      "channel": {},
+      "attachment_storage": {
+        "provider": "minio",
+        "endpoint": "http://minio.minio.svc.cluster.local:9000",
+        "access_key": "REPLACE_WITH_MINIO_ACCESS_KEY",
+        "secret_key": "REPLACE_WITH_MINIO_SECRET_KEY",
+        "bucket": "attachments",
+        "public_base_url": "http://192.168.199.167:9000/attachments",
+        "key_prefix": "web-outbound",
+        "presign_expiry_seconds": 86400
+      },
+      "instance_idle_ttl_seconds": 3600,
+      "runtime": {
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
+      },
+      "event_forwarding": {
+        "include_types": [
+          "message.updated",
+          "message.part.updated",
+          "message.part.delta",
+          "message.part.removed",
+          "message.removed",
+          "session.status",
+          "session.error"
+        ],
+        "include_part_types": [
+          "text",
+          "file",
+          "tool"
+        ],
+        "include_child_sessions": false
+      }
+    },
+    {
+      "frontend_id": "web-yk",
+      "provider": "web",
+      "send_msg_url": "http://192.168.48.104:8090/outbound",
+      "channel": {},
+      "attachment_storage": {
+        "provider": "minio",
+        "endpoint": "http://minio.minio.svc.cluster.local:9000",
+        "access_key": "REPLACE_WITH_MINIO_ACCESS_KEY",
+        "secret_key": "REPLACE_WITH_MINIO_SECRET_KEY",
+        "bucket": "attachments",
+        "public_base_url": "http://192.168.199.167:9000/attachments",
+        "key_prefix": "web-outbound",
+        "presign_expiry_seconds": 3600
+      },
+      "instance_idle_ttl_seconds": 3600,
+      "runtime": {
+        "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
+      },
+      "event_forwarding": {
+        "include_types": [
+          "message.updated",
+          "message.part.updated",
+          "message.part.delta",
+          "message.part.removed",
+          "message.removed",
+          "session.status",
+          "session.error"
+        ],
+        "include_part_types": [
+          "text",
+          "file",
+          "tool"
+        ],
+        "include_child_sessions": false
+      }
+    }
+  ]
+}

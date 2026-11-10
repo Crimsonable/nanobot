@@ -1,0 +1,220 @@
+# opencode-sv-formal：CU（control + gateway）及其 Service。
+#
+# control 容器持有 kubeconfig 权限，负责按需创建 opencode-bucket-<hash> Deployment；
+# 这些 bucket Deployment 由 CU 运行时生成，不在此清单内。
+# Gateway 对外暴露 NodePort 30080（承接原 nanobot 的入口端口）。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: container-up
+  namespace: opencode-sv-formal
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: container-up-buckets
+  namespace: opencode-sv-formal
+rules:
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - deployments/scale
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: container-up-buckets
+  namespace: opencode-sv-formal
+subjects:
+- kind: ServiceAccount
+  name: container-up
+  namespace: opencode-sv-formal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: container-up-buckets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: container-up
+  namespace: opencode-sv-formal
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: container-up
+  template:
+    metadata:
+      labels:
+        app: container-up
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+      containers:
+      - name: control
+        args:
+        - python
+        - -m
+        - container_up
+        - --config
+        - /mnt/common/frontends.json
+        image: agent-container-up:opencode-1.18.31
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: control-http
+          containerPort: 8001
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: control-http
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: control-http
+        securityContext:
+          privileged: true
+          allowPrivilegeEscalation: true
+          readOnlyRootFilesystem: false
+        volumeMounts:
+        - name: kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+        - name: data
+          mountPath: /data
+        - name: tmp
+          mountPath: /tmp
+        - name: workspace
+          mountPath: /mnt/env
+        - name: source
+          mountPath: /mnt/source
+          readOnly: true
+        - name: common
+          mountPath: /mnt/common
+          readOnly: true
+        workingDir: /mnt/source
+      - name: gateway
+        args:
+        - python
+        - -m
+        - channel_gateway
+        - --config
+        - /mnt/common/frontends.json
+        image: agent-container-up:opencode-1.18.31
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: gateway-http
+          containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: gateway-http
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: gateway-http
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: gateway-tmp
+          mountPath: /tmp
+        - name: source
+          mountPath: /mnt/source
+          readOnly: true
+        - name: common
+          mountPath: /mnt/common
+          readOnly: true
+        workingDir: /mnt/source
+      volumes:
+      - name: kube-api-access
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3600
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - path: namespace
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+      - name: gateway-tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: data
+        persistentVolumeClaim:
+          claimName: opencode-formal-state-pvc
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: opencode-formal-data-pvc
+      - name: source
+        persistentVolumeClaim:
+          claimName: opencode-formal-source-pvc
+          readOnly: true
+      - name: common
+        persistentVolumeClaim:
+          claimName: opencode-formal-common-pvc
+          readOnly: true
+      serviceAccountName: container-up
+      nodeSelector:
+        opencode-sv-formal: 'true'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: container-up
+  namespace: opencode-sv-formal
+spec:
+  selector:
+    app: container-up
+  ports:
+  - port: 8000
+    targetPort: control-http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: channel-gateway
+  namespace: opencode-sv-formal
+spec:
+  selector:
+    app: container-up
+  ports:
+  - port: 8000
+    targetPort: gateway-http
+    nodePort: 30080
+  type: NodePort

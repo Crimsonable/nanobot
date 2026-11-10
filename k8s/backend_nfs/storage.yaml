@@ -1,0 +1,136 @@
+# opencode-sv-formal：NFS 共享目录版存储清单。
+#
+# 设计要点：四个 PV 均为 hostPath，指向 166 本地盘上的
+# /data/mnt/opencode-sv-formal/<子目录>；168 通过 /etc/fstab 把同一导出挂到同名路径，
+# 因此 PV 不带 nodeAffinity —— Pod 调度到 166 是本地读写，调度到 168 则经 NFS 读写同一份数据。
+#
+# 前提：两台节点都必须已挂载 /data/mnt/opencode-sv-formal，且四个子目录真实存在。
+# PVC 用 volumeName 静态绑定，storageClassName 必须为空，否则会被默认 StorageClass 抢绑。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opencode-sv-formal
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencode-formal-source-pv
+  labels:
+    opencode-formal.io/volume: source
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ''
+  hostPath:
+    path: /data/mnt/opencode-sv-formal/source
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencode-formal-common-pv
+  labels:
+    opencode-formal.io/volume: common
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ''
+  hostPath:
+    path: /data/mnt/opencode-sv-formal/common
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencode-formal-data-pv
+  labels:
+    opencode-formal.io/volume: data
+spec:
+  capacity:
+    storage: 400Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ''
+  hostPath:
+    path: /data/mnt/opencode-sv-formal/data
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencode-formal-state-pv
+  labels:
+    opencode-formal.io/volume: state
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ''
+  hostPath:
+    path: /data/mnt/opencode-sv-formal/state
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: opencode-formal-source-pvc
+  namespace: opencode-sv-formal
+spec:
+  accessModes:
+  - ReadOnlyMany
+  storageClassName: ''
+  volumeName: opencode-formal-source-pv
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: opencode-formal-common-pvc
+  namespace: opencode-sv-formal
+spec:
+  accessModes:
+  - ReadOnlyMany
+  storageClassName: ''
+  volumeName: opencode-formal-common-pv
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: opencode-formal-data-pvc
+  namespace: opencode-sv-formal
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: ''
+  volumeName: opencode-formal-data-pv
+  resources:
+    requests:
+      storage: 400Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: opencode-formal-state-pvc
+  namespace: opencode-sv-formal
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: ''
+  volumeName: opencode-formal-state-pv
+  resources:
+    requests:
+      storage: 50Gi
