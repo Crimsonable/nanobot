@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Literal, TypeVar
 from urllib.parse import urlparse
@@ -9,8 +10,23 @@ import yaml
 from pydantic import Field, SecretStr, field_validator, model_validator
 
 from agent_backend.common import frontend_common_root, frontend_segment, scoped_public_path
-from agent_backend.models import StrictModel
+from agent_backend.models import StrictModel, digest
 from agent_backend.workspaces import workspace_volume_subpath
+
+
+BUCKET_SUFFIX_LENGTH = 12
+
+
+def bucket_name_prefix(name_prefix: str, frontend_id: str) -> str:
+    frontend = re.sub(r"[^a-z0-9-]+", "-", frontend_id.lower()).strip("-") or digest(frontend_id)[:8]
+    available = 63 - len(name_prefix) - BUCKET_SUFFIX_LENGTH - 2
+    return f"{name_prefix}-{frontend[:available].rstrip('-')}"
+
+
+def valid_bucket_id(name_prefix: str, frontend_id: str, bucket_id: str) -> bool:
+    prefix, _, suffix = bucket_id.rpartition("-")
+    return (prefix in (name_prefix, bucket_name_prefix(name_prefix, frontend_id))
+            and len(suffix) == BUCKET_SUFFIX_LENGTH and re.fullmatch(r"[0-9a-f]+", suffix) is not None)
 
 
 class UserSandbox(StrictModel):
@@ -374,9 +390,8 @@ class FrontendConfig(FrontendSettings):
         values["permissions_file"] = frontend_path(self.runtime.permissions_file, "config")
         values["logging_file"] = frontend_path(self.runtime.logging_file, "config")
         self.gateway_storage()  # Validate deployment paths; upload credentials stay in Gateway.
-        import re
         pool = self.control.bucket_pool
-        if not re.fullmatch(re.escape(pool.name_prefix) + r"-[0-9a-f]{12}", bucket_id):
+        if not valid_bucket_id(pool.name_prefix, self.frontend_id, bucket_id):
             raise ValueError("runtime requires a scheduler-issued --bucket-id")
         values["state_root"] = self.runtime.state_root / self.frontend_id / bucket_id
         return RuntimeConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id,

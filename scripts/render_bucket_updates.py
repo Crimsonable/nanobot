@@ -4,14 +4,13 @@ Run from the source root: python -m scripts.render_bucket_updates --config ...
 """
 import argparse
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
-from agent_backend.config import FrontendConfig, FrontendsConfig, load_frontends
+from agent_backend.config import FrontendConfig, FrontendsConfig, load_frontends, valid_bucket_id
 from container_up.bucket_manager import BucketManager
 
 
@@ -22,11 +21,13 @@ def render(config: FrontendConfig | FrontendsConfig, current: dict,
     for workload in current["items"]:
         metadata = workload["metadata"]
         name = metadata["name"]
+        owner = metadata.get("annotations", {}).get("opencode.io/frontend-id")
+        if not owner:
+            raise ValueError(f"Deployment is missing its frontend_id annotation: {name}")
         if (metadata.get("namespace") != config.control.bucket_pool.namespace
                 or metadata.get("labels", {}).get("bucket-id") != name
-                or not re.fullmatch(re.escape(config.control.bucket_pool.name_prefix) + r"-[0-9a-f]{12}", name)):
+                or not valid_bucket_id(config.control.bucket_pool.name_prefix, owner, name)):
             raise ValueError(f"Deployment is not owned by this bucket pool: {name}")
-        owner = metadata.get("annotations", {}).get("opencode.io/frontend-id")
         if owner and frontend_id and owner != frontend_id:
             continue
         desired = manager.deployment(name, owner)

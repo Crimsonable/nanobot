@@ -88,6 +88,19 @@ async def test_final_external_fields_unchanged_and_cu_has_no_content(system):
 
 
 @pytest.mark.asyncio
+async def test_missing_worker_result_reaches_gateway_without_worker_events(system):
+    app, cu, _ = system
+    gw = app.state.service
+    await accept(system, sync=True, stream=True)
+    await cu.pool.missing("b")
+    row = await gw.query("web", "r")
+    assert row["status"] == "failed"
+    assert row["result"]["error"] == "BUCKET_MISSING_EXECUTION_INTERRUPTED"
+    assert gw.completed["r"].is_set()
+    assert row["result"]["content"] == ""
+
+
+@pytest.mark.asyncio
 async def test_idle_is_required_and_drain_waits_for_gateway_ack(system):
     app, cu, bu = system
     await accept(system)

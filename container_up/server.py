@@ -2,28 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import mimetypes
 import time
-from contextlib import asynccontextmanager
-from pathlib import Path
-from urllib.parse import urlparse
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
+from functools import partial
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from agent_backend.config import ControlConfig
 from agent_backend.ingress import Inbound
 from agent_backend.journal import Journal
-from agent_backend.models import (
-    Attachment,
-    Envelope,
-    ExecutionStatus,
-    Identity,
-    Submit,
-    digest,
-    uid,
-)
+from agent_backend.models import Envelope, Identity, Submit, digest, uid
 from agent_backend.sockets import StarletteSocket
 from agent_backend.wire import Peer
+from container_up.bucket_manager import BucketMissing
+from container_up.bucket_scheduler import BucketBusy, BucketScheduler
+from container_up.session_manager import SessionManager, SourceCall
 
 log = logging.getLogger(__name__)
 
@@ -32,215 +26,143 @@ class ControlService:
     def __init__(self, config: ControlConfig):
         self.config = config
         self.db = Journal(config.state_root / "control.sqlite", config.limits.outbox_messages)
-        self.peers: dict[str, Peer] = {}
-        self.sockets: dict[str, WebSocket] = {}
         self.user_locks: dict[str, asyncio.Lock] = {}
-        from container_up.bucket_scheduler import BucketScheduler
-        self.pool = BucketScheduler(self)
-        from container_up.session_manager import SessionManager
-        self.sessions = SessionManager(self)
-        self.bucket_connected: dict[str, asyncio.Event] = {}
-        self.submission_tasks: set[asyncio.Task] = set()
-        self.reset_tasks: set[asyncio.Task] = set()
+        self.pool = BucketScheduler(config, self.db, self.interrupt_bucket_requests)
+        self.sessions = SessionManager(config, self.db, self.open_session_source)
+        self.pending: set[asyncio.Task] = set()
 
-    async def reset_frontend_opencode(self, frontend_id: str) -> dict:
-        self.require_frontend(frontend_id)
-        task = asyncio.create_task(self._reset_frontend_opencode(frontend_id))
-        self.reset_tasks.add(task)
+    def _shield(self, work):
+        """Finish accepted submissions and resets even if the HTTP caller disconnects."""
+        task = asyncio.create_task(work)
+        self.pending.add(task)
 
         def finished(done):
-            self.reset_tasks.discard(done)
+            self.pending.discard(done)
             if not done.cancelled():
                 done.exception()
 
         task.add_done_callback(finished)
-        return await asyncio.shield(task)
+        return asyncio.shield(task)
 
-    async def _reset_frontend_opencode(self, frontend_id: str) -> dict:
-        buckets = [row for row in self.db.records("bucket") if row["frontend_id"] == frontend_id]
-        targets = [row["bucket_id"] for row in buckets if row["status"] != "idle"]
+    async def reset_frontend_opencode(self, frontend_id: str) -> dict:
+        self.require_frontend(frontend_id)
+        targets, skipped = self.pool.reset_targets(frontend_id)
 
         async def reset(bucket_id):
             try:
-                return await self._reset_opencode(bucket_id)
-            except HTTPException as exc:
-                return {"bucket_id": bucket_id, "status": "failed",
-                        "status_code": exc.status_code, "detail": exc.detail}
+                await self.pool.reset(bucket_id, sessions_idle=self.sessions.can_reset(bucket_id))
+                return {"bucket_id": bucket_id, "status": "ready"}
+            except KeyError:
+                code, detail = 404, "bucket not registered"
+            except BucketBusy as exc:
+                code, detail = 409, str(exc)
+            except ConnectionError as exc:
+                code, detail = 503, str(exc)
+            except RuntimeError as exc:
+                code, detail = 502, str(exc)
+            return {"bucket_id": bucket_id, "status": "failed", "status_code": code, "detail": detail}
 
-        results = await asyncio.gather(*(reset(bucket_id) for bucket_id in targets))
+        results = await asyncio.gather(*(self._shield(reset(bucket_id)) for bucket_id in targets))
         status = "ready" if targets else "no_running_buckets"
         if any(result["status"] == "failed" for result in results):
             status = "partial_failure"
         return {"frontend_id": frontend_id, "status": status, "buckets": results,
-                "skipped_buckets": [row["bucket_id"] for row in buckets if row["status"] == "idle"]}
+                "skipped_buckets": skipped}
 
-    async def _reset_opencode(self, bucket_id: str) -> dict:
-        async with self.pool.lock:
-            bucket = self.db.get("bucket", bucket_id)
-            if not bucket:
-                raise HTTPException(404, "bucket not registered")
-            if bucket["status"] != "running":
-                raise HTTPException(409, "bucket is not running")
-            peer = self.peers.get(bucket_id)
-            if not peer or peer.closed:
-                raise HTTPException(503, "bucket is disconnected")
-            if self.pool.busy(bucket_id) or self.db.pending(bucket_id):
-                raise HTTPException(409, "bucket is busy; retry after its requests finish")
-            # Exclude placement even if a stale bucket.status reports accepting=True.
-            finished = asyncio.Event()
-            self.pool.resetting[bucket_id] = finished
-            self.pool.pins[bucket_id] = self.pool.pins.get(bucket_id, 0) + 1
-        try:
-            await peer.session_call({"operation": "reset_opencode", "session_id": uid("reset_")})
-            return {"bucket_id": bucket_id, "status": "ready"}
-        except ConnectionError:
-            raise HTTPException(503, "bucket disconnected; reset outcome is unknown") from None
-        except RuntimeError as exc:
-            raise HTTPException(502, str(exc)) from None
-        finally:
-            self.pool.pins[bucket_id] -= 1
-            self.pool.resetting.pop(bucket_id, None)
-            finished.set()
-            self.pool.touch(bucket_id)
+    @contextmanager
+    def open_session_source(self, bucket_id: str) -> Iterator[SourceCall]:
+        with self.pool.hold(bucket_id):
+            yield partial(self.pool.call_if_running, bucket_id)
 
-    def request(self, bucket_id: str, request_id: str) -> dict:
-        row = self.db.get("request", request_id)
-        if not row or row["bucket_id"] != bucket_id:
-            raise PermissionError("request does not belong to this bucket")
-        return row
+    def interrupt_bucket_requests(self, bucket_id: str) -> None:
+        with self.db.transaction():
+            for identity_id in self.sessions.interrupt_requests(bucket_id):
+                self.pool.touch(bucket_id)
+                self.pool.release(identity_id)
 
     def require_frontend(self, frontend_id: str) -> None:
         if frontend_id not in self.config.frontends:
             raise HTTPException(404, "frontend is not registered")
 
-    async def normalize(self, values: list) -> list[Attachment]:
-        result = []
-        for value in values:
-            raw = {"url": value} if isinstance(value, str) else value
-            reference = str(raw.get("url") or raw.get("path") or "")
-            if not reference:
-                raise ValueError("attachment requires a URL or file path")
-            is_url = bool(urlparse(reference).scheme) and not (len(reference) > 1 and reference[1] == ":")
-            filename = raw.get("filename") or Path(urlparse(reference).path.replace("\\", "/")).name or "attachment.bin"
-            item = Attachment(url=reference if is_url else "", path="" if is_url else reference,
-                filename=filename, requires_auth=bool(raw.get("requires_auth", False)), content_type=raw.get("content_type") or mimetypes.guess_type(filename)[0]
-                or "application/octet-stream")
-            result.append(item)
-        return result
-
     async def submit(self, frontend_id: str, inbound: Inbound) -> dict:
-        # A disconnected HTTP caller must not drop an in-memory history or release
-        # its lock halfway through a move. Process shutdown remains the accepted
-        # failure window for this deliberately memory-only transfer protocol.
-        task = asyncio.create_task(self._place(frontend_id, inbound))
-        self.submission_tasks.add(task)
+        return await self._shield(self._place(frontend_id, inbound))
 
-        def finished(done):
-            self.submission_tasks.discard(done)
-            if not done.cancelled():
-                done.exception()
-
-        task.add_done_callback(finished)
-        return await asyncio.shield(task)
+    def _existing_request(self, request_id: str, fingerprint: str) -> dict | None:
+        row = self.db.get("request", request_id)
+        if row and row["hash"] != fingerprint:
+            raise HTTPException(409, "request_id already used for different input")
+        return row
 
     async def _place(self, frontend_id: str, inbound: Inbound) -> dict:
         self.require_frontend(frontend_id)
         identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
-        async with self.user_locks.setdefault(identity.identity_id, asyncio.Lock()):
-            if inbound.request_id and self.db.get("request", inbound.request_id):
-                return await self._submit(frontend_id, inbound)
-            async with self.pool.assignment(identity):
-                return await self._submit(frontend_id, inbound)
-
-    async def _submit(self, frontend_id: str, inbound: Inbound) -> dict:
-        identity = Identity(frontend_id=frontend_id, user_id=inbound.user_id)
         request_id = inbound.request_id or uid("req_")
         fingerprint = digest({"identity": identity.model_dump(), "input": inbound.model_dump(
             exclude={"request_id"})})
-        existing = self.db.get("request", request_id)
-        if existing:
-            if existing["hash"] != fingerprint:
-                raise HTTPException(409, "request_id already used for different input")
-            return existing
-        binding = self.db.get("binding", identity.identity_id)
-        if binding is None:
-            raise RuntimeError("user has no assigned bucket")
-        attachments_input = list(inbound.attachments)
-        attachments = await self.normalize(attachments_input)
-        submit = Submit(request_id=request_id, chat_id=inbound.chat_id,
-                        identity=identity, content=inbound.content,
-                        attachments=attachments, metadata=inbound.metadata,
-                        deadline_at=time.time() + self.config.limits.request_seconds,
-                        stream=inbound.stream)
-        if inbound.content.strip().lower() != "/cancel":
-            submit.session_id = await self.sessions.prepare(submit, binding["bucket_id"])
-            submit.deadline_at = time.time() + self.config.limits.request_seconds
+        async with self.user_locks.setdefault(identity.identity_id, asyncio.Lock()):
+            if existing := self._existing_request(request_id, fingerprint):
+                return existing
+            submit = Submit(request_id=request_id, chat_id=inbound.chat_id, identity=identity,
+                            content=inbound.content, attachments=inbound.attachment_references(),
+                            metadata=inbound.metadata, stream=inbound.stream,
+                            deadline_at=time.time() + self.config.limits.request_seconds)
+            while True:
+                try:
+                    async with self.pool.assignment(identity) as binding:
+                        # Another identity may have claimed the ID during bucket startup.
+                        if existing := self._existing_request(request_id, fingerprint):
+                            return existing
+                        bucket_id = binding["bucket_id"]
+                        submit.session_id = await self.sessions.prepare(submit, bucket_id)
+                        submit.deadline_at = time.time() + self.config.limits.request_seconds
+                        await self.pool.ready(bucket_id)
+                        return self._enqueue(submit, binding, fingerprint)
+                except BucketMissing:
+                    continue
+
+    def _enqueue(self, submit: Submit, binding: dict, fingerprint: str) -> dict:
+        request_id = submit.request_id
         record = {"request_id": request_id, "hash": fingerprint, "bucket_id": binding["bucket_id"],
-                  "chat_id": inbound.chat_id,
+                  "chat_id": submit.chat_id,
                   "submit": submit.model_dump(mode="json"), "status": "queued"}
         with self.db.transaction():
-            # There may have been an await during normalization.
             if self.db.get("request", request_id):
                 raise HTTPException(409, "concurrent duplicate request; query the existing request")
-            if self.db.get("binding", identity.identity_id) != binding:
+            if self.db.get("binding", submit.identity.identity_id) != binding:
                 raise RuntimeError("bucket binding changed during request submission")
             self.db.put("request", request_id, record)
             self.db.enqueue(record["bucket_id"], Envelope(type="request.submit",
-                bucket_id=record["bucket_id"], request_id=request_id, payload=submit.model_dump(mode="json")))
-        log.info("request queued bucket_id=%s request_id=%s identity_id=%s", record["bucket_id"], request_id, identity.identity_id)
+                bucket_id=record["bucket_id"], request_id=request_id, payload=record["submit"]))
+        log.info("request queued bucket_id=%s request_id=%s identity_id=%s", record["bucket_id"], request_id, submit.identity.identity_id)
         return record
 
     async def on_event(self, bucket_id: str, event: Envelope) -> None:
         if event.bucket_id != bucket_id:
             raise PermissionError("bucket event ownership mismatch")
         if event.type == "bucket.status":
-            bucket = self.db.get("bucket", bucket_id)
-            if not bucket or not isinstance(event.payload.get("accepting"), bool):
-                raise ValueError("invalid bucket status")
-            self.db.put("bucket", bucket_id, {**bucket, "accepting": event.payload["accepting"]})
+            self.pool.set_accepting(bucket_id, event.payload.get("accepting"))
             return
-        row = self.request(bucket_id, event.request_id)
-        if event.type in {"request.completed", "request.failed", "request.cancelled"}:
-            result = ExecutionStatus.model_validate(event.payload)
-            if result.request_id != event.request_id or event.type != "request." + result.status:
-                raise ValueError("terminal identity mismatch")
-            if row.get("result"):
-                if row["result"] != result.model_dump(mode="json"):
-                    raise ValueError("conflicting terminal result")
-                return
-            self.db.put("request", event.request_id, {**row, "status": result.status,
-                        "result": result.model_dump(mode="json")})
-            self.pool.touch(bucket_id)
-            self.pool.release(Identity.model_validate(row["submit"]["identity"]).identity_id)
-        elif event.type in {"request.accepted", "request.started"}:
-            if not row.get("result"):
-                if event.type == "request.started" and event.payload.get("session_id"):
-                    submit = Submit.model_validate(row["submit"])
-                    self.db.put("session", submit.session_key, {"identity": submit.identity.model_dump(),
-                        "chat_id": submit.chat_id, "session_id": event.payload["session_id"], "bucket_id": bucket_id})
-                self.db.put("request", event.request_id, {**row, "status": event.type.split(".")[1]})
-        else:
-            raise ValueError("unsupported bucket event")
-
+        with self.db.transaction():
+            if identity_id := self.sessions.apply_request_event(event):
+                self.pool.touch(bucket_id)
+                self.pool.release(identity_id)
 
 
 def create_app(config: ControlConfig) -> FastAPI:
     service = ControlService(config)
+    pool = service.pool
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        service.pool.task = asyncio.create_task(service.pool.run())
+        reconciliation = asyncio.create_task(pool.run())
         try:
             yield
         finally:
-            await service.pool.stop()
-            for task in service.submission_tasks:
+            tasks = [reconciliation, *service.pending]
+            for task in tasks:
                 task.cancel()
-            await asyncio.gather(*service.submission_tasks, return_exceptions=True)
-            for task in service.reset_tasks:
-                task.cancel()
-            await asyncio.gather(*service.reset_tasks, return_exceptions=True)
-            for socket in list(service.sockets.values()):
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for socket in list(pool.sockets.values()):
                 await socket.close()
             service.db.close()
 
@@ -263,39 +185,26 @@ def create_app(config: ControlConfig) -> FastAPI:
 
     @app.get("/health/ready")
     async def ready():
-        return {"status": "ready", "connected_buckets": sorted(service.peers)}
+        return {"status": "ready", "connected_buckets": sorted(pool.peers)}
 
     @app.websocket("/internal/buckets/ws")
     async def bucket_socket(socket: WebSocket):
         bucket_id = socket.headers.get("x-bucket-id", "")
-        bucket = service.db.get("bucket", bucket_id)
-        registered = bool(bucket and bucket["status"] in {"creating", "running", "draining"})
-        if not registered:
+        if not pool.active_bucket(bucket_id):
             await socket.close(code=1008)
             return
         await socket.accept()
-        old = service.sockets.get(bucket_id)
-        if old:
-            await old.close(code=1012)
-        peer: Peer
-
         async def on_event(event: Envelope):
-            if service.peers.get(bucket_id) is not peer:
+            if pool.peers.get(bucket_id) is not peer:
                 raise PermissionError("superseded bucket connection")
             await service.on_event(bucket_id, event)
 
         peer = Peer(StarletteSocket(socket), service.db, bucket_id, on_event)
-        service.peers[bucket_id], service.sockets[bucket_id] = peer, socket
-        service.bucket_connected.setdefault(bucket_id, asyncio.Event()).set()
-        try:
-            await peer.run()
-        except (WebSocketDisconnect, ConnectionError, RuntimeError, ValueError, TimeoutError):
-            log.info("bucket connection ended bucket_id=%s", bucket_id)
-        finally:
-            if service.peers.get(bucket_id) is peer:
-                service.bucket_connected[bucket_id].clear()
-                service.peers.pop(bucket_id, None)
-                service.sockets.pop(bucket_id, None)
+        async with pool.connection(bucket_id, peer, socket):
+            try:
+                await peer.run()
+            except (WebSocketDisconnect, ConnectionError, RuntimeError, ValueError, TimeoutError):
+                log.info("bucket connection ended bucket_id=%s", bucket_id)
 
     @app.post("/internal/submit/{frontend_id}")
     async def submit(frontend_id: str, body: Inbound):
@@ -319,8 +228,8 @@ def create_app(config: ControlConfig) -> FastAPI:
 
     @app.get("/internal/buckets/{bucket_id}")
     async def bucket(bucket_id: str):
-        row = service.db.get("bucket", bucket_id)
-        if not row or row["status"] not in {"creating", "running", "draining"}:
+        row = pool.active_bucket(bucket_id)
+        if not row:
             raise HTTPException(404, "bucket not registered")
         return row
 

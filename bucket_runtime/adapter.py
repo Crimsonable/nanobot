@@ -523,11 +523,19 @@ class BucketRuntimeAdapter:
                 snapshot = self.config.state_root / "snapshots" / attachment_id
                 if not intent:
                     source = contained(item["path"], self.workspace(submit))
-                    if source.stat().st_size > self.config.limits.file_bytes:
+                    source_size = source.stat().st_size
+                    log.info("attachment_upload stage=runtime event=check frontend_id=%s request_id=%s attachment_id=%s filename=%r file_bytes=%d file_limit_bytes=%d",
+                             self.config.frontend_id, request_id, attachment_id, item.get("filename") or source.name,
+                             source_size, self.config.limits.file_bytes)
+                    if source_size > self.config.limits.file_bytes:
+                        log.warning("attachment_upload stage=runtime event=rejected reason=file_limit request_id=%s attachment_id=%s file_bytes=%d file_limit_bytes=%d",
+                                    request_id, attachment_id, source_size, self.config.limits.file_bytes)
                         raise ValueError("attachment exceeds limit")
                     snapshot.parent.mkdir(parents=True, exist_ok=True)
                     used = sum(p.stat().st_size for p in snapshot.parent.iterdir() if p.is_file())
-                    if used + source.stat().st_size > self.config.limits.spool_bytes:
+                    if used + source_size > self.config.limits.spool_bytes:
+                        log.warning("attachment_upload stage=runtime event=rejected reason=spool_limit request_id=%s attachment_id=%s file_bytes=%d spool_used_bytes=%d spool_limit_bytes=%d",
+                                    request_id, attachment_id, source_size, used, self.config.limits.spool_bytes)
                         raise RuntimeError("SPOOL_FULL")
                     # Native commands hold the same OS lock outside bwrap. O_NOFOLLOW
                     # and fstat additionally protect the final component of the host open.

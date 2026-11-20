@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import ConfigDict, Field, StrictBool, field_validator
 
-from agent_backend.models import StrictModel
+from agent_backend.models import Attachment, StrictModel
 
 
 class Inbound(StrictModel):
@@ -31,3 +34,20 @@ class Inbound(StrictModel):
             return "default"
         text = str(value)
         return text if text.strip() else "default"
+
+    def attachment_references(self) -> list[Attachment]:
+        return [_attachment_reference(value) for value in self.attachments]
+
+
+def _attachment_reference(value: str | dict) -> Attachment:
+    raw = {"url": value} if isinstance(value, str) else value
+    reference = str(raw.get("url") or raw.get("path") or "")
+    if not reference:
+        raise ValueError("attachment requires a URL or file path")
+    parsed = urlparse(reference)
+    is_url = bool(parsed.scheme) and reference[1:2] != ":"
+    filename = raw.get("filename") or Path(parsed.path.replace("\\", "/")).name or "attachment.bin"
+    return Attachment(url=reference if is_url else "", path="" if is_url else reference,
+                      filename=filename, requires_auth=bool(raw.get("requires_auth", False)),
+                      content_type=raw.get("content_type") or mimetypes.guess_type(filename)[0]
+                      or "application/octet-stream")

@@ -23,20 +23,27 @@ class FakeManager:
         self.scaled = []
         self.fail_start = False
         self.fail_stop = False
+        self.missing = set()
 
-    async def ensure(self, bucket_id, frontend_id=None):
+    async def exists(self, bucket_id, frontend_id):
+        return bucket_id not in self.missing
+
+    async def wait_stopped(self, bucket_id):
+        pass
+
+    async def ensure(self, bucket_id, frontend_id=None, *, allow_create=True):
         self.created.append(bucket_id)
         await asyncio.sleep(0.01)
         if self.fail_start:
             raise RuntimeError("Kubernetes unavailable")
         from unittest.mock import AsyncMock
-        self.service.peers[bucket_id] = SimpleNamespace(closed=False, session_call=AsyncMock())
+        self.service.pool.peers[bucket_id] = SimpleNamespace(closed=False, session_call=AsyncMock())
 
     async def scale(self, bucket_id, replicas):
         if self.fail_stop:
             raise RuntimeError("scale failed")
         self.scaled.append((bucket_id, replicas))
-        self.service.peers.pop(bucket_id, None)
+        self.service.pool.peers.pop(bucket_id, None)
 
 
 @pytest.fixture
@@ -106,7 +113,7 @@ async def test_completed_users_release_capacity_before_whole_bucket_retires(serv
 async def test_gateway_handoff_must_finish_before_scale_down(service):
     row = await submit(service, "a", "r")
     await complete(service, row)
-    peer = service.peers[row["bucket_id"]]
+    peer = service.pool.peers[row["bucket_id"]]
     peer.session_call.side_effect = RuntimeError("gateway events still pending")
     expire(service)
     await service.pool.sweep()
@@ -177,7 +184,7 @@ async def test_unacked_commands_and_failed_scale_prevent_release(service):
 @pytest.mark.asyncio
 async def test_restart_keeps_mapping_and_recovers_same_bucket(service):
     first = await submit(service, "a", "r")
-    service.peers.clear()
+    service.pool.peers.clear()
     # Simulate the next CU process opening the persisted database.
     service.db.close()
     restored = ControlService(service.config)
@@ -206,6 +213,30 @@ def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
     assert next(v for v in pod["volumes"] if v["name"] == "workspace")["persistentVolumeClaim"]["claimName"] == "opencode-data-pvc"
     assert pod["automountServiceAccountToken"] is False
     assert pod["nodeSelector"] == config.control.bucket_pool.node_selector
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_bucket_upgrade_and_runtime_cli_accept_scheduler_names(service, monkeypatch, legacy):
+    from unittest.mock import AsyncMock
+    from bucket_runtime.__main__ import main
+    from scripts.render_bucket_updates import render
+
+    registry = load_frontends(EXAMPLE)
+    frontend = "web-test"
+    identity = Identity(frontend_id=frontend, user_id="alice")
+    bucket_id = ("opencode-bucket-0123456789ab" if legacy else service.pool.reserve(identity)["bucket_id"])
+    manifest = BucketManager(registry.control_config()).deployment(bucket_id, frontend)
+    updated, = render(registry, {"items": [manifest]})["items"]
+    args = updated["spec"]["template"]["spec"]["containers"][0]["args"]
+    cli_args = args[args.index("--config"):]
+    cli_args[cli_args.index("--config") + 1] = str(EXAMPLE)
+    serve = AsyncMock()
+    monkeypatch.setattr("bucket_runtime.server.serve", serve)
+    main(cli_args)
+    serve.assert_awaited_once()
+    runtime, = serve.await_args.args
+    assert (runtime.bucket_id, runtime.frontend_id) == (bucket_id, frontend)
+    assert runtime.state_root.parts[-2:] == (frontend, bucket_id)
 
 
 def test_original_workspace_layout_is_bucket_independent(tmp_path):
@@ -323,3 +354,80 @@ async def test_kubernetes_api_create_update_scale_and_wait_for_pod_exit():
     assert replicas == 0
     assert calls[-1][1].endswith("/pods")
     assert calls[-1][2]["params"]["labelSelector"].endswith(bucket_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spare", [False, True])
+async def test_missing_deployment_with_live_peer_moves_bound_user(service, spare):
+    service.config.bucket_pool.max_users_per_bucket = 1
+    first = await submit(service, "alice", "a1")
+    other = await submit(service, "bob", "b1") if spare else None
+    if other:
+        await complete(service, other)
+    old = first["bucket_id"]
+    service.pool.manager.missing.add(old)
+    # The socket still looks live, so only the Kubernetes check detects the loss.
+    assert service.pool.connected(old)
+    next_row = await submit(service, "alice", "a2")
+    assert next_row["bucket_id"] != old
+    if other:
+        assert next_row["bucket_id"] == other["bucket_id"]
+    assert service.db.get("bucket", old)["status"] == "missing"
+    assert service.db.get("request", "a1")["result"]["error"] == "BUCKET_MISSING_EXECUTION_INTERRUPTED"
+    assert not service.db.pending(old)
+    assert not service.pool.connected(old)
+    assert service.pool.manager.created.count(old) == 1
+    assert next_row["bucket_id"].startswith("opencode-bucket-web-test-")
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_error_does_not_mark_bucket_missing_or_reassign(service):
+    first = await submit(service, "alice", "a1")
+    from unittest.mock import AsyncMock
+    service.pool.manager.exists = AsyncMock(side_effect=httpx.HTTPStatusError("forbidden",
+        request=httpx.Request("GET", "https://kubernetes"), response=httpx.Response(403)))
+    with pytest.raises(httpx.HTTPStatusError):
+        await submit(service, "alice", "a2")
+    assert service.db.get("bucket", first["bucket_id"])["status"] == "running"
+    assert not service.db.get("request", "a1").get("result")
+    assert service.db.get("request", "a2") is None
+
+
+@pytest.mark.asyncio
+async def test_missing_bucket_waits_for_old_pods_before_releasing_work(service):
+    first = await submit(service, "alice", "a1")
+    service.pool.manager.missing.add(first["bucket_id"])
+    waiting, stopped = asyncio.Event(), asyncio.Event()
+
+    async def wait_stopped(bucket_id):
+        waiting.set()
+        await stopped.wait()
+
+    service.pool.manager.wait_stopped = wait_stopped
+    task = asyncio.create_task(submit(service, "alice", "a2"))
+    try:
+        await asyncio.wait_for(waiting.wait(), 2)
+        assert not task.done()
+        assert not service.db.get("request", "a1").get("result")
+        assert service.db.get("request", "a2") is None
+    finally:
+        stopped.set()
+        await asyncio.wait_for(task, 2)
+
+
+@pytest.mark.asyncio
+async def test_target_deleted_during_history_preparation_is_reselected_before_enqueue(service):
+    prepared = []
+
+    async def prepare(submit, bucket_id):
+        prepared.append(bucket_id)
+        if len(prepared) == 1:
+            service.pool.manager.missing.add(bucket_id)
+        return None
+
+    service.sessions.prepare = prepare
+    row = await submit(service, "alice", "a1")
+    assert len(prepared) == 2
+    assert row["bucket_id"] == prepared[1] != prepared[0]
+    assert not service.db.pending(prepared[0])
+    assert len(service.db.pending(prepared[1])) == 1

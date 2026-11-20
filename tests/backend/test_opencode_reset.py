@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from agent_backend.config import ControlConfig, RuntimeConfig
+from agent_backend.ingress import Inbound
 from agent_backend.models import Envelope, Identity
 from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.opencode_server import OpenCodeServer
@@ -171,7 +172,7 @@ def control(tmp_path):
     app = create_app(ControlConfig(state_root=tmp_path / "control",
         frontends={"web": {"provider": "web", "channel_config": {}}}))
     register_bucket(app.state.service)
-    app.state.service.peers["b"].session_call = AsyncMock()
+    app.state.service.pool.peers["b"].session_call = AsyncMock()
     yield app
     app.state.service.db.close()
 
@@ -186,20 +187,40 @@ async def test_reset_http_statuses(control):
         assert result.status_code == 200
         assert result.json() == {"frontend_id": "web", "status": "ready",
                                  "buckets": [{"bucket_id": "b", "status": "ready"}], "skipped_buckets": []}
-        assert service.peers["b"].session_call.call_args.args[0]["operation"] == "reset_opencode"
-        service.pool.pins["b"] = 1
-        result = await client.post(path)
-        assert result.status_code == 207 and result.json()["buckets"][0]["status_code"] == 409
-        service.pool.pins["b"] = 0
+        assert service.pool.peers["b"].session_call.call_args.args[0]["operation"] == "reset_opencode"
+        with service.pool.hold("b"):
+            result = await client.post(path)
+            assert result.status_code == 207 and result.json()["buckets"][0]["status_code"] == 409
         service.db.enqueue("b", Envelope(type="request.submit", bucket_id="b"))
         assert (await client.post(path)).json()["buckets"][0]["status_code"] == 409
         for event in service.db.pending("b"):
             service.db.ack("b", event.seq, event.event_id)
-        service.peers["b"].session_call.side_effect = RuntimeError("previous configuration restored")
+        service.pool.peers["b"].session_call.side_effect = RuntimeError("previous configuration restored")
         assert (await client.post(path)).json()["buckets"][0]["status_code"] == 502
-        service.peers["b"].closed = True
+        service.pool.peers["b"].closed = True
         assert (await client.post(path)).json()["buckets"][0]["status_code"] == 503
-        assert not service.pool.resetting and service.pool.pins["b"] == 0
+        assert not service.pool.resetting and not service.pool.busy("b")
+
+
+@pytest.mark.asyncio
+async def test_reset_waits_for_both_request_completion_and_command_ack(control):
+    service = control.state.service
+    await service.submit("web", Inbound(user_id="alice", content="hello", request_id="r"))
+    [command] = service.db.pending("b")
+    service.db.ack("b", command.seq, command.event_id)
+    reset = await service.reset_frontend_opencode("web")
+    assert reset["buckets"][0]["status_code"] == 409
+    service.pool.peers["b"].session_call.assert_not_awaited()
+
+    service.db.enqueue("b", Envelope(type="request.cancel", bucket_id="b", request_id="r"))
+    await service.on_event("b", Envelope(type="request.completed", bucket_id="b", request_id="r",
+        payload={"request_id": "r", "status": "completed"}))
+    assert not service.sessions.can_reset("b")
+    [cancel] = service.db.pending("b")
+    service.db.ack("b", cancel.seq, cancel.event_id)
+    assert service.sessions.can_reset("b")
+    assert (await service.reset_frontend_opencode("web"))["status"] == "ready"
+    service.pool.peers["b"].session_call.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -211,7 +232,7 @@ async def test_reset_excludes_placement_and_waits_before_session_migration(contr
         entered.set()
         await release.wait()
 
-    service.peers["b"].session_call.side_effect = reset
+    service.pool.peers["b"].session_call.side_effect = reset
     caller = asyncio.create_task(service.reset_frontend_opencode("web"))
     await asyncio.wait_for(entered.wait(), 1)
     try:
@@ -224,13 +245,13 @@ async def test_reset_excludes_placement_and_waits_before_session_migration(contr
         assert not migration.done()
         caller.cancel()
         await asyncio.gather(caller, return_exceptions=True)
-        pending = list(service.reset_tasks)
+        pending = list(service.pending)
         release.set()
         await asyncio.wait_for(asyncio.gather(*pending, migration), 1)
         assert not service.pool.resetting and not service.pool.busy("b")
     finally:
         release.set()
-        await asyncio.gather(*service.reset_tasks, return_exceptions=True)
+        await asyncio.gather(*service.pending, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -238,18 +259,18 @@ async def test_frontend_batch_isolates_other_frontends_and_reports_partial_failu
     service = control.state.service
     for bucket_id, frontend in [("second", "web"), ("busy", "web"), ("sleeping", "web"), ("other", "other")]:
         register_bucket(service, bucket_id, frontend)
-        service.peers[bucket_id].session_call = AsyncMock()
+        service.pool.peers[bucket_id].session_call = AsyncMock()
     service.db.put("bucket", "sleeping", {**service.db.get("bucket", "sleeping"), "status": "idle"})
-    service.pool.pins["busy"] = 1
-    result = await service.reset_frontend_opencode("web")
+    with service.pool.hold("busy"):
+        result = await service.reset_frontend_opencode("web")
     assert result["status"] == "partial_failure"
     outcomes = {row["bucket_id"]: row for row in result["buckets"]}
     assert outcomes["b"]["status"] == outcomes["second"]["status"] == "ready"
     assert outcomes["busy"]["status_code"] == 409
     assert result["skipped_buckets"] == ["sleeping"]
-    service.peers["other"].session_call.assert_not_called()
-    service.peers["sleeping"].session_call.assert_not_called()
-    service.peers["busy"].session_call.assert_not_called()
+    service.pool.peers["other"].session_call.assert_not_called()
+    service.pool.peers["sleeping"].session_call.assert_not_called()
+    service.pool.peers["busy"].session_call.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -259,7 +280,7 @@ async def test_frontend_with_only_idle_buckets_needs_no_restart(control):
     result = await service.reset_frontend_opencode("web")
     assert result == {"frontend_id": "web", "status": "no_running_buckets",
                       "buckets": [], "skipped_buckets": ["b"]}
-    service.peers["b"].session_call.assert_not_called()
+    service.pool.peers["b"].session_call.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -272,7 +293,7 @@ async def test_frontend_endpoint_resets_through_control_protocol(control, server
     left.other, right.other = right, left
     cu_peer = Peer(left, service.db, "b", lambda event: service.on_event("b", event))
     runtime_peer = Peer(right, server.db, "b", server.on_command, server.control)
-    service.peers["b"] = cu_peer
+    service.pool.peers["b"] = cu_peer
     server.peer = runtime_peer
     server.config.opencode.config_file.write_text('{"model":"provider/updated"}')
     original_process = server.opencode.process

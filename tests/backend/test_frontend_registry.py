@@ -172,15 +172,17 @@ async def test_one_cu_keeps_bucket_pools_and_retirement_frontend_scoped(registry
     service = ControlService(config)
     started, scaled = [], []
 
-    async def ensure(bucket_id, frontend_id=None):
+    async def ensure(bucket_id, frontend_id=None, *, allow_create=True):
         started.append((bucket_id, frontend_id))
         from unittest.mock import AsyncMock
-        service.peers[bucket_id] = SimpleNamespace(closed=False, session_call=AsyncMock())
+        service.pool.peers[bucket_id] = SimpleNamespace(closed=False, session_call=AsyncMock())
 
     async def scale(bucket_id, replicas):
         scaled.append((bucket_id, replicas))
 
-    service.pool.manager = SimpleNamespace(ensure=ensure, scale=scale)
+    from unittest.mock import AsyncMock
+    service.pool.manager = SimpleNamespace(ensure=ensure, scale=scale,
+        exists=AsyncMock(return_value=True), wait_stopped=AsyncMock())
     try:
         first = await service.submit("web-a", Inbound(chat_id="chat", user_id="alice", content="hello"))
         second = await service.submit("web-b", Inbound(chat_id="chat", user_id="alice", content="hello"))

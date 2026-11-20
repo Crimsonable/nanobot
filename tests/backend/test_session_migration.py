@@ -118,7 +118,7 @@ def migration(tmp_path):
     journal.close()
     bucket = service.db.get("bucket", "a")
     service.db.put("bucket", "a", {**bucket, "status": "idle"})
-    service.peers.pop("a")
+    service.pool.peers.pop("a")
     yield service, submit, paths
     service.db.close()
 
@@ -151,6 +151,11 @@ async def test_online_source_is_quiesced_before_export_and_deleted_before_import
         operations.append(payload["operation"])
         if payload["operation"] == "quiesce":
             assert not service.sessions.histories
+            assert service.pool.busy("a")
+            assert not service.sessions.can_reset("a")
+            assert not service.sessions.can_reset("b")
+            reset = await service.reset_frontend_opencode("web")
+            assert {b["bucket_id"]: b["status_code"] for b in reset["buckets"]} == {"a": 409, "b": 409}
         else:
             history = service.sessions.histories[submit.session_key]
             assert history.rows["part"]
@@ -158,9 +163,54 @@ async def test_online_source_is_quiesced_before_export_and_deleted_before_import
                 assert db.execute("SELECT COUNT(*) FROM session").fetchone()[0] == 0
             delete_history(paths["a"], history)
 
-    service.peers["a"] = SimpleNamespace(closed=False, session_call=call)
+    service.pool.peers["a"] = SimpleNamespace(closed=False, session_call=call)
     assert await service.sessions.prepare(submit, "b") == "ses_root"
     assert operations == ["quiesce", "delete"]
+    assert not service.pool.busy("a")
+    assert service.sessions.can_reset("a") and service.sessions.can_reset("b")
+
+
+@pytest.mark.asyncio
+async def test_source_lost_after_quiesce_waits_for_exit_before_offline_delete(migration):
+    service, submit, paths = migration
+    bucket = service.db.get("bucket", "a")
+    service.db.put("bucket", "a", {**bucket, "status": "running", "accepting": False})
+    operations = []
+
+    async def call(payload):
+        operations.append(payload["operation"])
+        service.pool.manager.exists.return_value = False
+
+    async def stopped(bucket_id):
+        assert bucket_id == "a"
+        assert export_history(paths["a"], "ses_root", submit.identity, "chat").rows["part"]
+
+    service.pool.peers["a"] = SimpleNamespace(closed=False, session_call=call)
+    service.pool.manager.wait_stopped.side_effect = stopped
+    assert await service.sessions.prepare(submit, "b") == "ses_root"
+    assert operations == ["quiesce"]
+    service.pool.manager.wait_stopped.assert_awaited_once_with("a")
+    assert not service.pool.busy("a")
+    assert export_history(paths["b"], "ses_root", submit.identity, "chat").rows["part"]
+
+
+@pytest.mark.asyncio
+async def test_missing_running_source_migrates_offline_without_recreating_deployment(migration):
+    from unittest.mock import AsyncMock
+    service, submit, paths = migration
+    bucket = service.db.get("bucket", "a")
+    service.db.put("bucket", "a", {**bucket, "status": "running"})
+    service.pool.peers["a"] = SimpleNamespace(closed=False, session_call=AsyncMock())
+    service.pool.manager.exists = AsyncMock(side_effect=lambda bid, frontend: bid != "a")
+    service.pool.manager.ensure = AsyncMock(side_effect=AssertionError("must not recreate source"))
+    row = await service.submit("web", Inbound(user_id="alice", chat_id="chat", content="continue"))
+    assert row["bucket_id"] == "b"
+    assert row["submit"]["session_id"] == "ses_root"
+    assert service.db.get("session", submit.session_key)["bucket_id"] == "b"
+    assert service.db.get("bucket", "a")["status"] == "missing"
+    assert export_history(paths["b"], "ses_root", submit.identity, "chat").rows["part"]
+    service.pool.manager.ensure.assert_not_called()
+    service.pool.manager.wait_stopped.assert_any_await("a")
 
 
 @pytest.mark.asyncio
@@ -190,7 +240,7 @@ async def test_import_retry_keeps_memory_user_lock_and_survives_caller_disconnec
     caller.cancel()
     with pytest.raises(asyncio.CancelledError):
         await caller
-    await asyncio.wait_for(asyncio.gather(*service.submission_tasks), 5)
+    await asyncio.wait_for(asyncio.gather(*service.pending), 5)
     assert attempts == 2
     assert service.db.get("request", "retry")["submit"]["session_id"] == "ses_root"
     assert not service.sessions.histories

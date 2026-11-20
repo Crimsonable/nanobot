@@ -73,10 +73,12 @@ def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
     assert captured["aws_secret_access_key"] not in repr(runtime)
 
 
-def test_kubernetes_bucket_selection():
+@pytest.mark.parametrize("invalid", ["unregistered", "opencode-bucket-other-0123456789ab",
+                                     "opencode-bucket-web-test-0123456789ag"])
+def test_kubernetes_bucket_selection(invalid):
     config = selected_config()
     with pytest.raises(ValueError, match="scheduler-issued"):
-        config.runtime_config(EXAMPLE, "unregistered")
+        config.runtime_config(EXAMPLE, invalid)
 
 
 

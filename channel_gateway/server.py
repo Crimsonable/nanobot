@@ -136,8 +136,7 @@ class GatewayService:
     async def recover_submissions(self):
         while True:
             for row in self.db.records("request"):
-                if "rejected" not in row and (not row["bucket_id"] or (
-                    row.get("cancel_requested") and not row.get("cancel_forwarded") and not row.get("result"))):
+                if "rejected" not in row and not row.get("result"):
                     try:
                         async with self.locks.setdefault(row["request_id"], asyncio.Lock()):
                             latest = self.db.get("request", row["request_id"])
@@ -145,6 +144,7 @@ class GatewayService:
                                 await self.dispatch(latest)
                             else:
                                 await self.forward_cancel(row["request_id"])
+                                await self.query(row["frontend_id"], row["request_id"])
                     except Exception:
                         log.warning("gateway submission pending request_id=%s", row["request_id"])
             await asyncio.sleep(1)
@@ -228,6 +228,10 @@ class GatewayService:
             raise HTTPException(404, "request not found")
         if not row.get("result") and row["bucket_id"]:
             remote = await self.control.request(frontend, request_id)
+            if (remote.get("result") or {}).get("error") == "BUCKET_MISSING_EXECUTION_INTERRUPTED":
+                await self.on_event(row["bucket_id"], Envelope(type="runtime.result",
+                    bucket_id=row["bucket_id"], request_id=request_id, payload=remote["result"]), frontend)
+                return self.db.get("request", request_id)
             # Execution may finish before its output is received; final response waits for output.
             if remote["status"] not in {"completed", "failed", "cancelled"}:
                 row = {**row, "status": remote["status"]}
@@ -333,18 +337,28 @@ def create_app(config: ControlConfig, settings: GatewaySettings, channels=None, 
         if (row.get("result") or row.get("cancel_requested")
                 or row["submit"]["deadline_at"] <= time.time()):
             raise HTTPException(409, "request is no longer accepting attachments")
+        provider = config.frontends[frontend_id].provider
+        log.info("attachment_upload stage=gateway event=start frontend_id=%s request_id=%s attachment_id=%s provider=%s filename=%r content_type=%r file_limit_bytes=%d",
+                 frontend_id, request_id, attachment_id, provider, filename, content_type, config.limits.file_bytes)
         data = bytearray()
         async for chunk in request.stream():
             if len(data) + len(chunk) > config.limits.file_bytes:
+                log.warning("attachment_upload stage=gateway event=rejected reason=file_limit frontend_id=%s request_id=%s attachment_id=%s received_bytes=%d file_limit_bytes=%d http_status=413",
+                            frontend_id, request_id, attachment_id, len(data) + len(chunk), config.limits.file_bytes)
                 raise HTTPException(413, "attachment exceeds limit")
             data.extend(chunk)
+        log.info("attachment_upload stage=gateway event=received frontend_id=%s request_id=%s attachment_id=%s provider=%s file_bytes=%d sha256=%s",
+                 frontend_id, request_id, attachment_id, provider, len(data), sha256)
         try:
             result = await service.artifacts.upload(row, attachment_id, bytes(data), filename, content_type, sha256)
         except (ValueError, PermissionError):
             raise
         except Exception:
-            log.exception("attachment upload failed frontend_id=%s request_id=%s", frontend_id, request_id)
+            log.exception("attachment_upload stage=gateway event=failed frontend_id=%s request_id=%s attachment_id=%s provider=%s file_bytes=%d",
+                          frontend_id, request_id, attachment_id, provider, len(data))
             raise HTTPException(502, "channel attachment upload failed") from None
+        log.info("attachment_upload stage=gateway event=completed frontend_id=%s request_id=%s attachment_id=%s provider=%s file_bytes=%d",
+                 frontend_id, request_id, attachment_id, provider, len(data))
         return result.model_dump(mode="json")
 
     @app.get("/health/live")

@@ -2,6 +2,16 @@
 
 本项目仅使用 OpenCode server 作为 bucket 执行后端。
 
+新 bucket 名称为 `<name_prefix>-<frontend片段>-<12位随机ID>`，例如
+`opencode-bucket-web-test-a1b2c3d4e5f6`。frontend 片段转换为小写合法字符，必要时截断以使总长不超过 63 字符；
+已有 bucket 不重命名，完整 frontend 仍保存在 Deployment annotation 中。
+
+CU 分配已有 bucket 和提交请求前会检查 Kubernetes Deployment。404 或正在删除的 Deployment
+会被标记为 `missing`，停止接收请求，并等待残留 Pod 退出；原有未完成请求以
+`BUCKET_MISSING_EXECUTION_INTERRUPTED` 结束，不自动重放可能已产生副作用的操作。
+新请求改选有容量的 bucket 或创建新 bucket，历史从旧持久化数据库离线迁移，不重建缺失的源 Deployment。
+Gateway 会同步这类中断结果。Kubernetes 鉴权失败、服务错误或网络异常不会被当成 Deployment 不存在。
+
 ## 当前入口与边界
 
 ```text
@@ -26,7 +36,9 @@ BU 只组装两个主要对象：`OpenCodeServer(config)` 和 `BucketRuntimeAdap
 
 入口 `bucket_runtime.server.serve()` 先启动插件 RPC、健康检查及适配器事件消费，再调用 `opencode.start(adapter.on_opencode_event)`。OpenCode 就绪后，适配器恢复请求并连接 CU/Gateway。原 `Runtime`、`Supervisor`、`OpenCodeClient`、`NativeEvents` 类已移除；进程和传输统一由代理管理，事件业务处理归适配器。会话 API 显式接收 `directory=`，不再复制客户端或修改共享客户端的工作目录。
 
-按 frontend 重置的 HTTP 接口保持不变。CU 发送 `reset_opencode` 控制调用，适配器检查空闲并暂停接单，再调用代理的 `reset()`；代理负责进程替换、订阅恢复和配置回退，适配器负责更新业务可用状态。
+CU 的 `ControlService` 将调度器选出的目标桶交给会话管理器。会话管理器维护会话位置，决定复用或迁移历史；跨桶时由 CU 在迁移期间占用源桶，确认源桶可接收控制命令或已完全停止后，再进行相应的在线或离线操作。
+
+按 frontend 重置时，`ControlService` 逐桶向会话管理器查询是否有未完成请求、未确认命令或涉及该桶的迁移，再将判断交给调度器。调度器检查桶的运行、连接和占用状态，预留桶并发送 `reset_opencode`。BU 适配器检查本地空闲状态、暂停接单并调用 OpenCode 代理的 `reset()`。调度器在控制调用结束时解除预留。
 
 分层部署、事件过滤、可靠移交和旧数据库迁移详见 [CHANNEL_GATEWAY.md](CHANNEL_GATEWAY.md)。CU 不再接收内容事件或组装最终回复；渠道最终外发字段保持原版本。
 

@@ -82,6 +82,24 @@ async def test_bucket_ws_needs_registered_id_but_no_auth_key(control, monkeypatc
     assert unknown.closed == 1008
 
 
+@pytest.mark.asyncio
+async def test_old_connection_exit_preserves_replacement(control):
+    from contextlib import AsyncExitStack
+    from unittest.mock import AsyncMock
+
+    pool = control.state.service.pool
+    old_socket, new_socket = AsyncMock(), AsyncMock()
+    replacement = object()
+    async with AsyncExitStack() as old:
+        await old.enter_async_context(pool.connection("b", object(), old_socket))
+        async with pool.connection("b", replacement, new_socket):
+            old_socket.close.assert_awaited_once_with(code=1012)
+            await old.aclose()
+            assert pool.peers["b"] is replacement
+            assert pool.connection_event("b").is_set()
+    assert "b" not in pool.peers and not pool.connection_event("b").is_set()
+
+
 def test_active_channels_import_without_environment_configuration():
     import os
     import subprocess

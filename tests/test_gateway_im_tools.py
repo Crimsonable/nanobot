@@ -348,6 +348,56 @@ async def test_qxt_upload_requires_a_valid_media_id(monkeypatch, reply):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status,event", [(413, "rejected"), (200, "missing_media_id")])
+async def test_qxt_upload_error_diagnostics_redact_credentials(monkeypatch, status, event):
+    parser = im_tools.QxtIMParser(frontend_id="qxt", frontend_config={
+        "send_msg_url": "https://qxt.example/send", "app_secret": "private-app-secret",
+        "callback_token": "private-callback-token"})
+    token = "private-access-token"
+    monkeypatch.setattr(parser, "get_access_token", AsyncMock(return_value=token))
+    body = json.dumps({"message": "file too large", "access_token": token,
+        "app_secret": parser.appsecret, "callback_token": parser.token, "padding": "x" * 2000})
+    session = FakeSession([FakeResponse(status=status, text=body, json_data=json.loads(body))])
+    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: session)
+    messages = []
+    sink = qxt_im_tool.logger.add(lambda message: messages.append(message.record["message"]))
+    try:
+        with pytest.raises(RuntimeError):
+            await parser.upload_outbound_attachment(data=b"pdf", filename="report.pdf", content_type="application/pdf")
+    finally:
+        qxt_im_tool.logger.remove(sink)
+    logged = "\n".join(messages)
+    assert f"event={event}" in logged and f"http_status={status}" in logged
+    assert "file_bytes=3" in logged and "file too large" in logged
+    for secret in (token, parser.appsecret, parser.token):
+        assert secret not in logged
+    assert "[REDACTED]" in logged
+    assert len(messages[-1].split("response=", 1)[1]) <= 1002
+    assert "event=completed" not in logged
+
+
+@pytest.mark.asyncio
+async def test_qxt_upload_timeout_is_logged_and_propagated(monkeypatch):
+    class TimeoutResponse(FakeResponse):
+        async def __aenter__(self):
+            raise TimeoutError("upload timed out")
+
+    parser = im_tools.QxtIMParser(frontend_id="qxt", frontend_config={"send_msg_url": "https://qxt.example/send"})
+    monkeypatch.setattr(parser, "get_access_token", AsyncMock(return_value="access-token"))
+    monkeypatch.setattr(qxt_im_tool, "get_dispatch_session", lambda: FakeSession([TimeoutResponse()]))
+    messages = []
+    sink = qxt_im_tool.logger.add(lambda message: messages.append(message.record["message"]))
+    try:
+        with pytest.raises(TimeoutError):
+            await parser.upload_outbound_attachment(data=b"pdf", filename="report.pdf", content_type="application/pdf")
+    finally:
+        qxt_im_tool.logger.remove(sink)
+    logged = "\n".join(messages)
+    assert "event=transport_error" in logged and "error_type=TimeoutError" in logged
+    assert "timeout_seconds=30" in logged and "event=completed" not in logged
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("filename,content_type,kind,key,file_type", [
     ("report.pdf", "application/pdf", "file", "file_key", "pdf"),
     ("photo.png", "image/png", "image", "image_key", None),

@@ -4,11 +4,14 @@ from agent_backend.config import RuntimeSettings
 
 
 def register_bucket(service, bucket_id="b", frontend_id="web"):
+    from unittest.mock import AsyncMock
+    service.pool.manager.exists = AsyncMock(return_value=True)
+    service.pool.manager.wait_stopped = AsyncMock()
     service.config.runtime_templates[frontend_id] = RuntimeSettings(workspace_root=service.config.state_root / "users")
     service.config.frontend_idle_ttl_seconds[frontend_id] = 0
     service.db.put("bucket", bucket_id, {"bucket_id": bucket_id, "frontend_id": frontend_id,
         "status": "running", "created_at": time.time(), "last_active_at": time.time()})
-    service.peers[bucket_id] = SimpleNamespace(closed=False)
+    service.pool.peers[bucket_id] = SimpleNamespace(closed=False)
 
 
 def emit_answer(runtime, session_id, request_id, input_id, directory, message):

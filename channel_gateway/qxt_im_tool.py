@@ -15,7 +15,7 @@ import aiohttp
 from Crypto.Cipher import AES
 from loguru import logger
 
-from channel_gateway.http_state import get_dispatch_session
+from channel_gateway.http_state import SEND_MSG_TIMEOUT, get_dispatch_session
 
 _AES_BLOCK_SIZE = 16
 
@@ -350,13 +350,44 @@ class QxtIMParser:
         form = aiohttp.FormData()
         form.add_field("type", upload_type)
         form.add_field("media", data, filename=filename, content_type=content_type)
-        async with get_dispatch_session().post(f"{parsed.scheme}://{parsed.netloc}/v2/media/upload",
-                params={"access_token": token}, data=form) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"QXT media upload failed with {response.status}")
-            payload = await response.json(content_type=None)
-        media_id = payload.get("media_id") or payload.get("mediaId")
-        if not isinstance(media_id, str) or not media_id.strip():
-            raise RuntimeError("QXT media upload response is missing media_id")
+        upload_url = f"{parsed.scheme}://{parsed.netloc}/v2/media/upload"
+        log_url = f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}/v2/media/upload"
+        context = (f"frontend_id={self.frontend_id} filename={filename!r} file_bytes={len(data)} "
+                   f"content_type={content_type!r} upload_type={upload_type} "
+                   f"sha256={hashlib.sha256(data).hexdigest()} endpoint={log_url}")
+
+        def response_summary(text: str) -> str:
+            for secret in (token, self.appsecret, self.token):
+                if secret:
+                    text = text.replace(secret, "[REDACTED]")
+            return " ".join(text.split())[:1000]
+
+        started = time.monotonic()
+        logger.info("attachment_upload stage=qxt event=start {} timeout_seconds={}", context, SEND_MSG_TIMEOUT)
+        try:
+            async with get_dispatch_session().post(upload_url,
+                    params={"access_token": token}, data=form) as response:
+                if response.status >= 400:
+                    logger.warning("attachment_upload stage=qxt event=rejected {} http_status={} elapsed_ms={} response={!r}",
+                                   context, response.status, int((time.monotonic() - started) * 1000),
+                                   response_summary(await response.text()))
+                    raise RuntimeError(f"QXT media upload failed with {response.status}")
+                try:
+                    payload = await response.json(content_type=None)
+                except (ValueError, UnicodeError):
+                    logger.warning("attachment_upload stage=qxt event=invalid_response {} http_status={} response={!r}",
+                                   context, response.status, response_summary(await response.text()))
+                    raise
+                media_id = (payload.get("media_id") or payload.get("mediaId")) if isinstance(payload, dict) else None
+                if not isinstance(media_id, str) or not media_id.strip():
+                    logger.warning("attachment_upload stage=qxt event=missing_media_id {} http_status={} response={!r}",
+                                   context, response.status, response_summary(await response.text()))
+                    raise RuntimeError("QXT media upload response is missing media_id")
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            logger.warning("attachment_upload stage=qxt event=transport_error {} error_type={} elapsed_ms={} timeout_seconds={}",
+                           context, type(exc).__name__, int((time.monotonic() - started) * 1000), SEND_MSG_TIMEOUT)
+            raise
+        logger.info("attachment_upload stage=qxt event=completed {} http_status={} elapsed_ms={}",
+                    context, response.status, int((time.monotonic() - started) * 1000))
         return {"storage": "qxt", "frontend_id": self.frontend_id,
                 "media_id": media_id, "upload_type": upload_type}

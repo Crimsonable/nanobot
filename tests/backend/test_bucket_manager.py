@@ -135,3 +135,24 @@ async def test_missing_scale_after_conflict(manager, replicas):
             await manager.scale(BUCKET, replicas)
         assert error.value.response.status_code == 404
     assert not pending
+
+
+@pytest.mark.asyncio
+async def test_missing_existing_deployment_is_not_recreated(manager):
+    from container_up.bucket_manager import BucketMissing
+    pending, _ = script(manager, [("GET", BUCKET, 404, {})])
+    with pytest.raises(BucketMissing):
+        await manager.ensure(BUCKET, "web-test", allow_create=False)
+    assert not pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 404, 403, 500])
+async def test_deployment_existence_distinguishes_absence_from_api_errors(manager, status):
+    pending, _ = script(manager, [("GET", BUCKET, status, deployment(manager, "1"))])
+    if status in {200, 404}:
+        assert await manager.exists(BUCKET, "web-test") is (status == 200)
+    else:
+        with pytest.raises(httpx.HTTPStatusError):
+            await manager.exists(BUCKET, "web-test")
+    assert not pending

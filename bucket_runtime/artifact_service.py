@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -9,6 +10,8 @@ import httpx
 
 from agent_backend.config import RuntimeConfig
 from agent_backend.models import Attachment, Submit
+
+log = logging.getLogger(__name__)
 
 
 class ArtifactService:
@@ -37,6 +40,9 @@ class ArtifactService:
                 params={"filename": attachment.filename, "content_type": attachment.content_type,
                         "sha256": attachment.sha256},
                 headers={"x-bucket-id": self.config.bucket_id, "content-type": "application/octet-stream"})
+            log.log(logging.WARNING if response.is_error else logging.INFO,
+                    "attachment_upload stage=runtime event=gateway_response frontend_id=%s request_id=%s attachment_id=%s file_bytes=%d http_status=%d",
+                    submit.identity.frontend_id, submit.request_id, attachment_id, attachment.size, response.status_code)
             response.raise_for_status()
             result = Attachment.model_validate(response.json())
         if (result.attachment_id != attachment_id or result.sha256 != attachment.sha256

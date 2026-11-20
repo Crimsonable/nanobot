@@ -13,6 +13,10 @@ from agent_backend.models import digest
 from agent_backend.workspaces import workspace_volume_subpath
 
 
+class BucketMissing(RuntimeError):
+    pass
+
+
 class BucketManager:
     _WRITE_ATTEMPTS = 5
 
@@ -86,16 +90,42 @@ class BucketManager:
                                      {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}},
                                  ]}}}}
 
-    async def ensure(self, bucket_id: str, frontend_id: str) -> None:
+    async def exists(self, bucket_id: str, frontend_id: str) -> bool:
+        path = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments/{bucket_id}"
+        response = await self.request("GET", path)
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        metadata = response.json()["metadata"]
+        if (metadata.get("labels", {}).get("bucket-id") != bucket_id
+                or metadata.get("annotations", {}).get("opencode.io/frontend-id") != frontend_id):
+            raise RuntimeError("Deployment ownership mismatch")
+        return not metadata.get("deletionTimestamp")
+
+    async def wait_stopped(self, bucket_id: str) -> None:
+        async with asyncio.timeout(self.pool.ready_timeout_seconds):
+            while True:
+                response = await self.request("GET", f"/api/v1/namespaces/{self.pool.namespace}/pods",
+                    params={"labelSelector": f"app=opencode-bucket,bucket-id={bucket_id}"})
+                response.raise_for_status()
+                if not response.json().get("items"):
+                    return
+                await asyncio.sleep(0.5)
+
+    async def ensure(self, bucket_id: str, frontend_id: str, *, allow_create: bool = True) -> None:
         collection = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments"
         for attempt in range(self._WRITE_ATTEMPTS):
             response = await self.request("GET", collection + "/" + bucket_id)
             if response.status_code == 404:
+                if not allow_create:
+                    raise BucketMissing(bucket_id)
                 response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id))
                 if response.status_code == 409:
                     response = await self.request("GET", collection + "/" + bucket_id)
             response.raise_for_status()
             current = response.json()
+            if current.get("metadata", {}).get("deletionTimestamp"):
+                raise BucketMissing(bucket_id)
             if current.get("metadata", {}).get("labels", {}).get("bucket-id") != bucket_id:
                 raise RuntimeError("existing Deployment is not owned by this bucket")
             owner = current.get("metadata", {}).get("annotations", {}).get("opencode.io/frontend-id")
@@ -106,7 +136,12 @@ class BucketManager:
             response = await self.request("PUT", collection + "/" + bucket_id, json=desired)
             if not await self._retry_conflict(response, attempt):
                 break
-        await self.scale(bucket_id, 1)
+        try:
+            await self.scale(bucket_id, 1)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise BucketMissing(bucket_id) from exc
+            raise
 
     async def _retry_conflict(self, response: httpx.Response, attempt: int) -> bool:
         if response.status_code == 409 and attempt + 1 < self._WRITE_ATTEMPTS:
