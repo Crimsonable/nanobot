@@ -1,7 +1,7 @@
 {
   "control": {
     "bucket_pool": {
-      "image": "agent-bucket-runtime:opencode-1.18.31-bwrap011",
+      "image": "agent-bucket-runtime:opencode-2.3.2-bwrap011",
       "max_users_per_bucket": 16
     }
   },
@@ -26,18 +26,28 @@
       },
       "event_forwarding": {
         "include_types": [
-          "message.updated",
-          "message.part.updated",
-          "message.part.delta",
-          "message.part.removed",
-          "message.removed",
-          "session.status",
-          "session.error"
-        ],
-        "include_part_types": [
-          "text",
-          "file",
-          "tool"
+          "session.created",
+          "session.metadata.updated",
+          "session.inbox.enqueued",
+          "session.inbox.delivered",
+          "session.execution.started",
+          "session.execution.succeeded",
+          "session.execution.failed",
+          "session.execution.interrupted",
+          "session.step.started",
+          "session.step.ended",
+          "session.step.failed",
+          "session.text.started",
+          "session.text.delta",
+          "session.text.ended",
+          "session.tool.input.started",
+          "session.tool.input.delta",
+          "session.tool.input.ended",
+          "session.tool.called",
+          "session.tool.progress",
+          "session.tool.success",
+          "session.tool.failed",
+          "session.retry.scheduled"
         ],
         "include_child_sessions": false
       }

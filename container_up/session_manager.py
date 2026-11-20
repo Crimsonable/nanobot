@@ -1,23 +1,16 @@
-"""Frontend session catalog and memory-only transfers between bucket databases."""
+"""Frontend session catalog and restartable native transcript transfers."""
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import sqlite3
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractContextManager, closing
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from agent_backend.config import ControlConfig
 from agent_backend.journal import Journal
 from agent_backend.models import TERMINAL, Envelope, ExecutionStatus, Identity, Submit
-from agent_backend.session_history import (
-    delete_history, export_history, forget_local_session, import_history, validate_destination,
-)
+from agent_backend.session_history import SessionBusy, transfer_path
 
-log = logging.getLogger(__name__)
-SourceCall = Callable[[dict], Awaitable[bool]]
+SourceCall = Callable[[dict], Awaitable[None]]
 
 
 class SessionManager:
@@ -26,17 +19,6 @@ class SessionManager:
         self.config = config
         self.db = db
         self.open_source = open_source
-        self.active_migrations: dict[str, tuple[str, str]] = {}
-        # Retain the only remaining copy across retryable failures. Deliberately
-        # no transfer files, transfer IDs, or persistent migration state.
-        self.histories = {}
-
-    def can_reset(self, bucket_id: str) -> bool:
-        """Admit a reset only after migrations, requests and their commands settle."""
-        if any(bucket_id in buckets for buckets in self.active_migrations.values()) or self.db.pending(bucket_id):
-            return False
-        return not any(row["bucket_id"] == bucket_id and not row.get("result")
-                       for row in self.db.records("request"))
 
     def record(self, submit: Submit, bucket_id: str, session_id: str) -> None:
         self.db.put("session", submit.session_key, {"identity": submit.identity.model_dump(),
@@ -91,89 +73,52 @@ class SessionManager:
         return self.config.runtime_for(identity.frontend_id).state_root / identity.frontend_id / bucket_id
 
     def lookup(self, submit):
-        catalog = self.db.get("session", submit.session_key)
-        if catalog is not None:
-            return catalog
-        # Existing installations only have bucket-local lookup rows. Discover a
-        # conversation lazily once, so deploying capacity-based placement does
-        # not strand the histories created before the central catalog existed.
-        matches = []
-        for bucket in self.db.records("bucket"):
-            if bucket["frontend_id"] != submit.identity.frontend_id:
-                continue
-            path = self.root(submit.identity, bucket["bucket_id"]) / "runtime.sqlite"
-            if not path.is_file():
-                continue
-            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
-                row = db.execute("SELECT value FROM records WHERE kind='session' AND key=?",
-                                 (submit.session_key,)).fetchone()
-            if row:
-                local = json.loads(row[0])
-                if local["identity_id"] != submit.identity.identity_id:
-                    raise PermissionError("local session ownership mismatch")
-                matches.append({"identity": submit.identity.model_dump(), "chat_id": submit.chat_id,
-                    "session_id": local["session_id"], "bucket_id": bucket["bucket_id"]})
-        if len(matches) > 1:
-            raise RuntimeError("conversation has multiple source buckets")
-        if matches:
-            self.db.put("session", submit.session_key, matches[0])
-            return matches[0]
-        return None
+        return self.db.get("session", submit.session_key)
 
     async def prepare(self, submit: Submit, target_bucket: str) -> str | None:
         if submit.content.strip().lower() == "/cancel":
             return None
+        # A retry may arrive in another chat. Finish this user's recorded move
+        # before allowing any new prompt into the reserved destination.
+        for pending in self.db.records("migration"):
+            if pending["identity_id"] == submit.identity.identity_id and pending["chat_id"] != submit.chat_id:
+                await self.prepare(submit.model_copy(update={"chat_id": pending["chat_id"]}), target_bucket)
         catalog = self.lookup(submit)
         if catalog is None:
             return None
         if catalog["identity"] != submit.identity.model_dump() or catalog["chat_id"] != submit.chat_id:
             raise PermissionError("session catalog ownership mismatch")
         session_id, source_bucket = catalog["session_id"], catalog["bucket_id"]
-        if source_bucket == target_bucket:
+        movement = self.db.get("migration", submit.session_key)
+        if source_bucket == target_bucket and movement is None:
             return session_id
-        self.active_migrations[submit.session_key] = (source_bucket, target_bucket)
-        try:
-            with self.open_source(source_bucket) as call_if_online:
-                await self._move(submit, session_id, source_bucket, target_bucket, call_if_online)
-            self.record(submit, target_bucket, session_id)
-            self.histories.pop(submit.session_key, None)
-            return session_id
-        finally:
-            self.active_migrations.pop(submit.session_key)
-
-    async def _move(self, submit: Submit, session_id: str, source_bucket: str,
-                    target_bucket: str, call_if_online: SourceCall) -> None:
-        source_root = self.root(submit.identity, source_bucket)
-        target_root = self.root(submit.identity, target_bucket)
-        source_db = source_root / "opencode-home/data/opencode/opencode.db"
-        target_db = target_root / "opencode-home/data/opencode/opencode.db"
+        if movement is None:
+            movement = {"identity_id": submit.identity.identity_id, "source": source_bucket,
+                        "target": target_bucket, "chat_id": submit.chat_id, "step": "export"}
+            self.db.put("migration", submit.session_key, movement)
+        if movement["source"] != source_bucket or movement["target"] != target_bucket:
+            raise RuntimeError("resume the recorded migration target before placing new work")
+        path = transfer_path(self.root(submit.identity, source_bucket), source_bucket, submit.session_key)
+        self.root(submit.identity, target_bucket)  # Validate both bucket owners.
         payload = {"identity": submit.identity.model_dump(), "chat_id": submit.chat_id,
-                   "session_id": session_id}
-        online = await call_if_online({**payload, "operation": "quiesce"})
-        history = self.histories.get(submit.session_key)
-        if history is None:
-            history = export_history(source_db, session_id, submit.identity, submit.chat_id)
-            validate_destination(target_db, history)
-            self.histories[submit.session_key] = history
-        # A delete may have committed before its reply was lost. Keep using
-        # the original in-memory snapshot across retries.
-        while True:
-            try:
-                if online:
-                    online = await call_if_online({**payload, "operation": "delete",
-                                                   "session_ids": history.session_ids})
-                if not online:
-                    journal_path = source_root / "runtime.sqlite"
-                    journal = Journal(journal_path) if journal_path.exists() else None
-                    try:
-                        delete_history(source_db, history)
-                        if journal:
-                            forget_local_session(journal, submit.session_key, history.session_ids)
-                    finally:
-                        if journal:
-                            journal.close()
-                import_history(target_db, history, submit.identity, submit.chat_id, target_bucket)
-                return
-            except (sqlite3.Error, ConnectionError, TimeoutError, RuntimeError):
-                log.exception("session import failed; retaining history in memory session_id=%s", session_id)
-                await asyncio.sleep(1)
+                   "session_id": session_id, "source_bucket": source_bucket}
+        with self.open_source(source_bucket) as source, self.open_source(target_bucket) as target:
+            if movement["step"] == "export":
+                try:
+                    await source({**payload, "operation": "export"})
+                except RuntimeError as exc:
+                    if str(exc).startswith("SESSION_BUSY"):
+                        self.db.delete("migration", submit.session_key)
+                        raise SessionBusy(source_bucket) from exc
+                    raise
+                movement = {**movement, "step": "import"}
+                self.db.put("migration", submit.session_key, movement)
+            # Re-verify even after a restart/lost delete reply, before removing the source.
+            await target({**payload, "operation": "import"})
+            self.db.put("migration", submit.session_key, {**movement, "step": "delete"})
+            await source({**payload, "operation": "delete"})
+            with self.db.transaction():
+                self.record(submit, target_bucket, session_id)
+                self.db.delete("migration", submit.session_key)
+            path.unlink(missing_ok=True)
+        return session_id

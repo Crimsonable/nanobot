@@ -24,7 +24,7 @@ spec:
         fsGroup: 10001
       containers:
       - name: web-server
-        image: agent-web-server:opencode-1.18.31
+        image: agent-web-server:opencode-2.3.2
         imagePullPolicy: IfNotPresent
         workingDir: /mnt/source
         args:

@@ -1,5 +1,3 @@
-from tests.backend.support import plugin_scope
-import json
 import shutil
 import sys
 import time
@@ -11,10 +9,10 @@ from pydantic import ValidationError
 from agent_backend.common import frontend_segment
 from agent_backend.config import RuntimeConfig, UserPolicy
 from agent_backend.models import Envelope, Identity, Submit
-from bucket_runtime.permissions import public_roots
 from bucket_runtime.adapter import BucketRuntimeAdapter
+from bucket_runtime.permissions import public_roots
 from bucket_runtime.sandbox_executor import SandboxExecutor
-from bucket_runtime.opencode_server import OpenCodeServer
+from tests.backend.support import plugin_scope
 
 
 @pytest.fixture
@@ -49,7 +47,6 @@ def tenants(tmp_path):
 @pytest.mark.parametrize("explicit_empty", [False, True])
 def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants, explicit_empty):
     import fnmatch
-    import os
     common, pairs = tenants
     for runtime, submit in pairs:
         if explicit_empty:
@@ -58,22 +55,19 @@ def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants,
         other = "web-b" if frontend == "web-a" else "web-a"
         assert runtime.public_roots(submit) == [common / frontend / "app"]
         assert plugin_scope(runtime, frontend, "r", "read", {
-            "filePath": str(common / frontend / "app/manual.txt")})["args"]["filePath"] == str(common / frontend / "app/manual.txt")
+            "path": str(common / frontend / "app/manual.txt")})["args"]["path"] == str(common / frontend / "app/manual.txt")
         for tool, args in [
-            ("read", {"filePath": str(common / other / "app/manual.txt")}),
-            ("read", {"filePath": str(common / "frontend.json")}),
-            ("read", {"filePath": str(common / frontend / "app/../../" / other / "app/manual.txt")}),
-            ("read", {"filePath": str(common / frontend / "config/future-secret.txt")}),
-            ("read", {"filePath": str(common / frontend / "app/../config/future-secret.txt")}),
+            ("read", {"path": str(common / other / "app/manual.txt")}),
+            ("read", {"path": str(common / "frontend.json")}),
+            ("read", {"path": str(common / frontend / "app/../../" / other / "app/manual.txt")}),
+            ("read", {"path": str(common / frontend / "config/future-secret.txt")}),
+            ("read", {"path": str(common / frontend / "app/../config/future-secret.txt")}),
             ("grep", {"path": str(common), "pattern": "secret"}),
             ("grep", {"path": str(common / frontend), "pattern": "secret"}),
             ("grep", {"path": str(common / frontend / "config"), "pattern": "secret"}),
             ("glob", {"path": str(common / other), "pattern": "*"}),
             ("glob", {"path": str(common / frontend / "app"), "pattern": "../config/*"}),
-            ("list", {"path": str(common)}),
-            ("list", {"path": str(common / frontend / "config")}),
-            ("lsp", {"filePath": str(common / other / "manual.txt")}),
-            ("write", {"filePath": str(common / frontend / "app/manual.txt"), "content": "overwrite"}),
+            ("write", {"path": str(common / frontend / "app/manual.txt"), "content": "overwrite"}),
         ]:
             with pytest.raises(PermissionError):
                 plugin_scope(runtime, frontend, "denied", tool, args)
@@ -82,10 +76,10 @@ def test_native_read_search_write_and_session_rules_are_frontend_scoped(tenants,
                                (common / frontend / "config/future-secret.txt", "deny"),
                                (common / frontend, "deny"),
                                (common / other / "app/manual.txt", "deny"), (common / "frontend.json", "deny")]:
-            pattern = os.path.relpath(path, runtime.worktree(submit)).replace("\\", "/")
-            applicable = [r for r in rules if fnmatch.fnmatchcase("read", r["permission"])
-                          and fnmatch.fnmatchcase(pattern, r["pattern"])]
-            assert applicable[-1]["action"] == expected
+            pattern = path.as_posix()
+            applicable = [r for r in rules if fnmatch.fnmatchcase("read", r["action"])
+                          and fnmatch.fnmatchcase(pattern, r["resource"])]
+            assert applicable[-1]["effect"] == expected
 
 
 def test_user_override_cannot_grant_other_frontend_or_parent(tenants):
@@ -123,7 +117,7 @@ def test_symlink_cannot_redirect_frontend_public_directory(tenants, destination)
     with pytest.raises(ValueError):
         public_roots(runtime.config, policy)
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "web-a", "link", "read", {"filePath": str(link / "future-secret.txt")})
+        plugin_scope(runtime, "web-a", "link", "read", {"path": str(link / "future-secret.txt")})
 
     outside_link = common.parent / "alias"
     outside_link.symlink_to(common / destination, target_is_directory=True)
@@ -142,28 +136,6 @@ async def test_foreign_frontend_is_rejected_before_workspace_or_journal_mutation
             request_id="foreign", payload=foreign.model_dump(mode="json")))
     assert runtime.db.get("run", "foreign") is None
     assert not runtime.config.workspace_root.exists()
-
-
-@pytest.mark.asyncio
-async def test_skill_discovery_is_scoped_and_broad_configuration_rejected(tenants, tmp_path):
-    common, pairs = tenants
-    for runtime, submit in pairs:
-        path = tmp_path / (submit.identity.frontend_id + ".json")
-        runtime.config.opencode.config_file = path
-        opencode = OpenCodeServer(runtime.config)
-        try:
-            instructions = [str(common / submit.identity.frontend_id / "app/templates/AGENTS.md")]
-            path.write_text(json.dumps({"instructions": instructions,
-                "skills": {"paths": [str(common / "{frontend_id}/app/skills")]}}))
-            assert opencode.server_config()["instructions"] == instructions
-            assert opencode.server_config()["skills"]["paths"] == [str(common / submit.identity.frontend_id / "app/skills")]
-            for wrong in [common, common / submit.identity.frontend_id, common / submit.identity.frontend_id / "config",
-                          common / ("web-b" if submit.identity.frontend_id == "web-a" else "web-a") / "app"]:
-                path.write_text(json.dumps({"skills": {"paths": [str(wrong)]}}))
-                with pytest.raises(ValueError, match="current frontend"):
-                    opencode.server_config()
-        finally:
-            await opencode.close()
 
 
 @pytest.mark.parametrize("frontend", ["../other", "/other", "a/b", "a\\b", "..", "*", "frontend.json"])

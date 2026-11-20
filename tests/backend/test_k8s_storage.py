@@ -1,5 +1,5 @@
-from pathlib import Path
 import json
+from pathlib import Path
 
 import yaml
 
@@ -39,8 +39,7 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
         assert not any(m["mountPath"] in {"/opt/app", "/opt/public", "/opt/opencode-plugin"} for m in mounts)
     mounts = runtime["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert any(m["mountPath"] == "/opt/opencode" and m["readOnly"] for m in mounts)
-    assert config.runtime.opencode.plugin_file == Path("/mnt/source/opencode_plugin/dist/index.mjs")
-    assert config.runtime.opencode.dependency_dir == Path("/mnt/source/opencode_plugin")
+    assert config.runtime.opencode.plugin_dir == Path("/mnt/source/opencode_plugin")
     for name in ["Dockerfile.container_up", "Dockerfile.bucket_runtime", "Dockerfile.web_server"]:
         docker = (ROOT / name).read_text(encoding="utf-8")
         assert not any(line.startswith(("COPY agent_backend ", "COPY container_up ", "COPY bucket_runtime ",
@@ -57,8 +56,8 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
     volume = next(v for v in custom["spec"]["template"]["spec"]["volumes"] if v["name"] == "opencode")
     assert volume["hostPath"]["path"] == "/custom/opencode"
     native = yaml.safe_load((ROOT / "config/opencode/web-test/config/opencode-server.json").read_text(encoding="utf-8"))
-    assert native["autoupdate"] is False
-    assert native["skills"]["paths"] == ["/mnt/common/web-test/app/skills"]
+    assert native["update"] == "disable"
+    assert native["skills"] == ["/mnt/common/web-test/app/skills"]
     assert "COPY --chown=mcp:mcp hazard_expert_mcp" not in (ROOT / "hazard_expert_mcp/Dockerfile").read_text(encoding="utf-8")
 
 

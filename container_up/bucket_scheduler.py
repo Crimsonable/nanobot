@@ -12,16 +12,12 @@ from starlette.websockets import WebSocket
 
 from agent_backend.config import BUCKET_SUFFIX_LENGTH, ControlConfig, bucket_name_prefix
 from agent_backend.journal import Journal
-from agent_backend.models import Identity, uid
+from agent_backend.models import Identity
 from agent_backend.wire import Peer
 from agent_backend.workspaces import workspace_path
 from container_up.bucket_manager import BucketManager, BucketMissing
 
 log = logging.getLogger(__name__)
-
-
-class BucketBusy(RuntimeError):
-    pass
 
 
 class BucketScheduler:
@@ -36,7 +32,6 @@ class BucketScheduler:
         self.pins: dict[str, int] = {}
         self.reservations: dict[str, int] = {}
         self.stopped: dict[str, asyncio.Event] = {}
-        self.resetting: dict[str, asyncio.Event] = {}
         self.connection_events: dict[str, asyncio.Event] = {}
 
     def connection_event(self, bucket_id: str) -> asyncio.Event:
@@ -78,53 +73,22 @@ class BucketScheduler:
             raise ValueError("invalid bucket status")
         self.db.put("bucket", bucket_id, {**bucket, "accepting": accepting})
 
-    def reset_targets(self, frontend_id: str) -> tuple[list[str], list[str]]:
-        targets, skipped = [], []
-        for bucket in self.db.records("bucket"):
-            if bucket["frontend_id"] == frontend_id:
-                group = skipped if bucket["status"] == "idle" else targets
-                group.append(bucket["bucket_id"])
-        return targets, skipped
-
     def bindings(self, bucket_id: str) -> list[dict]:
         return [b for b in self.db.records("binding") if b.get("bucket_id") == bucket_id]
 
     def busy(self, bucket_id: str) -> bool:
         return bool(self.pins.get(bucket_id) or any(
+            bucket_id in (m["source"], m["target"]) for m in self.db.records("migration")) or any(
             r["bucket_id"] == bucket_id and not r.get("result") for r in self.db.records("request")))
 
     @contextmanager
     def hold(self, bucket_id: str):
-        """Prevent a new drain or reset until the caller releases the bucket."""
+        """Prevent a drain until the caller releases the bucket."""
         self.pins[bucket_id] = self.pins.get(bucket_id, 0) + 1
         try:
             yield
         finally:
             self.pins[bucket_id] -= 1
-
-    async def reset(self, bucket_id: str, *, sessions_idle: bool) -> None:
-        # Admission and reservation are synchronous on the CU loop. No placement
-        # can run between the caller's session check and the start of this hold.
-        bucket = self.db.get("bucket", bucket_id)
-        if not bucket:
-            raise KeyError(bucket_id)
-        if bucket["status"] != "running":
-            raise BucketBusy("bucket is not running")
-        peer = self.peers.get(bucket_id)
-        if not peer or peer.closed:
-            raise ConnectionError("bucket is disconnected")
-        if not sessions_idle or self.pins.get(bucket_id):
-            raise BucketBusy("bucket is busy; retry after its requests finish")
-        with self.hold(bucket_id):
-            finished = self.resetting[bucket_id] = asyncio.Event()
-            try:
-                await peer.session_call({"operation": "reset_opencode", "session_id": uid("reset_")})
-            except ConnectionError as exc:
-                raise ConnectionError("bucket disconnected; reset outcome is unknown") from exc
-            finally:
-                self.resetting.pop(bucket_id)
-                finished.set()
-                self.touch(bucket_id)
 
     def touch(self, bucket_id: str):
         bucket = self.db.get("bucket", bucket_id)
@@ -134,13 +98,15 @@ class BucketScheduler:
     def release(self, identity_id: str) -> None:
         if self.reservations.get(identity_id):
             return
+        if any(m["identity_id"] == identity_id for m in self.db.records("migration")):
+            return
         if any(not row.get("result") and
                Identity.model_validate(row["submit"]["identity"]).identity_id == identity_id
                for row in self.db.records("request")):
             return
         self.db.delete("binding", identity_id)
 
-    def reserve(self, identity: Identity) -> dict:
+    def reserve(self, identity: Identity, preferred_bucket: str | None = None) -> dict:
         """Commit the binding and capacity reservation together on the CU loop."""
         with self.db.transaction():
             for binding in self.db.records("binding"):
@@ -160,12 +126,18 @@ class BucketScheduler:
                 raise ValueError("workspace path collides with another user")
             self.db.put("workspace_owner", workspace, {"identity_id": identity.identity_id})
             candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
-                          and b["bucket_id"] not in self.resetting
                           and (b["status"] == "creating" or self.connected(b["bucket_id"]))
                           and b.get("accepting", True)
                           and b["frontend_id"] == identity.frontend_id
                           and len(self.bindings(b["bucket_id"])) < self.config.bucket_pool.max_users_per_bucket]
-            if candidates:
+            movement = next((m for m in self.db.records("migration")
+                             if m["identity_id"] == identity.identity_id), None)
+            preferred_bucket = movement["target"] if movement else preferred_bucket
+            if preferred_bucket:
+                bucket = self.db.get("bucket", preferred_bucket)
+                if not bucket or bucket["frontend_id"] != identity.frontend_id:
+                    raise PermissionError("session bucket frontend mismatch")
+            elif candidates:
                 bucket = min(candidates, key=lambda b: (not self.connected(b["bucket_id"]),
                                                         len(self.bindings(b["bucket_id"]))))
             else:
@@ -180,15 +152,16 @@ class BucketScheduler:
             self.db.put("binding", identity.identity_id, binding)
             return binding
 
-    async def ready(self, bucket_id: str):
+    async def ready(self, bucket_id: str, *, recover: bool = False):
         async with self.start_locks.setdefault(bucket_id, asyncio.Lock()), asyncio.timeout(self.config.bucket_pool.ready_timeout_seconds):
-            if reset := self.resetting.get(bucket_id):
-                await reset.wait()
             bucket = self.db.get("bucket", bucket_id)
             if bucket["status"] == "missing" or (bucket["status"] != "creating" and
                     not await self.manager.exists(bucket_id, bucket["frontend_id"])):
                 await self.missing(bucket_id)
-                raise BucketMissing(bucket_id)
+                if not recover:
+                    raise BucketMissing(bucket_id)
+                bucket = {**self.db.get("bucket", bucket_id), "status": "creating"}
+                self.db.put("bucket", bucket_id, bucket)
             if bucket["status"] == "draining":
                 await self.stopped.setdefault(bucket_id, asyncio.Event()).wait()
             if not self.connected(bucket_id):
@@ -209,21 +182,17 @@ class BucketScheduler:
             bucket = self.db.get("bucket", bucket_id)
             self.db.put("bucket", bucket_id, {**bucket, "status": "running"})
 
-    async def call_if_running(self, bucket_id: str, payload: dict) -> bool:
-        """On a held bucket, call the live peer or confirm that all pods have stopped."""
+    async def call_session(self, bucket_id: str, payload: dict) -> None:
+        """Wake the original bucket on its persistent state to use native APIs."""
         bucket = self.db.get("bucket", bucket_id)
         if bucket["status"] == "draining":
             await self.stopped.setdefault(bucket_id, asyncio.Event()).wait()
             bucket = self.db.get("bucket", bucket_id)
-        if bucket["status"] in {"idle", "missing"}:
-            await self.manager.wait_stopped(bucket_id)
-            return False
         try:
-            await self.ready(bucket_id)
-        except BucketMissing:
-            return False  # ready() finished missing(), including the pod exit check.
+            await self.ready(bucket_id, recover=True)
+        except BucketMissing as exc:
+            raise RuntimeError("native session bucket could not be restarted") from exc
         await self.peers[bucket_id].session_call(payload)
-        return True
 
     async def missing(self, bucket_id: str):
         bucket = self.db.get("bucket", bucket_id)
@@ -234,17 +203,22 @@ class BucketScheduler:
         self.stopped.setdefault(bucket_id, asyncio.Event()).set()
 
     @asynccontextmanager
-    async def assignment(self, identity: Identity):
+    async def assignment(self, identity: Identity, preferred_bucket: str | None = None):
         identity_id = identity.identity_id
         while True:
-            binding = self.reserve(identity)
+            binding = self.reserve(identity, preferred_bucket)
             bucket_id = binding["bucket_id"]
             self.reservations[identity_id] = self.reservations.get(identity_id, 0) + 1
             with self.hold(bucket_id):
                 try:
                     try:
-                        await self.ready(bucket_id)
+                        if any(m["target"] == bucket_id for m in self.db.records("migration")):
+                            await self.ready(bucket_id, recover=True)
+                        else:
+                            await self.ready(bucket_id)
                     except BucketMissing:
+                        if any(m["target"] == bucket_id for m in self.db.records("migration")):
+                            raise RuntimeError("migration target could not be restarted") from None
                         continue  # Retry startup. A loss after yield is handled by the submitter.
                     yield binding
                     return

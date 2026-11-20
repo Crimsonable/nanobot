@@ -1,11 +1,11 @@
 import asyncio
 import json
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from support import LocalControl, emit_answer, native
 
 from agent_backend.config import ControlConfig, EventForwarding, GatewaySettings, RuntimeConfig
 from agent_backend.ingress import Inbound
@@ -13,7 +13,6 @@ from agent_backend.models import Envelope, Result, Submit, digest
 from agent_backend.wire import Peer
 from bucket_runtime.adapter import BucketRuntimeAdapter
 from channel_gateway.server import create_app
-from support import LocalControl, emit_answer
 
 
 @pytest.fixture
@@ -25,7 +24,8 @@ def system(tmp_path):
     common = tmp_path / "common"
     (common / "web/app").mkdir(parents=True)
     runtime = BucketRuntimeAdapter(RuntimeConfig(frontend_id="web", bucket_id="b", common_root=common,
-        state_root=tmp_path / "bu", workspace_root=tmp_path / "users"), SimpleNamespace(), SimpleNamespace())
+        state_root=tmp_path / "bu", workspace_root=tmp_path / "users"), SimpleNamespace(session_tree=AsyncMock(return_value=[{"id": "s"}]),
+            sessions_idle=AsyncMock(return_value=True)), SimpleNamespace())
     yield app, control.service, runtime
     app.state.service.db.close()
     control.service.db.close()
@@ -44,12 +44,9 @@ async def accept(system, request_id="r", sync=False, stream=False):
     return row
 
 
-def answer(bu):
-    row = bu.db.get("run", "r")
-    emit_answer(bu, "s", "r", "input", row["directory"], {"info": {
-        "id": "answer", "sessionID": "s", "parentID": "input", "role": "assistant",
-        "time": {"created": 1, "completed": 2}, "finish": "stop", "tokens": {"input": 12, "output": 4}},
-        "parts": [{"type": "text", "text": "done"}]})
+async def answer(bu):
+    emit_answer(bu, "s", "input", bu.db.get("run", "r")["directory"])
+    await bu.settle_requests()
 
 
 async def transfer(gw, cu, bu):
@@ -66,7 +63,7 @@ async def test_final_external_fields_unchanged_and_cu_has_no_content(system):
     app, cu, bu = system
     gw = app.state.service
     await accept(system)
-    answer(bu)
+    await answer(bu)
     await transfer(gw, cu, bu)
     assert not cu.db.records("opencode_event")
     assert cu.db.get("request", "r")["result"] == {"request_id": "r", "status": "completed", "error": None}
@@ -101,21 +98,12 @@ async def test_missing_worker_result_reaches_gateway_without_worker_events(syste
 
 
 @pytest.mark.asyncio
-async def test_idle_is_required_and_drain_waits_for_gateway_ack(system):
+async def test_execution_terminal_is_required_and_drain_waits_for_gateway_ack(system):
     app, cu, bu = system
     await accept(system)
-    row = bu.db.get("run", "r")
-    def event(kind, props):
-        bu.native_event({"type": "opencode.event", "event_id": str(time.time_ns()), "directory": row["directory"],
-                         "event": {"type": kind, "properties": props}})
-        while bu.process_next_event():
-            pass
-    event("session.status", {"sessionID": "s", "status": {"type": "idle"}})
-    assert bu.db.get("run", "r")["status"] == "running"  # Unrelated pre-submit idle.
-    event("message.updated", {"info": {"id": "answer", "sessionID": "s", "parentID": "input",
-        "role": "assistant", "time": {"completed": 2}, "finish": "stop"}})
+    native(bu, "s", "session.step.ended", {"assistantMessageID": "answer", "finish": "stop"})
     assert bu.db.get("run", "r")["status"] == "running"
-    answer(bu)
+    await answer(bu)
     with pytest.raises(RuntimeError, match="events still pending"):
         await bu.session_operation({"operation": "drain", "session_id": "b"})
     await transfer(app.state.service, cu, bu)
@@ -124,23 +112,18 @@ async def test_idle_is_required_and_drain_waits_for_gateway_ack(system):
 
 
 @pytest.mark.asyncio
-async def test_filter_applies_to_deltas_and_child_idle_does_not_end_parent(system):
+async def test_filter_applies_to_deltas_and_child_terminal_does_not_end_parent(system):
     _, _, bu = system
     await accept(system)
     row = bu.db.get("run", "r")
-    def send(event):
-        bu.native_event({"type": "opencode.event", "event_id": str(time.time_ns()), "directory": row["directory"], "event": event})
-        while bu.process_next_event():
-            pass
-    send({"type": "message.part.updated", "properties": {"part": {"id": "thought", "sessionID": "s",
-        "messageID": "answer", "type": "reasoning", "text": "private"}}})
-    send({"type": "message.part.delta", "properties": {"sessionID": "s", "messageID": "answer",
-        "partID": "thought", "field": "text", "delta": " secret"}})
-    send({"type": "session.created", "properties": {"info": {"id": "child", "parentID": "s"}}})
-    send({"type": "session.status", "properties": {"sessionID": "child", "status": {"type": "idle"}}})
+    native(bu, "s", "session.reasoning.ended", {"assistantMessageID": "answer", "ordinal": 0, "text": "private"})
+    native(bu, "s", "session.reasoning.delta", {"assistantMessageID": "answer", "ordinal": 0, "delta": " secret"})
+    native(bu, "child", "session.created", {"parentID": "s", "location": {"directory": row["directory"]}})
+    native(bu, "child", "session.execution.succeeded")
     assert not bu.db.pending("gateway")
     assert bu.db.get("run", "r")["status"] == "running"
     assert not bu.db.pending("b")
+    assert not bu.db.records("native_failed")
     with pytest.raises(ValueError):
         EventForwarding(include_types=["message.part.delta"])
 
@@ -164,7 +147,7 @@ async def test_independent_gateway_ws_replay_does_not_repeat_delivery(system):
     app, cu, bu = system
     gw = app.state.service
     await accept(system)
-    answer(bu)
+    await answer(bu)
     async def reject(event):
         raise AssertionError("gateway must not issue commands")
     async def receive(event):
@@ -219,7 +202,7 @@ async def test_gateway_rejects_foreign_bucket_and_frontend(system):
 async def test_recovery_keeps_uncertain_delivery_unknown(system):
     app, _, bu = system
     await accept(system)
-    answer(bu)
+    await answer(bu)
     await transfer(app.state.service, system[1], bu)
     gw = app.state.service
     row = gw.db.get("request", "r")
@@ -236,8 +219,8 @@ async def test_recovery_keeps_uncertain_delivery_unknown(system):
 
 @pytest.mark.asyncio
 async def test_migration_preserves_delivery_and_idempotency(system, tmp_path):
-    from channel_gateway.migrate import migrate
     from agent_backend.journal import Journal
+    from channel_gateway.migrate import migrate
     app, cu, _ = system
     body = Inbound(user_id="alice", chat_id="chat", content="legacy", request_id="old")
     row = await cu.submit("web", body)

@@ -6,7 +6,7 @@ defaults:
   session:
     enabled: true              # must remain true: session rules + native file-tool path checks
     default_tools: true        # tools enabled by default; directory scope still applies
-    tools: {}                  # e.g. {webfetch: false, task: false, bash: true}
+    tools: {}                  # e.g. {webfetch: false, subagent: false, shell: true}
   filesystem:
     workspace: read_write      # read_write | read_only | none; always this user's directory
 users: []
@@ -16,6 +16,6 @@ users: []
 #     filesystem:
 #       workspace: read_only
 #     session:
-#       tools: {edit: false, write: false, apply_patch: false, webfetch: false}
+#       tools: {edit: false, write: false, patch: false, webfetch: false}
 #     sandbox:
 #       network: false

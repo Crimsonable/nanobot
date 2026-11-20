@@ -1,259 +1,281 @@
 import asyncio
+import copy
 import json
-import sqlite3
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
-
-from agent_backend.config import ControlConfig
-from agent_backend.journal import Journal
-from agent_backend.models import Envelope, Identity, Submit
-from agent_backend.session_history import (
-    database, delete_history, export_history, import_history, validate_destination,
-)
-from agent_backend.ingress import Inbound
-from container_up.server import ControlService
 from support import register_bucket
 
-
-def native_db(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as db:
-        db.executescript('''
-            PRAGMA foreign_keys=ON;
-            CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
-            CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT REFERENCES project(id),
-                parent_id TEXT, directory TEXT, metadata TEXT, permission TEXT, title TEXT);
-            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT REFERENCES session(id) ON DELETE CASCADE,
-                data TEXT);
-            CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT,
-                message_id TEXT REFERENCES message(id) ON DELETE CASCADE, data TEXT);
-            CREATE TABLE todo (session_id TEXT REFERENCES session(id) ON DELETE CASCADE, content TEXT);
-        ''')
+from agent_backend.config import ControlConfig, RuntimeConfig
+from agent_backend.ingress import Inbound
+from agent_backend.journal import Journal
+from agent_backend.models import Envelope, Identity, Submit
+from agent_backend.session_history import transfer_path
+from bucket_runtime.adapter import BucketRuntimeAdapter
+from bucket_runtime.opencode_server import OpenCodeServer
+from container_up.server import ControlService
+from container_up.session_manager import SessionManager
 
 
-def seed(path, identity, chat="chat", session="ses_root", children=True):
-    context = {**identity.model_dump(), "identity_id": identity.identity_id, "chat_id": chat,
-               "bucket_id": "old", "requests": {"old-input": "old-request"}, "schema_version": 1}
-    with database(path) as db:
-        db.execute("INSERT OR IGNORE INTO project VALUES ('project', '/workspace')")
-        for sid in [session, *([session + '_child'] if children else [])]:
-            db.execute("INSERT INTO session VALUES (?, 'project', ?, '/workspace', ?, '[]', 'Conversation')",
-                       (sid, None if sid == session else session, json.dumps({"bucket_runtime": context})))
-            db.execute("INSERT INTO message VALUES (?, ?, ?)", (sid + '_msg', sid,
-                       json.dumps({"role": "assistant", "finish": "stop", "summary": True})))
-            db.execute("INSERT INTO part VALUES (?, ?, ?, ?)", (sid + '_part', sid, sid + '_msg',
-                       json.dumps({"type": "tool", "callID": "call", "state": {"output": "kept history"}})))
-            db.execute("INSERT INTO todo VALUES (?, 'keep todo')", (sid,))
+class NativeStore:
+    """Native HTTP contract, independent stores; no private SQLite fixtures."""
+    def __init__(self):
+        self.sessions = {}
+        self.active = {}
+        self.inbox = {}
+        self.jobs = []
+        self.calls = []
+        self.fail_import = False
+        self.fail_delete = False
+        self.lose_import_reply = False
+        self.lose_delete_reply = False
 
-
-def test_round_trip_preserves_native_history_and_replaces_only_its_own_rows(tmp_path):
-    source, target = tmp_path / "a.db", tmp_path / "b.db"
-    for path in [source, target]:
-        native_db(path)
-    identity = Identity(frontend_id="web", user_id="alice")
-    seed(source, identity)
-    seed(source, Identity(frontend_id="web", user_id="bob"), session="bob", children=False)
-    history = export_history(source, "ses_root", identity, "chat")
-    validate_destination(target, history)
-    delete_history(source, history)
-    import_history(target, history, identity, "chat", "b")
-    with database(source) as db:
-        assert [r[0] for r in db.execute("SELECT id FROM session")] == ["bob"]
-    with database(target) as db:
-        db.execute("UPDATE part SET data=? WHERE id='ses_root_part'", (json.dumps({"text": "newest"}),))
-    latest = export_history(target, "ses_root", identity, "chat")
-    delete_history(target, latest)
-    import_history(source, latest, identity, "chat", "a")
-    # Retrying after a successful commit is harmless and replaces stale data.
-    import_history(source, latest, identity, "chat", "a")
-    restored = export_history(source, "ses_root", identity, "chat")
-    assert restored.rows["part"] == latest.rows["part"]
-    assert restored.rows["todo"] == latest.rows["todo"]
-    assert len(restored.rows["session"]) == 2
-    context = json.loads(restored.rows["session"][0]["metadata"])["bucket_runtime"]
-    assert context["bucket_id"] == "a" and context["requests"] == {}
-
-
-def test_import_failure_is_atomic_and_foreign_ownership_is_rejected(tmp_path):
-    source, target = tmp_path / "a.db", tmp_path / "b.db"
-    for path in [source, target]:
-        native_db(path)
-    identity = Identity(frontend_id="web", user_id="alice")
-    seed(source, identity)
-    with pytest.raises(PermissionError):
-        export_history(source, "ses_root", Identity(frontend_id="other", user_id="alice"), "chat")
-    history = export_history(source, "ses_root", identity, "chat")
-    with database(target) as db:
-        db.execute("CREATE TRIGGER fail_part BEFORE INSERT ON part BEGIN SELECT RAISE(ABORT, 'fail'); END")
-    with pytest.raises(sqlite3.IntegrityError):
-        import_history(target, history, identity, "chat", "b")
-    with database(target) as db:
-        assert db.execute("SELECT COUNT(*) FROM session").fetchone()[0] == 0
-        db.execute("DROP TRIGGER fail_part")
-    seed(target, Identity(frontend_id="web", user_id="bob"))
-    with pytest.raises(PermissionError):
-        import_history(target, history, identity, "chat", "b")
+    def handle(self, request):
+        method, path = request.method, request.url.path
+        self.calls.append((method, path))
+        if path == "/api/session/active":
+            return httpx.Response(200, json={"data": self.active})
+        if path == "/api/experimental/job":
+            assert request.url.params["descendants"] == "true"
+            return httpx.Response(200, json={"data": self.jobs})
+        if path == "/api/session":
+            return httpx.Response(200, json={"data": [d["info"] for d in self.sessions.values()
+                if d["info"].get("parentID") == request.url.params["parentID"]], "cursor": {}})
+        if path.endswith("/import"):
+            if self.fail_import:
+                return httpx.Response(503)
+            data = json.loads(request.content)
+            sid = data["info"]["id"]
+            if sid in self.sessions:
+                return httpx.Response(409)
+            if parent := data["info"].get("parentID"):
+                assert parent in self.sessions
+            data["info"]["location"] = data.pop("location")
+            data["info"]["slug"] = "regenerated"
+            self.sessions[sid] = data
+            if self.lose_import_reply:
+                self.lose_import_reply = False
+                raise httpx.ReadError("lost import reply", request=request)
+            return httpx.Response(200, json={"data": data["info"]})
+        sid = path.split("/")[-2] if path.endswith(("/export", "/inbox")) else path.split("/")[-1]
+        if sid not in self.sessions:
+            return httpx.Response(404)
+        if path.endswith("/inbox"):
+            return httpx.Response(200, json={"data": self.inbox.get(sid, [])})
+        if path.endswith("/export"):
+            return httpx.Response(200, json={"data": self.sessions[sid]})
+        if method == "DELETE":
+            if self.fail_delete:
+                return httpx.Response(503)
+            ids = {sid}
+            for data in self.sessions.values():
+                if data["info"].get("parentID") in ids:
+                    ids.add(data["info"]["id"])
+            for item in ids:
+                self.sessions.pop(item)
+            if self.lose_delete_reply:
+                self.lose_delete_reply = False
+                raise httpx.ReadError("lost delete reply", request=request)
+            return httpx.Response(204)
+        return httpx.Response(200, json={"data": self.sessions[sid]["info"]})
 
 
 @pytest.fixture
-def migration(tmp_path):
+async def migration(tmp_path):
     service = ControlService(ControlConfig(state_root=tmp_path / "control",
                                           frontends={"web": {"provider": "web"}}))
-    register_bucket(service, "a")
-    register_bucket(service, "b")
-    service.config.runtime_templates["web"].state_root = tmp_path / "runtime"
+    runtimes, stores = {}, {}
     identity = Identity(frontend_id="web", user_id="alice")
     submit = Submit(request_id="next", identity=identity, chat_id="chat", content="continue",
                     deadline_at=time.time() + 60)
-    paths = {}
+    (tmp_path / "common/web/app").mkdir(parents=True)
     for bucket in ["a", "b"]:
-        root = service.sessions.root(identity, bucket)
-        paths[bucket] = root / "opencode-home/data/opencode/opencode.db"
-        native_db(paths[bucket])
-    seed(paths["a"], identity)
-    journal = Journal(service.sessions.root(identity, "a") / "runtime.sqlite")
-    journal.put("session", submit.session_key, {"session_id": "ses_root", "identity_id": identity.identity_id})
-    journal.close()
-    bucket = service.db.get("bucket", "a")
-    service.db.put("bucket", "a", {**bucket, "status": "idle"})
-    service.pool.peers.pop("a")
-    yield service, submit, paths
+        register_bucket(service, bucket)
+        service.config.runtime_templates["web"].state_root = tmp_path / "runtime"
+        service.config.runtime_templates["web"].workspace_root = tmp_path / "users"
+        config = RuntimeConfig(frontend_id="web", bucket_id=bucket,
+            state_root=tmp_path / "runtime/web" / bucket, workspace_root=tmp_path / "users",
+            common_root=tmp_path / "common")
+        client = OpenCodeServer(config)
+        await client.http.aclose()
+        stores[bucket] = NativeStore()
+        client.http = httpx.AsyncClient(base_url="http://native", transport=httpx.MockTransport(stores[bucket].handle))
+        runtime = runtimes[bucket] = BucketRuntimeAdapter(config, client, SimpleNamespace())
+        service.pool.peers[bucket] = SimpleNamespace(closed=False, session_call=runtime.control)
+    context = {**identity.model_dump(), "identity_id": identity.identity_id, "chat_id": "chat",
+               "schema_version": 1, "bucket_id": "a", "requests": {"old-input": "old-request"},
+               "input_message_id": "old-input"}
+    for sid, parent in [("ses_root", None), ("ses_child", "ses_root")]:
+        stores["a"].sessions[sid] = {"info": {"id": sid, "parentID": parent,
+            "location": {"directory": str(runtimes["a"].workspace(submit))},
+            "metadata": {"bucket_runtime": context}, "permissions": [], "title": "Conversation"},
+            "messages": [{"id": sid + "_message", "type": "assistant", "time": {"completed": 1},
+                "content": [{"type": "tool", "id": "call", "output": "kept tool result"}]}]}
+    service.sessions.record(submit, "a", "ses_root")
+    runtimes["a"].db.put("session", submit.session_key, {"session_id": "ses_root"})
+    runtimes["a"].db.put("run", "old", {"request_id": "old", "status": "completed"})
+    runtimes["a"].db.enqueue("gateway", Envelope(type="runtime.result", bucket_id="a", request_id="old"))
+    for sid in ["ses_root", "ses_child", "unrelated"]:
+        runtimes["a"].db.put("native_session", sid, {"session_id": sid})
+    service.pool.set_accepting("a", False)
+    yield service, submit, runtimes, stores
+    for runtime in runtimes.values():
+        await runtime.opencode.http.aclose()
+        runtime.db.close()
     service.db.close()
 
 
-@pytest.mark.asyncio
-async def test_offline_source_is_discovered_and_moved_without_starting_it(migration):
-    service, submit, paths = migration
-    row = await service.submit("web", Inbound(user_id="alice", chat_id="chat", content="continue"))
+async def place(service, request_id="next"):
+    return await service.submit("web", Inbound(user_id="alice", chat_id="chat", content="continue", request_id=request_id))
+
+
+async def test_native_transfer_preserves_ids_tools_and_deletes_only_source_history(migration):
+    service, submit, runtimes, stores = migration
+    original = copy.deepcopy(stores["a"].sessions)
+    row = await place(service)
     assert row["bucket_id"] == "b" and row["submit"]["session_id"] == "ses_root"
-    assert service.db.get("session", submit.session_key)["bucket_id"] == "b"
-    with database(paths["a"]) as db:
-        assert db.execute("SELECT COUNT(*) FROM session").fetchone()[0] == 0
-    journal = Journal(service.sessions.root(submit.identity, "a") / "runtime.sqlite")
-    try:
-        assert journal.get("session", submit.session_key) is None
-    finally:
-        journal.close()
-    assert export_history(paths["b"], "ses_root", submit.identity, "chat").rows["part"]
-    assert not service.sessions.histories
+    assert service.sessions.lookup(submit)["bucket_id"] == "b"
+    assert not stores["a"].sessions
+    for sid in original:
+        assert stores["b"].sessions[sid]["messages"] == original[sid]["messages"]
+        info = stores["b"].sessions[sid]["info"]
+        context = info["metadata"]["bucket_runtime"]
+        assert context["bucket_id"] == "b" and context["requests"] == {}
+        assert "input_message_id" not in context
+        assert info["permissions"] == runtimes["b"].session_permissions(submit)
+        assert runtimes["a"].db.get("native_session", sid) is None
+    assert runtimes["a"].db.get("session", submit.session_key) is None
+    assert runtimes["a"].db.get("native_session", "unrelated")
+    assert runtimes["a"].db.get("run", "old")
+    assert runtimes["a"].db.pending("gateway")
+    assert not service.db.records("migration")
+    assert not transfer_path(runtimes["a"].config.state_root, "a", submit.session_key).exists()
+    assert not any("interrupt" in p or p.endswith("/wait") for _, p in stores["a"].calls)
 
 
-@pytest.mark.asyncio
-async def test_online_source_is_quiesced_before_export_and_deleted_before_import(migration):
-    service, submit, paths = migration
-    bucket = service.db.get("bucket", "a")
-    service.db.put("bucket", "a", {**bucket, "status": "running"})
-    operations = []
-
-    async def call(payload):
-        operations.append(payload["operation"])
-        if payload["operation"] == "quiesce":
-            assert not service.sessions.histories
-            assert service.pool.busy("a")
-            assert not service.sessions.can_reset("a")
-            assert not service.sessions.can_reset("b")
-            reset = await service.reset_frontend_opencode("web")
-            assert {b["bucket_id"]: b["status_code"] for b in reset["buckets"]} == {"a": 409, "b": 409}
-        else:
-            history = service.sessions.histories[submit.session_key]
-            assert history.rows["part"]
-            with database(paths["b"]) as db:
-                assert db.execute("SELECT COUNT(*) FROM session").fetchone()[0] == 0
-            delete_history(paths["a"], history)
-
-    service.pool.peers["a"] = SimpleNamespace(closed=False, session_call=call)
-    assert await service.sessions.prepare(submit, "b") == "ses_root"
-    assert operations == ["quiesce", "delete"]
-    assert not service.pool.busy("a")
-    assert service.sessions.can_reset("a") and service.sessions.can_reset("b")
+@pytest.mark.parametrize("pending", ["active", "inbox", "child_inbox", "jobs"])
+async def test_pending_native_work_keeps_request_on_source_without_export(migration, pending):
+    service, _, _, stores = migration
+    if pending == "active":
+        stores["a"].active["ses_child"] = {"type": "running"}
+    elif pending == "jobs":
+        stores["a"].jobs = [{"status": "completed"}]
+    else:
+        stores["a"].inbox["ses_child" if pending == "child_inbox" else "ses_root"] = [{"type": "user"}]
+    row = await place(service)
+    assert row["bucket_id"] == "a"
+    assert not stores["b"].sessions
+    assert not any(p.endswith("/export") or m == "DELETE" for m, p in stores["a"].calls)
+    assert not service.db.records("migration")
 
 
-@pytest.mark.asyncio
-async def test_source_lost_after_quiesce_waits_for_exit_before_offline_delete(migration):
-    service, submit, paths = migration
-    bucket = service.db.get("bucket", "a")
-    service.db.put("bucket", "a", {**bucket, "status": "running", "accepting": False})
-    operations = []
-
-    async def call(payload):
-        operations.append(payload["operation"])
-        service.pool.manager.exists.return_value = False
-
-    async def stopped(bucket_id):
-        assert bucket_id == "a"
-        assert export_history(paths["a"], "ses_root", submit.identity, "chat").rows["part"]
-
-    service.pool.peers["a"] = SimpleNamespace(closed=False, session_call=call)
-    service.pool.manager.wait_stopped.side_effect = stopped
-    assert await service.sessions.prepare(submit, "b") == "ses_root"
-    assert operations == ["quiesce"]
-    service.pool.manager.wait_stopped.assert_awaited_once_with("a")
-    assert not service.pool.busy("a")
-    assert export_history(paths["b"], "ses_root", submit.identity, "chat").rows["part"]
-
-
-@pytest.mark.asyncio
-async def test_missing_running_source_migrates_offline_without_recreating_deployment(migration):
-    from unittest.mock import AsyncMock
-    service, submit, paths = migration
-    bucket = service.db.get("bucket", "a")
-    service.db.put("bucket", "a", {**bucket, "status": "running"})
-    service.pool.peers["a"] = SimpleNamespace(closed=False, session_call=AsyncMock())
-    service.pool.manager.exists = AsyncMock(side_effect=lambda bid, frontend: bid != "a")
-    service.pool.manager.ensure = AsyncMock(side_effect=AssertionError("must not recreate source"))
-    row = await service.submit("web", Inbound(user_id="alice", chat_id="chat", content="continue"))
-    assert row["bucket_id"] == "b"
-    assert row["submit"]["session_id"] == "ses_root"
-    assert service.db.get("session", submit.session_key)["bucket_id"] == "b"
-    assert service.db.get("bucket", "a")["status"] == "missing"
-    assert export_history(paths["b"], "ses_root", submit.identity, "chat").rows["part"]
-    service.pool.manager.ensure.assert_not_called()
-    service.pool.manager.wait_stopped.assert_any_await("a")
+@pytest.mark.parametrize("failure", ["fail_import", "lose_import_reply", "fail_delete", "lose_delete_reply"])
+async def test_failed_transfer_retries_after_manager_restart_before_submitting(migration, failure):
+    service, submit, runtimes, stores = migration
+    failing = stores["b"] if "import" in failure else stores["a"]
+    setattr(failing, failure, True)
+    with pytest.raises(httpx.HTTPError):
+        await place(service)
+    assert service.sessions.lookup(submit)["bucket_id"] == "a"
+    assert service.db.get("request", "next") is None
+    assert service.db.records("migration")
+    assert service.pool.busy("a") and service.pool.busy("b")
+    assert transfer_path(runtimes["a"].config.state_root, "a", submit.session_key).exists()
+    if failure != "lose_delete_reply":
+        assert "ses_root" in stores["a"].sessions
+    setattr(failing, failure, False)
+    service.db.close()
+    service.db = Journal(service.config.state_root / "control.sqlite")
+    service.pool.db = service.db
+    service.sessions = SessionManager(service.config, service.db, service.open_session_source)
+    assert (await place(service))["bucket_id"] == "b"
+    assert not stores["a"].sessions
+    assert not service.db.records("migration")
 
 
-@pytest.mark.asyncio
-async def test_import_retry_keeps_memory_user_lock_and_survives_caller_disconnect(migration, monkeypatch):
-    service, submit, paths = migration
-    import container_up.session_manager as module
-    original = module.import_history
-    failed = asyncio.Event()
-    attempts = 0
-
-    def flaky(*args):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            with database(paths["a"]) as db:
-                assert db.execute("SELECT COUNT(*) FROM session").fetchone()[0] == 0
-            assert service.user_locks[submit.identity.identity_id].locked()
-            assert service.sessions.histories[submit.session_key].rows["message"]
-            failed.set()
-            raise sqlite3.OperationalError("temporarily locked")
-        return original(*args)
-
-    monkeypatch.setattr(module, "import_history", flaky)
-    caller = asyncio.create_task(service.submit("web", Inbound(user_id="alice", chat_id="chat",
-                                                                content="continue", request_id="retry")))
-    await asyncio.wait_for(failed.wait(), 3)
-    caller.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await caller
-    await asyncio.wait_for(asyncio.gather(*service.pending), 5)
-    assert attempts == 2
-    assert service.db.get("request", "retry")["submit"]["session_id"] == "ses_root"
-    assert not service.sessions.histories
+async def test_new_chat_cannot_bypass_failed_migration(migration):
+    service, _, _, stores = migration
+    stores["a"].fail_delete = True
+    with pytest.raises(httpx.HTTPError):
+        await place(service)
+    with pytest.raises(httpx.HTTPError):
+        await service.submit("web", Inbound(user_id="alice", chat_id="other", content="new", request_id="other"))
+    assert service.db.get("request", "other") is None
+    stores["a"].fail_delete = False
+    row = await service.submit("web", Inbound(user_id="alice", chat_id="other", content="new", request_id="other"))
+    assert row["bucket_id"] == "b" and row["submit"]["session_id"] is None
+    assert not stores["a"].sessions
 
 
-@pytest.mark.asyncio
+async def test_busy_target_rejects_control_without_waiting_on_execution_lock(migration):
+    service, submit, runtimes, stores = migration
+    runtime = runtimes["b"]
+    runtime.db.put("run", "active", {"request_id": "active", "status": "running",
+        "submit": submit.model_dump(mode="json")})
+    lock = runtime.request_locks.setdefault(submit.identity.identity_id, asyncio.Lock())
+    async with lock:
+        with pytest.raises(RuntimeError, match="SESSION_BUSY"):
+            await asyncio.wait_for(place(service), 1)
+    assert "ses_root" in stores["a"].sessions
+    assert service.db.get("request", "next") is None
+
+
+async def test_target_pending_work_or_source_change_prevents_delete(migration):
+    service, _, _, stores = migration
+    stores["b"].inbox["ses_root"] = [{"type": "user"}]
+    with pytest.raises(RuntimeError, match="pending work"):
+        await place(service)
+    assert "ses_root" in stores["a"].sessions
+    stores["b"].inbox.clear()
+    stores["a"].sessions["ses_root"]["messages"].append({"id": "late", "type": "user"})
+    with pytest.raises(RuntimeError, match="readback mismatch"):
+        await place(service)
+    assert "ses_root" in stores["a"].sessions
+    assert service.db.get("request", "next") is None
+
+
+@pytest.mark.parametrize("conflict", ["owner", "history"])
+async def test_import_conflict_requires_same_owner_and_exact_history(migration, conflict):
+    service, submit, _, stores = migration
+    stores["b"].lose_import_reply = True
+    with pytest.raises(httpx.ReadError):
+        await place(service)
+    root = stores["b"].sessions["ses_root"]
+    if conflict == "owner":
+        root["info"]["metadata"]["bucket_runtime"]["user_id"] = "someone-else"
+    else:
+        root["messages"][0]["content"] = []
+    with pytest.raises((PermissionError, RuntimeError)):
+        await place(service)
+    assert "ses_root" in stores["a"].sessions
+    assert service.sessions.lookup(submit)["bucket_id"] == "a"
+    assert service.db.get("request", "next") is None
+
+
+@pytest.mark.parametrize("status", ["idle", "missing"])
+async def test_offline_source_starts_native_service_on_original_bucket(migration, status):
+    service, _, runtimes, stores = migration
+    service.pool.peers.pop("a")
+    service.db.put("bucket", "a", {**service.db.get("bucket", "a"), "status": status})
+    async def ensure(bucket_id, frontend_id, *, allow_create):
+        assert bucket_id == "a" and frontend_id == "web"
+        assert allow_create == (status == "missing")
+        service.pool.peers["a"] = SimpleNamespace(closed=False, session_call=runtimes["a"].control)
+    service.pool.manager.ensure = AsyncMock(side_effect=ensure)
+    assert (await place(service))["bucket_id"] == "b"
+    service.pool.manager.ensure.assert_awaited_once()
+    assert not stores["a"].sessions
+
+
 async def test_late_started_event_cannot_move_catalog_back(migration):
-    service, submit, paths = migration
-    row = await service.submit("web", Inbound(user_id="alice", chat_id="chat", content="continue"))
+    service, submit, _, _ = migration
+    row = await place(service)
     await service.on_event("b", Envelope(type="request.completed", bucket_id="b", request_id=row["request_id"],
         payload={"request_id": row["request_id"], "status": "completed"}))
-    catalog = service.db.get("session", submit.session_key)
-    service.db.put("session", submit.session_key, {**catalog, "bucket_id": "a"})
+    service.sessions.record(submit, "a", "ses_root")
     await service.on_event("b", Envelope(type="request.started", bucket_id="b", request_id=row["request_id"],
                                         payload={"session_id": "ses_root"}))
-    assert service.db.get("session", submit.session_key)["bucket_id"] == "a"
+    assert service.sessions.lookup(submit)["bucket_id"] == "a"

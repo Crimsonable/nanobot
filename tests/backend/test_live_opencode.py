@@ -15,15 +15,15 @@ import pytest
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
+from support import register_bucket
 from websockets.asyncio.client import connect
 
-from support import register_bucket
-from agent_backend.config import ControlConfig, RuntimeConfig, GatewaySettings
+from agent_backend.config import ControlConfig, GatewaySettings, RuntimeConfig
 from agent_backend.wire import Peer
 from bucket_runtime.adapter import BucketRuntimeAdapter
+from bucket_runtime.opencode_server import OpenCodeServer
 from bucket_runtime.sandbox_executor import SandboxExecutor
 from bucket_runtime.server import rpc_app
-from bucket_runtime.opencode_server import OpenCodeServer
 from container_up.server import create_app
 
 USED_PORTS: set[int] = set()
@@ -94,9 +94,13 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     secret_file = private_config / "future-secret.txt"
     secret_file.write_text("frontend-config-must-stay-private")
     model_config = private_config / "opencode-server.json"
-    model_config.write_text(json.dumps({"provider": {"test": {
-        "npm": "@ai-sdk/openai-compatible", "name": "Offline test",
-        "options": {"baseURL": f"http://127.0.0.1:{model_port}/v1", "apiKey": "unused"},
+    permissions_file = private_config / "user-permissions.yaml"
+    permissions_file.write_text(json.dumps({"users": [{"user_id": "restricted",
+        "filesystem": {"workspace": "read_only"},
+        "session": {"tools": {"shell": False, "publish_attachment": False}}}]}))
+    model_config.write_text(json.dumps({"providers": {"test": {
+        "package": "@opencode/ai/providers/openai-compatible", "name": "Offline test",
+        "settings": {"baseURL": f"http://127.0.0.1:{model_port}/v1", "apiKey": "unused"},
         "models": {"test": {"name": "test", "limit": {"context": 32000, "output": 4096}}},
     }}, "model": "test/test", "instructions": [str(templates / "AGENTS.md")]}))
     runtime_config = RuntimeConfig.model_validate({
@@ -104,9 +108,10 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
         "frontend_id": "web", "common_root": str(common),
         "state_root": str(tmp_path / "runtime"),
         "workspace_root": str(tmp_path / "workspaces"), "rpc_port": rpc_port, "health_port": port(),
+        "permissions_file": str(permissions_file),
         "opencode": {"binary": str(binary), "port": oc_port,
             "context_root": str(tmp_path / "context"), "config_file": str(model_config),
-            "plugin_file": str(plugin), "dependency_dir": str(plugin.parent.parent)},
+            "plugin_dir": str(plugin.parent.parent)},
         "limits": {"request_seconds": request_seconds},
     })
     control_config = ControlConfig.model_validate({
@@ -119,7 +124,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     gateway_port = port()
     gateway = gateway_app(control_config, GatewaySettings(state_root=tmp_path / "gateway",
         control_url=f"http://127.0.0.1:{cu_port}"), Channels())
-    runtime_config.event_forwarding.include_part_types.append("reasoning")
+    runtime_config.event_forwarding.include_types.extend(["session.reasoning.started", "session.reasoning.delta", "session.reasoning.ended"])
     register_bucket(app.state.service, "bucket-0")
     uploaded = []
 
@@ -143,33 +148,56 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
     async def completion(request: Request):
         body = await request.json()
         model_calls.append(body)
+        names = {tool["function"]["name"] for tool in body["tools"]}
+        restricted_request = any("PERMISSION_PROBE" in str(m.get("content")) for m in body["messages"] if m["role"] == "user")
+        assert not any(name.startswith("opencode_") for name in names)
+        if restricted_request:
+            assert "read" in names and not names.intersection({"shell", "write", "edit", "patch", "publish_attachment"}), sorted(names)
+        else:
+            assert "publish_attachment" in names
         for message in body["messages"]:
             for call in message.get("tool_calls", []):
-                if call.get("function", {}).get("name") == "bash":
-                    assert not json.loads(call["function"]["arguments"])["command"].startswith("exec '/usr/bin/flock'")
+                if call.get("function", {}).get("name") == "shell":
+                    assert not json.loads(call["function"]["arguments"])["command"].startswith("exec '/usr/bin/timeout'")
         system = str([m["content"] for m in body["messages"] if m["role"] == "system"])
-        assert "FRONTEND_TEMPLATE_RULE_78421" in system, system
+        assert "FRONTEND_TEMPLATE_RULE_78421" in system, "Shared rules missing from model context"
+        assert "namespace opencode" not in system, "Management tools exposed through Code Mode"
         bob_request = any("BOB_REQUEST" in str(m.get("content")) for m in body["messages"] if m["role"] == "user")
-        assert ("BOB_ONLY_RULE_96431" in system) == bob_request, system
+        assert ("BOB_ONLY_RULE_96431" in system) == bob_request, "Per-user rules missing or leaking"
         tool_messages = [m for m in body["messages"] if m["role"] == "tool"]
-        if not tool_messages:
-            name = "bash"
+        timeout_request = any("TIMEOUT_PROBE" in str(m.get("content")) for m in body["messages"] if m["role"] == "user")
+        if restricted_request:
+            if not tool_messages:
+                name, args = "read", {"path": "existing"}
+            elif len(tool_messages) == 1:
+                assert "readonly-sentinel" in str(tool_messages[-1]["content"])
+                # A model can hallucinate a hidden tool; execution must still deny it.
+                name, args = "write", {"path": "existing", "content": "overwritten"}
+            else:
+                name, args = None, None
+        elif timeout_request and tool_messages:
+            name, args = None, None
+        elif not tool_messages:
+            name = "shell"
             args = {"command": f"test ! -e '{private_config}' && printf 'generated report' > report.txt && cat "
                     + str(public / "SKILL.md"), "description": "Generate report"}
             if any("Long task" in str(m.get("content")) for m in body["messages"]):
                 args = {"command": "touch started; sleep 30; touch survived", "description": "Long task"}
+            elif timeout_request:
+                args = {"command": "touch started; (sleep 2; touch escaped) & sleep 30; touch survived",
+                        "description": "Hard timeout probe", "timeout": 1000, "background": True}
         elif len(tool_messages) == 1:
             name = "read"
-            args = {"filePath": "report.txt"}
+            args = {"path": "report.txt"}
         elif len(tool_messages) == 2:
             assert "generated report" in str(tool_messages[-1]["content"]), tool_messages[-1]
             name = "read"
-            args = {"filePath": str(secret_file)}
+            args = {"path": str(secret_file)}
         elif len(tool_messages) == 3:
             assert "permission scope" in str(tool_messages[-1]["content"]), tool_messages[-1]
             assert "frontend-config-must-stay-private" not in str(body["messages"])
             name = "read"
-            args = {"filePath": str(public / "SKILL.md")}
+            args = {"path": str(public / "SKILL.md")}
         elif len(tool_messages) == 4:
             assert "public skill" in str(tool_messages[-1]["content"]), tool_messages[-1]
             name = "publish_attachment"
@@ -213,10 +241,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
             await executor.probe(tmp_path / "probe")
             await opencode.start(runtime.on_opencode_event)
             await asyncio.wait_for(runtime.opencode.connected.wait(), 10)
-            initialized = await opencode.http.get("/config")
-            assert initialized.status_code == 200, initialized.text
-            # The plugin initializes on tool discovery, not necessarily on config access.
-            initialized = await opencode.http.get("/agent")
+            initialized = await opencode.http.get("/api/agent", params=opencode._params())
             assert initialized.status_code == 200, initialized.text
             assert runtime.opencode.plugin_ready.is_set()
             async with connect(runtime_config.control_url, proxy=None, additional_headers={
@@ -247,13 +272,11 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     raw_events = gateway.state.service.db.records("opencode_event")
                     assert not app.state.service.db.records("opencode_event")
                     own_events = [e["payload"]["event"] for e in raw_events if e["request_id"] == "req-test"]
-                    assert any(e["type"] == "message.part.updated" and
-                               e["properties"]["part"]["type"] == "reasoning" for e in own_events), own_events
-                    assert any(e["type"] == "message.part.delta" for e in own_events)
+                    assert any(e["type"] == "session.reasoning.ended" for e in own_events), own_events
+                    assert any(e["type"] == "session.text.delta" for e in own_events)
                     assert not any(e["type"] == "tool.execute.before" for e in own_events)
-                    assert any(e["type"] == "message.part.updated" and
-                               e["properties"]["part"]["type"] == "tool" for e in own_events)
-                    assert any(e["payload"]["event"]["type"] == "session.status" for e in raw_events)
+                    assert any(e["type"] == "session.tool.success" for e in own_events)
+                    assert any(e["payload"]["event"]["type"] == "session.execution.started" for e in raw_events)
                     alice_row = runtime.db.get("run", "req-test")
                     session_info = await runtime.opencode.session(alice_row["session_id"], directory=Path(alice_row["directory"]))
                     context = session_info["metadata"]["bucket_runtime"]
@@ -265,7 +288,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     from agent_backend.models import Submit
                     alice_workspace = runtime.workspace(Submit.model_validate(alice_row["submit"]))
                     assert not (alice_workspace / "inbox").exists()
-                    assert session_info["directory"] == str(alice_workspace)
+                    assert session_info["location"]["directory"] == str(alice_workspace)
                     assert not (alice_workspace / "AGENTS.md").exists()
                     assert any(f"http://127.0.0.1:{model_port}/input.txt" in str(call["messages"]) for call in model_calls)
                     again = await client.post("/inbound-sync/web", json=payload)
@@ -282,6 +305,7 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                         client.post("/inbound-sync/web", json={"chat_id": "chat", "user_id": "alice",
                             "content": "Say the result again", "request_id": "req-alice-next"}))
                     (templates / "AGENTS.md").write_text("FRONTEND_TEMPLATE_RULE_78421")
+                    assert other.status_code == 200, other.text
                     assert other.json()["status"] == "completed", other.text
                     bob_row = runtime.db.get("run", "req-bob")
                     assert bob_row["session_id"] != alice_row["session_id"]
@@ -298,15 +322,15 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                     assert other_row["session_id"] not in {alice_row["session_id"], bob_row["session_id"]}
                     other_info = await runtime.opencode.session(other_row["session_id"], directory=Path(other_row["directory"]))
                     assert other_info["metadata"]["bucket_runtime"]["chat_id"] == "group-2"
-                    assert other_info["directory"] == str(alice_workspace)
+                    assert other_info["location"]["directory"] == str(alice_workspace)
                     bob_info = await runtime.opencode.session(bob_row["session_id"], directory=Path(bob_row["directory"]))
-                    assert bob_info["directory"] == bob_row["directory"]
-                    assert bob_info["directory"] != str(alice_workspace)
+                    assert bob_info["location"]["directory"] == bob_row["directory"]
+                    assert bob_info["location"]["directory"] != str(alice_workspace)
                     # Restart the real OpenCode process with the same persisted home/session.
                     await opencode.stop()
                     runtime.opencode.plugin_ready.clear()
                     await opencode.start(runtime.on_opencode_event)
-                    await opencode.http.get("/agent")
+                    await opencode.http.get("/api/agent", params=opencode._params())
                     assert runtime.opencode.plugin_ready.is_set()
                     resumed = await client.post("/inbound-sync/web", json={"chat_id": "chat",
                         "user_id": "alice", "content": "Repeat after restart", "request_id": "req-resumed"})
@@ -329,13 +353,37 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
                             break
                         await asyncio.sleep(0.1)
                     assert cancelled["status"] == "cancelled", cancelled
-                    from bucket_runtime.file_lock import publication_lock
                     from agent_backend.models import Submit
+                    from bucket_runtime.file_lock import publication_lock
                     cancelled_submit = Submit.model_validate(runtime.db.get("run", "req-cancel")["submit"])
                     async with asyncio.timeout(5):
                         async with publication_lock(runtime.user_lock_path(cancelled_submit)):
                             pass
                     assert not (cancel_workspace / "survived").exists()
+                    # The V2 shell may background slow calls; the trusted wrapper must
+                    # kill the sandbox first, even when the model requests background=true.
+                    timed = await client.post("/inbound-sync/web", json={"chat_id": "chat", "user_id": "delta",
+                        "content": "TIMEOUT_PROBE", "request_id": "req-timeout"})
+                    assert timed.json()["status"] == "completed", timed.text
+                    timeout_workspace = runtime_config.workspace_root / "web" / "delta"
+                    assert (timeout_workspace / "started").exists()
+                    timeout_submit = Submit.model_validate(runtime.db.get("run", "req-timeout")["submit"])
+                    async with asyncio.timeout(5):
+                        async with publication_lock(runtime.user_lock_path(timeout_submit)):
+                            pass
+                    await asyncio.sleep(2.1)
+                    assert not (timeout_workspace / "escaped").exists()
+                    assert not (timeout_workspace / "survived").exists()
+                    restricted_workspace = runtime_config.workspace_root / "web" / "restricted"
+                    restricted_workspace.mkdir(parents=True)
+                    (restricted_workspace / "existing").write_text("readonly-sentinel")
+                    restricted = await client.post("/inbound-sync/web", json={"chat_id": "chat", "user_id": "restricted",
+                        "content": "PERMISSION_PROBE", "request_id": "req-restricted"})
+                    assert restricted.json()["status"] == "completed", restricted.text
+                    assert (restricted_workspace / "existing").read_text() == "readonly-sentinel"
+                    restricted_events = [row["payload"]["event"] for row in gateway.state.service.db.records("opencode_event")
+                                         if row["request_id"] == "req-restricted"]
+                    assert any(event["type"] == "session.tool.failed" for event in restricted_events)
                     row = runtime.db.get("run", "req-test")
                     with pytest.raises(PermissionError):
                         runtime.active_request(row["request_id"])
@@ -367,4 +415,4 @@ async def test_real_backend_attachment_and_isolation(tmp_path, capfd):
         contents = [row["content"] for row in own_logs]
         assert any("Planning test step." in content for content in contents)
         assert any("Report ready." in content for content in contents)
-        assert any("output" in content for content in contents)
+        assert any('"type":"text"' in content and "generated report" in content for content in contents)

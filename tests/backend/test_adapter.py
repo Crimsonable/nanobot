@@ -1,4 +1,3 @@
-from tests.backend.support import plugin_scope, publication
 import asyncio
 import time
 
@@ -7,18 +6,16 @@ import pytest
 
 from agent_backend.config import RuntimeConfig
 from agent_backend.models import Envelope, Identity, Submit
-from bucket_runtime.opencode_server import OpenCodeServer
 from bucket_runtime.adapter import BucketRuntimeAdapter
+from bucket_runtime.opencode_server import OpenCodeServer
 from bucket_runtime.sandbox_executor import SandboxExecutor
+from tests.backend.support import native, plugin_scope, publication
 
 
 class Client:
     def __init__(self):
         self.aborted = []
         self.connected = asyncio.Event()
-
-    async def paths(self, *, directory=None):
-        return {"worktree": self.worktree}
 
     async def abort(self, session_id, *, directory=None):
         self.aborted.append(session_id)
@@ -38,29 +35,28 @@ def runtime(tmp_path):
         "workspace_root": str(tmp_path / "workspaces"),
         "opencode": {"binary": str(tmp_path / "binary"),
                      "context_root": str(tmp_path / "context"), "config_file": str(tmp_path / "model.json"),
-                     "plugin_file": str(tmp_path / "plugin"), "dependency_dir": str(tmp_path / "deps")},
+                     "plugin_dir": str(tmp_path / "plugin")},
     })
     instance = BucketRuntimeAdapter(config, Client(), Executor())
     instance.opencode.connected.set()
-    instance.opencode.worktree = str(tmp_path)
     yield instance
     instance.db.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload, expected", [
-    ({"healthy": True, "version": "0.0.0-custom"}, True),
-    ({"healthy": True}, True),
-    ({"healthy": False, "version": "1.18.31"}, False),
-])
-async def test_opencode_health_does_not_require_a_version(runtime, payload, expected):
+@pytest.mark.parametrize("version", ["2.3.2", "2.4.0", "1.18.31", "3.0.0"])
+async def test_opencode_health_requires_v2(runtime, version):
     client = OpenCodeServer(runtime.config, "test-password")
     await client.http.aclose()
-    async with httpx.AsyncClient(
-        base_url="http://opencode.test",
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)),
-    ) as client.http:
-        assert await client.health() is expected
+    def handle(request):
+        assert request.url.path == "/api/info"
+        return httpx.Response(200, json={"version": version})
+    async with httpx.AsyncClient(base_url="http://opencode.test", transport=httpx.MockTransport(handle)) as client.http:
+        if version.startswith("2."):
+            assert await client.health()
+        else:
+            with pytest.raises(RuntimeError, match="2.x"):
+                await client.health()
 
 
 def active(runtime, name="alice", request_id="r", session_id="s"):
@@ -70,49 +66,6 @@ def active(runtime, name="alice", request_id="r", session_id="s"):
     runtime.db.put("run", request_id, {"request_id": request_id, "status": "running",
         "session_id": session_id, "directory": str(runtime.workspace(submit)), "submit": submit.model_dump(mode="json"), "artifacts": []})
     return submit
-
-
-@pytest.mark.asyncio
-async def test_migration_stops_native_session_tree_and_removes_only_local_history(runtime):
-    submit = active(runtime)
-    payload = {"identity": submit.identity.model_dump(), "chat_id": submit.chat_id, "session_id": "s"}
-    with pytest.raises(RuntimeError, match="outstanding"):
-        await runtime.session_operation({**payload, "operation": "quiesce"})
-    row = runtime.db.get("run", "r")
-    runtime.db.put("run", "r", {**row, "status": "completed"})
-    operations = []
-
-    async def session(session_id, *, directory=None):
-        return {"id": session_id, "directory": row["directory"],
-                "metadata": {"bucket_runtime": {**submit.identity.model_dump(), "chat_id": submit.chat_id}}}
-
-    async def children(session_id, *, directory=None):
-        return [{"id": "child"}] if session_id == "s" else []
-
-    async def abort(session_id, *, directory=None):
-        operations.append(("abort", session_id))
-
-    async def delete(session_id, *, directory=None):
-        operations.append(("delete", session_id))
-
-    runtime.opencode.session = session
-    runtime.opencode.children = children
-    runtime.opencode.abort = abort
-    runtime.opencode.delete_session = delete
-    runtime.db.put("session", submit.session_key, {"session_id": "s"})
-    runtime.db.put("message", "one", {"session_id": "s"})
-    runtime.db.put("message", "two", {"session_id": "other"})
-    runtime.db.put("child_session", "child", {"request_id": "r"})
-    runtime.emit("request.completed", "r", {"content": "audit"})
-    await runtime.session_operation({**payload, "operation": "quiesce"})
-    await runtime.session_operation({**payload, "operation": "delete", "session_ids": ["s", "child"]})
-    assert operations == [("abort", "s"), ("abort", "child"), ("delete", "s")]
-    assert runtime.db.get("session", submit.session_key) is None
-    assert runtime.db.get("message", "one") is None
-    assert runtime.db.get("message", "two")
-    assert runtime.db.get("child_session", "child") is None
-    assert runtime.db.get("run", "r")
-    assert runtime.db.pending("b")
 
 
 @pytest.mark.asyncio
@@ -175,7 +128,7 @@ def test_mount_policy_rejects_host_proc_and_other_user_roots(runtime):
 
 def test_bash_authorization_returns_scope_without_execution_ticket(runtime):
     submit = active(runtime)
-    response = plugin_scope(runtime, "s", "c", "bash", {"command": "echo hello", "timeout": 1234})
+    response = plugin_scope(runtime, "s", "c", "shell", {"command": "echo hello", "timeout": 1234})
     assert response["argv"][-3:] == ["--", "/bin/sh", "-c"]
     assert response["argv"][:3] == ["/usr/bin/flock", "--exclusive", "--close"]
     assert "--clearenv" in response["argv"]
@@ -185,21 +138,23 @@ def test_bash_authorization_returns_scope_without_execution_ticket(runtime):
     assert not runtime.db.records("ticket")
     assert not hasattr(runtime, "execute")
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "unknown", "c", "bash", {"command": "echo hi"})
+        plugin_scope(runtime, "unknown", "c", "shell", {"command": "echo hi"})
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "s", "c", "bash", {"command": "pwd", "workdir": "/etc"})
+        plugin_scope(runtime, "s", "c", "shell", {"command": "pwd", "workdir": "/etc"})
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "s", "c2", "read", {"filePath": "/etc/passwd"})
+        plugin_scope(runtime, "s", "c2", "read", {"path": "/etc/passwd"})
     for timeout in [-1, 0, "100", True]:
         with pytest.raises(ValueError):
-            plugin_scope(runtime, "s", "bad", "bash", {"command": "pwd", "timeout": timeout})
+            plugin_scope(runtime, "s", "bad", "shell", {"command": "pwd", "timeout": timeout})
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(__import__("sys").platform != "linux", reason="requires Linux shell and flock")
 async def test_authorized_native_shell_isolated_and_releases_lock_on_cancel(runtime, tmp_path):
     import os
     import shlex
     import signal
+
     from bucket_runtime.file_lock import publication_lock
 
     submit = active(runtime)
@@ -207,7 +162,7 @@ async def test_authorized_native_shell_isolated_and_releases_lock_on_cancel(runt
     outside.write_text("private")
     workspace = runtime.workspace(submit)
     command = f"test ! -e {shlex.quote(str(outside))} && touch started; sleep 30; touch survived"
-    auth = plugin_scope(runtime, "s", "native", "bash", {"command": command})
+    auth = plugin_scope(runtime, "s", "native", "shell", {"command": command})
     process = await asyncio.create_subprocess_exec("/bin/sh", "-c",
         "exec " + shlex.join([*auth["argv"], command]), start_new_session=True)
     try:
@@ -236,22 +191,22 @@ def test_bash_scope_respects_readonly_none_network_and_deadline(runtime):
     policy = runtime.permissions.defaults
     policy.filesystem.workspace = "read_only"
     policy.sandbox.network = False
-    authorization = plugin_scope(runtime, "s", "ro", "bash", {"command": "pwd", "timeout": 999999})
+    authorization = plugin_scope(runtime, "s", "ro", "shell", {"command": "pwd", "timeout": 999999})
     argv = authorization["argv"]
     assert "--bind" not in argv and "--share-net" not in argv
     assert argv[argv.index(workspace) - 1] == "--ro-bind"
     assert 0 < authorization["timeout_ms"] <= 60000
     policy.filesystem.workspace = "none"
-    argv = plugin_scope(runtime, "s", "none", "bash", {"command": "pwd"})["argv"]
+    argv = plugin_scope(runtime, "s", "none", "shell", {"command": "pwd"})["argv"]
     assert workspace not in argv
     assert argv[argv.index("--chdir") + 1] == "/"
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "s", "denied-cwd", "bash", {"command": "pwd", "workdir": workspace})
+        plugin_scope(runtime, "s", "denied-cwd", "shell", {"command": "pwd", "workdir": workspace})
     row = runtime.db.get("run", "r")
     row["submit"]["deadline_at"] = time.time() - 1
     runtime.db.put("run", "r", row)
     with pytest.raises(PermissionError, match="deadline"):
-        plugin_scope(runtime, "s", "expired", "bash", {"command": "pwd"})
+        plugin_scope(runtime, "s", "expired", "shell", {"command": "pwd"})
 
 
 @pytest.mark.asyncio
@@ -353,66 +308,44 @@ def test_permission_file_overrides_are_bound_to_frontend_and_user(runtime, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_opencode_process_preserves_server_features(runtime, monkeypatch):
+async def test_opencode_process_passes_watched_file_and_trusted_plugin(runtime, monkeypatch):
     import json
-
-    from bucket_runtime.opencode_server import OpenCodeServer
     oc = runtime.config.opencode
-    oc.binary.write_text("#!/bin/sh\nexit 0\n")
+    oc.binary.write_text("binary")
     oc.binary.chmod(0o555)
-    features = {"permission": {"*": "allow"}, "lsp": {}, "formatter": {},
-                "mcp": {"test": {"type": "local", "command": ["test"]}},
-                "snapshot": True, "autoupdate": True, "compaction": {"auto": True},
-                "plugin": ["custom-plugin"]}
-    oc.config_file.write_text(json.dumps(features))
-    oc.plugin_file.write_text("plugin")
-    oc.dependency_dir.mkdir()
-    for name in ["package.json", "package-lock.json"]:
-        (oc.dependency_dir / name).write_text("{}")
-    package = oc.dependency_dir / "node_modules/@opencode-ai/plugin/package.json"
-    package.parent.mkdir(parents=True)
-    package.write_text("{}")
-    modules = runtime.config.state_root / "opencode-home/config/opencode/node_modules"
-    modules.parent.mkdir(parents=True)
-    modules.symlink_to(oc.dependency_dir / "node_modules", target_is_directory=True)
+    oc.config_file.write_text(json.dumps({"model": "test/first", "plugins": ["custom-plugin"]}))
+    (oc.plugin_dir / "dist").mkdir(parents=True)
+    (oc.plugin_dir / "package.json").write_text("{}")
+    (oc.plugin_dir / "dist/index.mjs").write_text("plugin")
     captured = {}
-
     async def spawn(*args, **kwargs):
         captured.update(kwargs)
-
         class Process:
             returncode = None
-
-            def terminate(self):
-                self.returncode = 0
-
-            async def wait(self):
-                return self.returncode
-
+            def terminate(self): self.returncode = 0
+            async def wait(self): return self.returncode
         return Process()
-
-    async def healthy():
-        return True
-
+    async def healthy(): return True
     opencode = OpenCodeServer(runtime.config)
     monkeypatch.setattr("bucket_runtime.opencode_server.asyncio.create_subprocess_exec", spawn)
     monkeypatch.setattr(opencode, "health", healthy)
     try:
         await opencode._start_process()
         env = captured["env"]
-        raw = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        for key, value in features.items():
-            if key != "plugin":
-                assert raw[key] == value
-        assert raw["plugin"] == ["custom-plugin", oc.plugin_file.resolve().as_uri()]
-        assert not any("DISABLE" in key for key in env)
+        assert env["OPENCODE_CONFIG"] == str(oc.config_file.resolve())
+        assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == {"plugins": [oc.plugin_dir.resolve().as_uri()]}
+        assert env["OPENCODE_PASSWORD"] == opencode.password
+        assert not (runtime.config.state_root / "opencode-home/config/opencode/node_modules").exists()
+        assert json.loads(oc.config_file.read_text())["plugins"] == ["custom-plugin"]
     finally:
         await opencode.close()
 
 
 @pytest.mark.asyncio
-async def test_slash_cancel_running_task_calls_abort(runtime):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_slash_cancel_keeps_user_lock_until_cleanup_finishes(runtime, cleanup_fails):
     started = asyncio.Event()
+    stopping, settled, acquired = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def create_session(permissions, context, *, directory=None):
         assert context["user_id"] == "u"
@@ -423,25 +356,97 @@ async def test_slash_cancel_running_task_calls_abort(runtime):
         started.set()
         await asyncio.Event().wait()
 
+    async def abort(session_id, *, directory=None):
+        runtime.opencode.aborted.append(session_id)
+        native(runtime, session_id, "session.execution.interrupted", {"reason": "user"})
+        stopping.set()
+        await settled.wait()
+        if cleanup_fails:
+            raise TimeoutError("cleanup still running")
+
     runtime.opencode.create_session = create_session
     runtime.opencode.submit = submit_message
+    runtime.opencode.abort = abort
     submit = Submit(request_id="live", chat_id="chat", identity=Identity(frontend_id="web", user_id="u"),
                     content="hello", deadline_at=time.time() + 60)
     await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="live",
                                      payload=submit.model_dump(mode="json")))
     await asyncio.wait_for(started.wait(), 2)
     cancel = submit.model_copy(update={"request_id": "stop", "content": "/cancel"})
-    await runtime.on_command(Envelope(type="request.submit", bucket_id="b", request_id="stop",
-                                     payload=cancel.model_dump(mode="json")))
+    cancelling = asyncio.create_task(runtime.on_command(Envelope(type="request.submit", bucket_id="b",
+        request_id="stop", payload=cancel.model_dump(mode="json"))))
+
+    async def next_request():
+        async with runtime.request_locks[submit.identity.identity_id]:
+            acquired.set()
+
+    following = asyncio.create_task(next_request())
+    try:
+        await asyncio.wait_for(stopping.wait(), 2)
+        assert not acquired.is_set()
+        assert not cancelling.done()
+        assert runtime.db.get("run", "live")["status"] == "running"
+        assert not runtime.completions["live"].is_set()
+        settled.set()
+        await asyncio.wait_for(cancelling, 2)
+        await asyncio.wait_for(following, 2)
+    finally:
+        settled.set()
+        await asyncio.gather(cancelling, following, *runtime.tasks.values(), return_exceptions=True)
     assert runtime.opencode.aborted == ["live-session"]
-    assert runtime.db.get("run", "live")["status"] == "cancelled"
-    assert runtime.db.get("run", "stop")["status"] == "completed"
+    if cleanup_fails:
+        assert runtime.draining
+        assert runtime.db.get("run", "live")["result"]["error"] == "CANCEL_FAILED"
+        assert runtime.db.get("run", "stop")["result"]["error"] == "CANCEL_FAILED"
+    else:
+        assert runtime.db.get("run", "live")["status"] == "cancelled"
+        assert runtime.db.get("run", "stop")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_cancel_without_task_waits_despite_early_native_terminal(runtime, cleanup_fails):
+    active(runtime)
+    runtime.completions["r"] = asyncio.Event()
+    waiting, settled = asyncio.Event(), asyncio.Event()
+    client = OpenCodeServer(runtime.config)
+    await client.http.aclose()
+
+    async def handle(request):
+        if request.url.path == "/api/session/s/interrupt":
+            native(runtime, "s", "session.execution.interrupted", {"reason": "user"})
+            return httpx.Response(200, json={"interrupted": True})
+        assert request.url.path == "/api/experimental/session/s/wait"
+        waiting.set()
+        await settled.wait()
+        return httpx.Response(503 if cleanup_fails else 204)
+
+    async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
+        runtime.opencode.abort = client.abort
+        cancelling = asyncio.create_task(runtime.cancel_request("r"))
+        try:
+            await asyncio.wait_for(waiting.wait(), 2)
+            assert not cancelling.done()
+            assert runtime.db.get("run", "r")["status"] == "running"
+            assert not runtime.completions["r"].is_set()
+            assert not any(e.type == "runtime.result" for e in runtime.db.pending("gateway"))
+            settled.set()
+            if cleanup_fails:
+                with pytest.raises(RuntimeError, match="CANCEL_FAILED"):
+                    await asyncio.wait_for(cancelling, 2)
+                assert runtime.draining
+                assert runtime.db.get("run", "r")["result"]["error"] == "CANCEL_FAILED"
+            else:
+                await asyncio.wait_for(cancelling, 2)
+                assert runtime.db.get("run", "r")["status"] == "cancelled"
+        finally:
+            cancelling.cancel()
+            await asyncio.gather(cancelling, return_exceptions=True)
 
 
 
 def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_path):
     import fnmatch
-    import os
 
     from agent_backend.config import PermissionConfig
     public = tmp_path / "manuals"
@@ -456,10 +461,10 @@ def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_
     rules = runtime.session_permissions(alice)
 
     def allowed(name, path):
-        pattern = os.path.relpath(path, runtime.worktree(alice)).replace("\\", "/")
-        matching = [r for r in rules if fnmatch.fnmatchcase(name, r["permission"])
-                    and fnmatch.fnmatchcase(pattern, r["pattern"])]
-        return matching[-1]["action"] == "allow"
+        pattern = path.relative_to(workspace).as_posix() if path.is_relative_to(workspace) else path.as_posix()
+        matching = [r for r in rules if fnmatch.fnmatchcase(name, r["action"])
+                    and fnmatch.fnmatchcase(pattern, r["resource"])]
+        return matching[-1]["effect"] == "allow"
 
     assert allowed("read", workspace / "file.txt")
     assert allowed("edit", workspace / "file.txt")
@@ -467,18 +472,18 @@ def test_user_scope_compiles_session_paths_and_checks_native_tools(runtime, tmp_
     assert not allowed("edit", public / "SKILL.md")
     assert not allowed("read", bob_workspace / "file.txt")
     assert not allowed("read", tmp_path / "secret")
-    normalized = plugin_scope(runtime, "s", "read", "read", {"filePath": "file.txt"})
-    assert normalized["args"]["filePath"] == str(workspace / "file.txt")
-    for tool, args in [("read", {"filePath": str(bob_workspace / "file.txt")}),
-                       ("write", {"filePath": str(public / "SKILL.md")}),
+    normalized = plugin_scope(runtime, "s", "read", "read", {"path": "file.txt"})
+    assert normalized["args"]["path"] == str(workspace / "file.txt")
+    for tool, args in [("read", {"path": str(bob_workspace / "file.txt")}),
+                       ("write", {"path": str(public / "SKILL.md")}),
                        ("glob", {"path": str(tmp_path), "pattern": "*"}),
                        ("webfetch", {"url": "https://example.com"})]:
         with pytest.raises(PermissionError):
             plugin_scope(runtime, "s", tool, tool, args)
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "bob", "edit", "edit", {"filePath": str(bob_workspace / "file.txt")})
+        plugin_scope(runtime, "bob", "edit", "edit", {"path": str(bob_workspace / "file.txt")})
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "bob", "read", "read", {"filePath": str(public / "SKILL.md")})
+        plugin_scope(runtime, "bob", "read", "read", {"path": str(public / "SKILL.md")})
 
 
 def test_permission_scope_rejects_exposed_service_or_user_directories(runtime):
@@ -494,7 +499,7 @@ def test_user_scope_blocks_native_symlinks_and_patch_moves(runtime, tmp_path):
     alice = active(runtime)
     own = runtime.workspace(alice)
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "s", "patch", "apply_patch", {"patchText":
+        plugin_scope(runtime, "s", "patch", "patch", {"patchText":
             "*** Begin Patch\n*** Update File: a\n*** Move to: ../escape\n*** End Patch\n"})
     link = own / "link"
     try:
@@ -502,7 +507,7 @@ def test_user_scope_blocks_native_symlinks_and_patch_moves(runtime, tmp_path):
     except OSError:
         pytest.skip("symlink privileges unavailable")
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "s", "read", "read", {"filePath": str(link)})
+        plugin_scope(runtime, "s", "read", "read", {"path": str(link)})
 
 
 def test_individual_write_switch_enables_shared_edit_permission(runtime):
@@ -511,15 +516,16 @@ def test_individual_write_switch_enables_shared_edit_permission(runtime):
         "session": {"default_tools": False, "tools": {"write": True}}}})
     submit = active(runtime)
     rules = runtime.session_permissions(submit)
-    assert any(rule["permission"] == "edit" and rule["action"] == "allow" for rule in rules)
-    assert plugin_scope(runtime, "s", "write", "write", {"filePath": "new.txt"})["args"]["filePath"]
+    assert any(rule["action"] == "edit" and rule["effect"] == "allow" for rule in rules)
+    assert plugin_scope(runtime, "s", "write", "write", {"path": "new.txt"})["args"]["path"]
     with pytest.raises(PermissionError):
-        plugin_scope(runtime, "s", "edit", "edit", {"filePath": "new.txt"})
+        plugin_scope(runtime, "s", "edit", "edit", {"path": "new.txt"})
 
 
 @pytest.mark.asyncio
 async def test_publish_tool_uploads_through_gateway_without_control_peer(runtime, tmp_path, monkeypatch):
     import hashlib
+
     from agent_backend.models import Attachment
     submit = active(runtime)
     own = runtime.workspace(submit)
@@ -588,7 +594,7 @@ async def test_session_permission_lookup_and_publication_check_current_request(r
 
     async def session(session_id, *, directory=None):
         queried.append(session_id)
-        return {"directory": directory, "parentID": "s" if session_id == "child" else None}
+        return {"location": {"directory": str(directory)}, "parentID": "s" if session_id == "child" else None}
 
     runtime.opencode.session = session
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rpc_app(runtime, "key")),

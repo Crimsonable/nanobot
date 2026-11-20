@@ -82,7 +82,7 @@ async def test_publish_routes_through_gateway_and_delivers_native_attachment(sys
     else:
         assert attachment["file_key"] == "file-1" and attachment["url"] == ""
         gw.channels.parsers["web"].upload_outbound_attachment.assert_awaited_once()
-    answer(bu)
+    await answer(bu)
     await transfer(gw, cu, bu)
     record = gw.db.get("request", "r")
     await gw.channels.deliver(record, Result.model_validate(record["result"]))

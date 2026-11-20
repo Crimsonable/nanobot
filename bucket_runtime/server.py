@@ -30,7 +30,7 @@ def rpc_app(adapter: BucketRuntimeAdapter, token: str) -> FastAPI:
 
     @app.post("/plugin/ready")
     async def plugin_ready(request: Request):
-        if (await request.json()).get("version") != "9":
+        if (await request.json()).get("version") != "10":
             raise HTTPException(409, "plugin protocol mismatch")
         adapter.opencode.plugin_ready.set()
         return {"ok": True}
@@ -40,6 +40,15 @@ def rpc_app(adapter: BucketRuntimeAdapter, token: str) -> FastAPI:
         try:
             body = await request.json()
             return await adapter.tool_permissions(body["session_id"], body["directory"])
+        except (PermissionError, ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(403, str(exc)) from exc
+
+    @app.post("/session/idle")
+    async def session_idle(request: Request):
+        try:
+            body = await request.json()
+            await adapter.session_idle(body["session_id"], body["directory"], body["background"])
+            return {"ok": True}
         except (PermissionError, ValueError, KeyError, TypeError) as exc:
             raise HTTPException(403, str(exc)) from exc
 

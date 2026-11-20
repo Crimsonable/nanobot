@@ -1,7 +1,6 @@
 """Compile a user's directory scope for OpenCode session creation."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from agent_backend.common import frontend_app_root, scoped_public_path
@@ -16,8 +15,7 @@ def public_roots(config: RuntimeConfig, policy: UserPolicy) -> list[Path]:
     # Policy overrides select additional public directories, never remove app.
     roots = [*roots, frontend_app_root(config.common_root, config.frontend_id)]
     protected = [config.workspace_root, config.state_root,
-                 config.opencode.context_root, config.opencode.plugin_file,
-                 config.opencode.dependency_dir]
+                 config.opencode.context_root, config.opencode.plugin_dir]
     private = [config.opencode.config_file, config.permissions_file, config.logging_file, config.frontend_config_file]
     result = []
     for root in roots:
@@ -35,46 +33,42 @@ def public_roots(config: RuntimeConfig, policy: UserPolicy) -> list[Path]:
     return result
 
 
-def session_rules(policy: UserPolicy, workspace: Path, public: list[Path], worktree: Path,
+def session_rules(policy: UserPolicy, workspace: Path, public: list[Path],
                   private_files: list[Path] = ()) -> list[dict]:
-    if not policy.session.enabled:
-        return []
+    """V2 resources are location-relative internally and absolute outside it."""
     rules = []
 
-    def rule(permission: str, pattern: str, allowed: bool):
-        rules.append({"permission": permission, "pattern": pattern, "action": "allow" if allowed else "deny"})
+    def rule(action, resource, allowed):
+        rules.append({"action": action, "resource": resource, "effect": "allow" if allowed else "deny"})
 
     rule("*", "*", policy.session.default_tools)
     for name, enabled in policy.session.tools.items():
         rule(name, "*", enabled)
-    readable = [*public, *([workspace] if policy.filesystem.workspace != "none" else [])]
+    readable = [*([workspace] if policy.filesystem.workspace != "none" else []), *public]
     writable = [workspace] if policy.filesystem.workspace == "read_write" else []
-    # read/edit ask with paths relative to the actual OpenCode worktree. External
-    # directory permission asks with absolute directory globs, independently.
     for name, roots in [("read", readable), ("edit", writable), ("external_directory", readable)]:
         rule(name, "*", False)
         enabled = policy.session.tools.get(name, policy.session.default_tools)
         if name == "edit":
             enabled = any(policy.session.tools.get(tool, policy.session.default_tools)
-                          for tool in ["edit", "write", "apply_patch", "multiedit"])
+                          for tool in ["edit", "write", "patch"])
         if name == "external_directory":
             enabled = policy.session.tools.get(name, True)
         if not enabled:
             continue
-        # The workspace may itself be the Git worktree. Its relative children
-        # have no './' prefix; deny parent traversal before adding public roots.
-        for root in sorted(roots, key=lambda root: root != worktree):
-            pattern = (str(root) if name == "external_directory" else os.path.relpath(root, worktree)).replace("\\", "/")
-            rule(name, pattern, True)
-            if pattern == "." and name != "external_directory":
+        for root in roots:
+            if root == workspace and name != "external_directory":
                 rule(name, "*", True)
-                rule(name, "..", False)
-                rule(name, "../*", False)
-                rule(name, "/*", False)
-                continue
-            rule(name, pattern.rstrip("/") + "/*", True)
-    for path in private_files:
-        pattern = os.path.relpath(path, worktree).replace("\\", "/")
-        rule("read", pattern, False)
-        rule("edit", pattern, False)
+                for resource in ("..", "../*", "/*", "*:*", "opencode://*"):
+                    rule(name, resource, False)
+            else:
+                rule(name, root.as_posix(), True)
+                rule(name, root.as_posix().rstrip("/") + "/*", True)
+        # V2 hides a tool only when its last matching action rule denies "*".
+        # A wholly disabled action needs no narrower private-file exceptions.
+        if name in {"read", "edit"} and roots:
+            for path in private_files:
+                rule(name, path.resolve().as_posix(), False)
+    if policy.session.tools.get("read", policy.session.default_tools):
+        rule("read", "skill://*", True)
     return rules

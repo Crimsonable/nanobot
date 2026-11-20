@@ -1,4 +1,3 @@
-from tests.backend.support import plugin_scope, publication
 import shutil
 import sys
 import time
@@ -13,6 +12,7 @@ from agent_backend.workspaces import workspace_path
 from bucket_runtime.adapter import BucketRuntimeAdapter
 from bucket_runtime.sandbox_executor import SandboxExecutor
 from container_up.bucket_manager import BucketManager
+from tests.backend.support import plugin_scope, publication
 
 
 @pytest.fixture
@@ -44,16 +44,15 @@ def test_workspace_scope_is_frontend_and_user(workspaces):
     for runtime, submit, workspace in workspaces:
         own_file = workspace / "report.txt"
         for tool in ["read", "write"]:
-            result = plugin_scope(runtime, submit.identity.identity_id, tool, tool, {"filePath": str(own_file)})
-            assert result["args"]["filePath"] == str(own_file)
+            result = plugin_scope(runtime, submit.identity.identity_id, tool, tool, {"path": str(own_file)})
+            assert result["args"]["path"] == str(own_file)
         for _, other, other_workspace in workspaces:
             if other.identity == submit.identity:
                 continue
             for tool, args in [
-                ("read", {"filePath": str(other_workspace / "report.txt")}),
-                ("write", {"filePath": str(other_workspace / "report.txt")}),
+                ("read", {"path": str(other_workspace / "report.txt")}),
+                ("write", {"path": str(other_workspace / "report.txt")}),
                 ("grep", {"path": str(other_workspace), "pattern": "report"}),
-                ("list", {"path": str(workspace.parent)}),
             ]:
                 with pytest.raises(PermissionError):
                     plugin_scope(runtime, submit.identity.identity_id, "other", tool, args)

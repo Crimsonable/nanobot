@@ -13,6 +13,7 @@ from test_gateway import system as system
 from agent_backend.journal import Journal
 from agent_backend.models import Envelope, Result, Submit, digest
 from channel_gateway.event_stream import RequestStreams
+from channel_gateway.legacy_events import translate
 
 
 def frames(text):
@@ -31,7 +32,7 @@ def frames(text):
 def event(request_id="r", event_id="native", native=None):
     return Envelope(type="opencode.event", bucket_id="b", request_id=request_id, event_id=event_id,
         payload={"frontend_id": "web", "user_id": "alice", "chat_id": "chat",
-                 "session_id": "s", "event": native or {"type": "future.event", "properties": {"x": 1}}})
+                 "session_id": "s", "event": native or {"id":event_id,"type":"session.execution.started","data":{"sessionID":"s"}}})
 
 
 def result(request_id="r", status="completed"):
@@ -40,17 +41,17 @@ def result(request_id="r", status="completed"):
 
 
 @pytest.mark.asyncio
-async def test_http_stream_replays_exact_native_json_and_existing_final_response(system):
+async def test_http_stream_replays_legacy_projection_and_existing_final_response(system):
     app, cu, bu = system
     gw = app.state.service
     row = await accept(system, sync=True, stream=True)
     assert cu.db.get("request", "r")["submit"]["stream"] is True
     assert bu.db.get("run", "r")["submit"]["stream"] is True
-    native = {"id": "original-id", "type": "future.event", "extra": [1, {"hello": "中文\n换行"}]}
+    native = {"id":"original-id","type":"session.reasoning.ended","data":{"sessionID":"s","assistantMessageID":"a","ordinal":0,"text":"中文\n换行"}}
     raw = event(native=native)
     await gw.on_event("b", raw, "web")
     await gw.on_event("b", raw, "web")
-    answer(bu)
+    await answer(bu)
     await transfer(gw, cu, bu)
     terminal = result()
     await gw.on_event("b", terminal, "web")  # A replay cannot change the saved terminal.
@@ -63,7 +64,7 @@ async def test_http_stream_replays_exact_native_json_and_existing_final_response
         events = frames(response.text)
         assert events[0] == {"id": 1, "event": "gateway.start", "data": {
             "version": 1, "request_id": "r", "frontend_id": "web", "user_id": "alice", "chat_id": "chat"}}
-        assert events[1] == {"id": 2, "event": "opencode.event", "data": native}
+        assert events[1] == {"id": 2, "event": "opencode.event", "data": translate(native,{})[0]}
         assert [e["id"] for e in events] == list(range(1, len(events) + 1))
         assert [e["event"] for e in events].count("gateway.result") == 1
         final = (await client.get("/requests/web/r")).json()
@@ -86,35 +87,24 @@ async def test_http_stream_replays_exact_native_json_and_existing_final_response
 
 
 @pytest.mark.asyncio
-async def test_stream_policy_forwards_reasoning_unknown_parts_and_children_only_for_owner(system):
+async def test_stream_routes_native_children_and_filters_events_without_legacy_equivalent(system):
+    from support import native
     app, _, bu = system
     gw = app.state.service
     await accept(system, sync=True, stream=True)
-    run = bu.db.get("run", "r")
-    natives = [
-        {"type": "message.part.updated", "properties": {"part": {"id": "p", "sessionID": "s",
-            "messageID": "answer", "type": "reasoning", "text": "思考"}}},
-        {"type": "message.part.delta", "properties": {"sessionID": "s", "messageID": "answer",
-            "partID": "p", "field": "text", "delta": "继续"}},
-        {"type": "message.part.updated", "properties": {"part": {"id": "t", "sessionID": "s",
-            "messageID": "answer", "type": "tool", "callID": "call", "tool": "bash",
-            "state": {"status": "completed", "input": {"command": "echo test"}, "output": "test"}}}},
-        {"type": "session.created", "properties": {"info": {"id": "child", "parentID": "s"}}},
-        {"type": "message.part.updated", "properties": {"part": {"id": "c", "sessionID": "child",
-            "messageID": "child-answer", "type": "future-part", "opaque": [1, 2]}}},
-        {"type": "future.event", "properties": {"sessionID": "s", "payload": {"unknown": True}}},
-        {"type": "message.part.removed", "properties": {"sessionID": "s", "messageID": "answer", "partID": "p"}},
-    ]
-    for i, native in enumerate(natives + [{"type": "future.event", "properties": {"sessionID": "foreign"}}]):
-        bu.native_event({"type": "opencode.event", "event_id": str(i), "directory": run["directory"], "event": native})
-        while bu.process_next_event():
-            pass
+    native(bu,"s","session.reasoning.ended",{"assistantMessageID":"answer","ordinal":0,"text":"思考"})
+    native(bu,"child","session.created",{"parentID":"s","projectID":"p","slug":"child","version":"2.3.2",
+        "location":{"directory":bu.db.get("run","r")["directory"]},"metadata":{}})
+    native(bu,"child","session.text.ended",{"assistantMessageID":"child-answer","ordinal":0,"text":"child"})
+    native(bu,"s","future.event",{"opaque":[1,2]})
+    native(bu,"foreign","future.event")
     outgoing = bu.db.pending("gateway")
-    assert [e.payload["event"] for e in outgoing] == natives
+    assert len(outgoing) == 4
     for envelope in outgoing:
-        await gw.on_event("b", envelope, "web")
-    assert gw.streams.last_seq("r") == len(natives) + 1
-    assert bu.db.get("run", "r")["status"] == "running"
+        await gw.on_event("b",envelope,"web")
+    assert gw.streams.last_seq("r") == 4
+    assert len(gw.db.records("opencode_event")) == 4
+    assert bu.db.get("run","r")["status"] == "running"
 
 
 @pytest.mark.asyncio
@@ -122,7 +112,7 @@ async def test_stream_restart_chunk_reassembly_and_transactional_dedup(system):
     app, _, bu = system
     gw = app.state.service
     row = await accept(system, sync=True, stream=True)
-    raw = event(native={"type": "future.large", "properties": {"text": '工具输出："\\\n' * 100000}})
+    raw = event(native={"id":"large","type":"session.text.ended","data":{"sessionID":"s","assistantMessageID":"answer","ordinal":0,"text":"工具输出" * 100000}})
     bu.gateway_emit(raw)
     chunks = bu.db.pending("gateway")
     assert len(chunks) > 1 and all(e.type == "opencode.event.chunk" for e in chunks)
@@ -148,7 +138,7 @@ async def test_stream_restart_chunk_reassembly_and_transactional_dedup(system):
         response = await client.post("/inbound-sync/web", json=row["input"], headers={"Last-Event-ID": "1"})
     events = frames(response.text)
     assert [e["id"] for e in events] == [2, 3, 4]
-    assert events[0]["data"] == raw.payload["event"]
+    assert events[0]["data"] == translate(raw.payload["event"],{})[0]
     assert events[-1]["event"] == "gateway.result"
 
 

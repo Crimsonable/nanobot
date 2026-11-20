@@ -1,6 +1,6 @@
 # Reuse the existing runtime/toolchain image; pin the older Debian bwrap package.
 # Prepare with: bash scripts/vendor_bubblewrap.sh
-ARG RUNTIME_IMAGE=agent-bucket-runtime:opencode-1.18.31
+ARG RUNTIME_IMAGE=agent-bucket-runtime:opencode-2.3.2
 FROM ${RUNTIME_IMAGE}
 USER 0:0
 COPY vendor/bubblewrap_0.11.0-2+deb13u1_amd64.deb /tmp/bubblewrap.deb

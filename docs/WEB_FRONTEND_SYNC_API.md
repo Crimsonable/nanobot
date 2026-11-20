@@ -324,7 +324,7 @@ X-Accel-Buffering: no
 | `event` | `data` | 行为 |
 | --- | --- | --- |
 | `gateway.start` | `version: 1`、`request_id`、`frontend_id`、`user_id`、`chat_id` | 本请求事件日志的第一条；不表示模型已开始执行 |
-| `opencode.event` | 原生 OpenCode 事件对象，包含原始 `type`、`properties` 及其他字段 | 原样保留 JSON 内容，不转换成 AI SDK 消息格式，也不额外套业务包装 |
+| `opencode.event` | OpenCode 1.x 协议事件对象，包含 `id`、`type`、`properties` | Gateway 将后端 2.x 事件转换成旧协议，不额外套业务包装 |
 | `gateway.result` | 第 1 节定义的完整同步响应对象 | 最后一条持久化事件，`status` 为 `completed/failed/cancelled`，发送后关闭流 |
 | `gateway.error` | `request_id`、`code`、`message` | 本次订阅失败，发送后关闭流；没有 `id`，不进入持久化事件序列，不代表执行已终止 |
 
@@ -353,11 +353,11 @@ data: {"request_id":"web-stream-001","status":"completed","content":"分析完�
 
 ### 7.2 原生事件范围
 
-BU 对流式请求绕过 `event_forwarding` 的事件类型、part 类型和子会话过滤，转发当前归属逻辑能够关联到本请求的所有原生事件，包括 reasoning、工具、文件、消息删除、未知类型及子会话事件。请求身份及工作目录校验仍然执行，不广播其他用户或其他请求的事件；无法关联的事件不猜测归属。普通请求继续使用原过滤规则。
+BU 对流式请求绕过 `event_forwarding` 的事件类型和子会话过滤，向 Gateway 转发能够关联到本请求的所有 2.x 原生事件。Gateway 保存原生审计，通过独立适配器输出有 1.x 对应语义的文本、推理、工具、步骤、会话状态、权限和问题事件；没有对应旧语义的类型仅存审计。请求身份及工作目录校验仍然执行，不广播其他用户或其他请求的事件；无法关联的事件不猜测归属。普通请求使用配置的过滤规则。
 
 流以 BU 有序发送的 `runtime.result` 为终态边界：Gateway 先发送已经持久化的前序原生事件，再发送整理后的 `gateway.result`。终态之后迟到的原生事件不会追加到已结束的 SSE 日志。不能把一条消息完成、工具完成或子会话 idle 当成整个请求完成。
 
-这里的“原样”指 JSON 内容不改写，不保证原始 SSE 字节、JSON 空格和字段顺序不变。OpenCode 全局心跳不转发；Gateway 空闲时约每 15 秒发送 `: ping` 注释保活，注释没有序号，前端忽略即可。
+适配器持久化文本和工具状态，生成稳定的 part ID；原生事件去重、投影更新和 SSE 序号在同一事务提交，重放不会重复追加 delta。OpenCode 全局心跳不转发；Gateway 空闲时约每 15 秒发送 `: ping` 注释保活，注释没有序号，前端忽略即可。
 
 BU → Gateway 仍使用可靠 WebSocket。大事件在 Gateway 完整重组后才输出一个 SSE 事件。Gateway 已接收的事件可以重放；OpenCode → BU 的 SSE 断线仍可能丢事件，新增出口不补齐该段缺失。
 
@@ -389,6 +389,6 @@ SSE 开始前的错误仍使用第 6 节的 HTTP 错误。开始发送后不能�
 
 等待上限按每次 HTTP 订阅计算，重连不重置 BU 的执行截止时间。客户端断开只移除订阅，不自动取消任务；停止执行仍调用第 3 节的取消接口。反向代理应关闭响应缓冲，并允许长连接；读取超时应覆盖心跳间隔。
 
-此协议不是 `useChatRuntime` 默认接受的 UI Message Stream，assistant-ui 前端需要原生事件适配层。Gateway 不维护用于 UI 转换的 text/reasoning/tool 状态机。
+此协议不是 `useChatRuntime` 默认接受的 UI Message Stream，assistant-ui 前端仍需要将 1.x 事件适配为 UI 消息。Gateway 的状态投影仅负责 2.x → 1.x 协议转换。
 
 上线时同步更新 Gateway、CU 和 BU，确保 `stream` 标记能通过内部提交协议传到 BU；旧 BU 不支持该字段。

@@ -24,22 +24,19 @@ class SessionLogger:
 
     def format(self, event, owner):
         cfg = self.settings
-        if not cfg.enabled or event.event.get("type") != "message.part.updated":
+        if not cfg.enabled:
             return None
         native = event.event
-        props = native.get("properties", {})
-        part = props.get("part") or {}
-        part_type = part.get("type")
-        if ((part_type == "text" and not cfg.text) or
-                (part_type == "reasoning" and not cfg.reasoning) or
-                (part_type == "tool" and not cfg.tools)):
-            return None
+        kind, data = native["type"], native["data"]
         content = ""
-        if part_type in {"text", "reasoning"}:
-            content = part.get("text", "")
-        elif part_type == "tool" and cfg.tool_output:
-            state = part.get("state", {})
-            content = {k: state[k] for k in ("output", "error") if k in state} or ""
+        if kind == "session.text.ended" and cfg.text:
+            content = data["text"]
+        elif kind == "session.reasoning.ended" and cfg.reasoning:
+            content = data["text"]
+        elif kind == "session.tool.called" and cfg.tools and cfg.tool_arguments:
+            content = data["input"]
+        elif kind in {"session.tool.success", "session.tool.failed"} and cfg.tools and cfg.tool_output:
+            content = data.get("content") or data.get("error", "")
         if content == "":
             return None
         content = redact(content)

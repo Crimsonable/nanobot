@@ -19,6 +19,7 @@ from agent_backend.wire import Peer
 from channel_gateway.artifact_service import ArtifactService
 from channel_gateway.channel_service import ChannelService
 from channel_gateway.event_stream import RequestStreams
+from channel_gateway.legacy_events import translate
 from channel_gateway.native_reply import resolve_reply
 
 log = logging.getLogger(__name__)
@@ -199,7 +200,12 @@ class GatewayService:
                 if not self.db.get("opencode_event", key):
                     self.db.put("opencode_event", key, event.model_dump(mode="json"))
                     if row["input"].get("stream") and not row.get("result"):
-                        self.streams.append(event.request_id, "opencode.event", payload["event"])
+                        projection_key = digest([event.request_id, payload.get("session_id")])
+                        state = self.db.get("legacy_event_state", projection_key) or {}
+                        state["directory"] = payload.get("directory", "")
+                        for legacy in translate(payload["event"], state):
+                            self.streams.append(event.request_id, "opencode.event", legacy)
+                        self.db.put("legacy_event_state", projection_key, state)
             elif event.type == "runtime.result":
                 payload = dict(event.payload)
                 source = payload.pop("native_reply", None)

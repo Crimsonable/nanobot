@@ -10,7 +10,7 @@ Web 同步接口支持可选 `stream: true`，在同一个 POST 响应中发送�
 
 - `channel_gateway`：对外 `/inbound/{frontend_id}`、`/inbound-sync/{frontend_id}`、`/requests/{frontend_id}/{request_id}`、取消与订阅路由。入站 metadata 写入可信 provider/frontend_id；Web 的 `frontend_id/user_id/chat_id/content/attachments/metadata` 不变。统一附件上传接口按注册渠道处理，Web 上传 MinIO，QXT/飞书上传渠道媒体；出站使用返回的 URL 或媒体引用，QXT 文件消息沿用 k8s merge 的 media_id 协议。
 - `container_up`：内部 `/internal/submit/{frontend_id}`、`/internal/requests/{frontend_id}/{request_id}` 及取消、bucket 登记查询；BU 控制连接仍为 `/internal/buckets/ws`。CU 不接收原生内容事件，也不拼装最终回复。
-- `bucket_runtime`：原生 SSE 接收、身份关联、过滤、权限与执行。`session.status` 的 busy/retry→idle 驱动当前根会话结束；消息完成快照不结束请求，子会话 idle 不结束父请求。错误和取消分类独立记录。
+- `bucket_runtime`：原生 2.x SSE 接收、身份关联、过滤、权限与执行。根会话 `session.execution.succeeded/failed/interrupted` 驱动终态；步骤完成、子会话终态及仍有后台任务的前台成功不会结束请求。错误和取消分类独立记录。
 
 Gateway 直接接收 BU `/internal/events/ws` 连接，使用 `agent-gateway/1`；CU 通道使用 `agent-bucket/1`。两条连接各自 ACK、重放和去重，使用独立 outbox peer。BU 的原生事件保持原始 payload，增加 frontend/user/chat/request 关联。Gateway 验证 bucket 登记和请求归属；两条内部链路沿用原部署的可信内部网络边界，不增加外部 API key。
 
@@ -20,11 +20,11 @@ CU 终态只接受 `request_id/status/error`，拒绝正文、附件、用量等
 
 Gateway 的监听地址、端口、状态目录及内部通信地址使用代码默认值，不属于 frontend 配置。Gateway 默认监听 `0.0.0.0:8000`，状态目录为 `/data/gateway`，通过 `http://127.0.0.1:8001` 调用同 Pod 的 CU；CU 默认监听 8001，BU 默认连接 `ws://channel-gateway:8000/internal/events/ws`。`frontends.json` 不需要 `gateway` 配置块或 CU 端口配置。
 
-各 frontend 的 `event_forwarding` 配置 `include_types`、`include_part_types`、`include_child_sessions`。默认传消息/part 更新、delta、删除、会话状态及错误；part 默认 text/file/tool，不外发 reasoning 和子会话。未知事件默认不外发。按 part 类型过滤 delta 依赖 BU 持久化的 part 类型映射，不能只按事件名放行。每个请求在接受时保存过滤配置快照。
+各 frontend 的 `event_forwarding` 选择原生 2.x `include_types` 和 `include_child_sessions`。默认转发正文、步骤、工具及执行终态，不转发推理和子会话。同步流请求转发所有可归属的原生事件至 Gateway；Gateway 保存原生审计，再由 `legacy_events.py` 生成 1.x 协议事件。未知或没有旧协议对应语义的类型仅存审计。最终回复依赖的 inbox/step/text/execution 类型不能从配置中移除。
 
 流式 Web 同步请求例外：`stream` 随提交经 CU 传到 BU，BU 绕过上述内容过滤，转发可归属本请求的原生事件，包括 reasoning、未知类型和子会话；身份关联及工作目录校验保持不变，全局心跳和无法关联的事件不外发。Gateway 保留原生 JSON，不转换 AI SDK 协议；有序终态后的迟到事件不进入已结束的 SSE 日志。
 
-现有渠道最终回复依赖 text、message/part 快照、status 和 error，因此配置校验禁止删掉这些依赖。过滤仅作用于对外事件，不影响控制状态。日志配置不决定外发过滤。BU 将文件快照发到 Gateway 统一上传接口，保存返回值并随最终 attachments 发回 Gateway；CU 只透传请求 metadata 和管理执行状态，不承担渠道职责。详见 [附件链路](ATTACHMENT_UPLOAD_API.md)。
+渠道最终回复依赖原生 inbox、step、text.ended 和 execution 事件，因此配置校验禁止删掉这些依赖。过滤仅作用于外发事件，不影响控制状态。日志配置不决定外发过滤。BU 将文件快照发到 Gateway 统一上传接口，保存返回值并随最终 attachments 发回 Gateway；CU 只透传请求 metadata 和管理执行状态，不承担渠道职责。详见 [附件链路](ATTACHMENT_UPLOAD_API.md)。
 
 ## 可靠性与回收
 
@@ -57,3 +57,22 @@ python -m channel_gateway.migrate \
 ```
 
 迁移只读旧数据库，保留 request_id、正文、附件、metadata 和发送状态；sending 转为 unknown，sent/skipped 不再发送。命令可重复运行，不覆盖已导入请求；未完成请求或 CU 未确认命令会阻止迁移。迁移后部署新 CU、Gateway 和更新后的 BU，再恢复入站。CU 的 bucket 和 session 记录继续使用原数据库。
+
+## OpenCode 2.x 与旧事件接口
+
+BU、日志、历史和最终回复归约统一使用 2.3.2 原生事件 `{id,type,created,data,location?,durable?}`。仅 Web 同步 SSE 的 `opencode.event` 数据体保持 `{id,type,properties}`。
+
+| 原生 2.x 事件 | 同步接口的 1.x 输出 |
+| --- | --- |
+| inbox 入站 + step.started | user/assistant `message.updated`、step-start part |
+| text/reasoning started、delta、ended | `message.part.updated` / `message.part.delta` |
+| tool input/called/progress/success/failed | pending/running/completed/error tool part |
+| step.ended/failed | step-finish part、完成的 assistant message |
+| execution.started、retry.scheduled | busy/retry `session.status` |
+| execution.succeeded/failed/interrupted | idle `session.status`、`session.idle`，必要时 `session.error` |
+| session 生命周期、permission、compaction | 对应的 session/permission 旧事件 |
+| question 类型的 form.created/replied/cancelled | question.asked/replied/rejected |
+
+投影状态按请求和会话隔离并持久化。SSE 序号、原生事件去重与投影更新使用同一事务；重放不会重复追加文本。用户消息需要的 agent/model 从首次 step.started 取得后再按顺序外发。合成 part ID 稳定，原生 ID 和完整正文仍在 Gateway 审计记录中。
+
+工具名 shell/patch/subagent 在旧事件边界映射为 bash/apply_patch/task；read/write/edit 的 path 同时映射为 filePath。后端和插件只使用 2.x 名称。最终 `gateway.result` 字段保持不变，正文来自原生完整 text.ended，token 用量由本请求的原生步骤累计。

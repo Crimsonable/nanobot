@@ -44,20 +44,22 @@ export function applyPermissions(scope: any, tool: string, input: any) {
   for (const root of [workspace, ...publicRoots]) target(root, [root], workspace, [])
   const readable = [...publicRoots, ...(access === "none" ? [] : [workspace])]
   const writable = access === "read_write" ? [workspace] : []
+  if (tool.startsWith("opencode_")) throw new Error("Server control is not available to managed sessions")
   const args = structuredClone(input)
   const file = (value: string, write = false, search = false) =>
     target(value, write ? writable : readable, workspace, privateFiles, search)
-  if (["read", "edit", "write", "lsp", "multiedit"].includes(tool)) {
-    args.filePath = file(args.filePath, ["edit", "write", "multiedit"].includes(tool), tool === "lsp")
-  } else if (["glob", "grep", "list"].includes(tool)) {
+  if (["read", "edit", "write"].includes(tool)) {
+    if (!(tool === "read" && typeof args.path === "string" && args.path.startsWith("skill://")))
+      args.path = file(args.path, ["edit", "write"].includes(tool), tool === "read")
+  } else if (["glob", "grep"].includes(tool)) {
     args.path = file(args.path ?? workspace, false, tool === "grep")
     if (tool === "glob" && (typeof args.pattern !== "string" || path.isAbsolute(args.pattern) ||
         args.pattern.split(/[\\/]/).includes(".."))) throw new Error("Glob escapes its search directory")
-  } else if (tool === "apply_patch") {
+  } else if (tool === "patch") {
     if (typeof args.patchText !== "string") throw new Error("Invalid patch")
     args.patchText = args.patchText.replace(/^(\*\*\* (?:Add File|Update File|Delete File|Move to): )([^\r\n]+)/gm,
       (_: string, prefix: string, name: string) => prefix + file(name, true))
-  } else if (tool === "bash") {
+  } else if (tool === "shell") {
     if (typeof args.command !== "string" || args.command.length > 100000 || args.command.includes("\0"))
       throw new Error("Invalid shell command")
     const timeout = args.timeout ?? 120000
@@ -90,4 +92,21 @@ export function applyPermissions(scope: any, tool: string, input: any) {
     return {argv, host_workdir: workspace, timeout_ms: Math.max(1, Math.ceil(Math.min(timeout, remaining)))}
   }
   return {args}
+}
+
+// Project configuration discovery is disabled on the shared server. Read only
+// this location's rules, checking the same link boundaries as workspace tools.
+// Reading on each model request makes edits effective without a watcher/reset.
+export function workspaceInstructions(workspace: string): string | undefined {
+  const file = target("AGENTS.md", [workspace], workspace, [])
+  if (!stat(file)) return
+  if (!fs.statSync(file).isFile()) throw new Error("Workspace instructions must be a regular file")
+  return `Instructions from: ${file}\n${fs.readFileSync(file, "utf8")}`
+}
+
+// Apply on every native skill catalogue refresh, including config hot reloads.
+export function visibleSkill(source: string, directory: string, publicRoot: string): boolean {
+  if (source.startsWith("skill://")) return true
+  try { target(source, [directory, publicRoot], directory, []); return true }
+  catch { return false }
 }

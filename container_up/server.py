@@ -13,10 +13,11 @@ from agent_backend.config import ControlConfig
 from agent_backend.ingress import Inbound
 from agent_backend.journal import Journal
 from agent_backend.models import Envelope, Identity, Submit, digest, uid
+from agent_backend.session_history import SessionBusy
 from agent_backend.sockets import StarletteSocket
 from agent_backend.wire import Peer
 from container_up.bucket_manager import BucketMissing
-from container_up.bucket_scheduler import BucketBusy, BucketScheduler
+from container_up.bucket_scheduler import BucketScheduler
 from container_up.session_manager import SessionManager, SourceCall
 
 log = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ class ControlService:
         self.pending: set[asyncio.Task] = set()
 
     def _shield(self, work):
-        """Finish accepted submissions and resets even if the HTTP caller disconnects."""
+        """Finish accepted submissions even if the HTTP caller disconnects."""
         task = asyncio.create_task(work)
         self.pending.add(task)
 
@@ -44,35 +45,11 @@ class ControlService:
         task.add_done_callback(finished)
         return asyncio.shield(task)
 
-    async def reset_frontend_opencode(self, frontend_id: str) -> dict:
-        self.require_frontend(frontend_id)
-        targets, skipped = self.pool.reset_targets(frontend_id)
-
-        async def reset(bucket_id):
-            try:
-                await self.pool.reset(bucket_id, sessions_idle=self.sessions.can_reset(bucket_id))
-                return {"bucket_id": bucket_id, "status": "ready"}
-            except KeyError:
-                code, detail = 404, "bucket not registered"
-            except BucketBusy as exc:
-                code, detail = 409, str(exc)
-            except ConnectionError as exc:
-                code, detail = 503, str(exc)
-            except RuntimeError as exc:
-                code, detail = 502, str(exc)
-            return {"bucket_id": bucket_id, "status": "failed", "status_code": code, "detail": detail}
-
-        results = await asyncio.gather(*(self._shield(reset(bucket_id)) for bucket_id in targets))
-        status = "ready" if targets else "no_running_buckets"
-        if any(result["status"] == "failed" for result in results):
-            status = "partial_failure"
-        return {"frontend_id": frontend_id, "status": status, "buckets": results,
-                "skipped_buckets": skipped}
 
     @contextmanager
     def open_session_source(self, bucket_id: str) -> Iterator[SourceCall]:
         with self.pool.hold(bucket_id):
-            yield partial(self.pool.call_if_running, bucket_id)
+            yield partial(self.pool.call_session, bucket_id)
 
     def interrupt_bucket_requests(self, bucket_id: str) -> None:
         with self.db.transaction():
@@ -106,9 +83,10 @@ class ControlService:
                             content=inbound.content, attachments=inbound.attachment_references(),
                             metadata=inbound.metadata, stream=inbound.stream,
                             deadline_at=time.time() + self.config.limits.request_seconds)
+            preferred_bucket = None
             while True:
                 try:
-                    async with self.pool.assignment(identity) as binding:
+                    async with self.pool.assignment(identity, preferred_bucket) as binding:
                         # Another identity may have claimed the ID during bucket startup.
                         if existing := self._existing_request(request_id, fingerprint):
                             return existing
@@ -119,6 +97,11 @@ class ControlService:
                         return self._enqueue(submit, binding, fingerprint)
                 except BucketMissing:
                     continue
+                except SessionBusy as exc:
+                    active = self.db.get("binding", identity.identity_id)
+                    if active and active["bucket_id"] != exc.bucket_id:
+                        raise HTTPException(409, "session has pending work in another bucket") from exc
+                    preferred_bucket = exc.bucket_id
 
     def _enqueue(self, submit: Submit, binding: dict, fingerprint: str) -> dict:
         request_id = submit.request_id
@@ -233,10 +216,5 @@ def create_app(config: ControlConfig) -> FastAPI:
             raise HTTPException(404, "bucket not registered")
         return row
 
-    @app.post("/internal/frontends/{frontend_id}/opencode/reset")
-    async def reset_opencode(frontend_id: str):
-        from fastapi.responses import JSONResponse
-        result = await service.reset_frontend_opencode(frontend_id)
-        return JSONResponse(result, status_code=207 if result["status"] == "partial_failure" else 200)
 
     return app

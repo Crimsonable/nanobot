@@ -6,7 +6,6 @@ from pydantic import ValidationError
 from agent_backend.journal import Journal
 from agent_backend.models import Attachment, Envelope, Identity
 from agent_backend.wire import Peer
-from channel_gateway.session_results import final_message
 from bucket_runtime.sandbox_executor import contained
 
 
@@ -41,21 +40,7 @@ def test_journal_atomic_terminal_and_outbox(tmp_path):
     db.close()
 
 
-def test_final_requires_correlated_finished_answer():
-    def answer(message_id, parent, finish, parts, completed=1):
-        return {"info": {"id": message_id, "role": "assistant", "parentID": parent,
-                         "finish": finish, "time": {"created": 1, "completed": completed}}, "parts": parts}
-    unrelated = answer("a", "other", "stop", [{"type": "text", "text": "wrong"}])
-    assert final_message([unrelated], "input") is None
-    summary = answer("summary", "input", "stop", [{"type": "text", "text": "internal summary"}])
-    summary["info"]["summary"] = True
-    assert final_message([summary], "input") is None
-    tool = answer("b", "input", "tool-calls", [{"type": "tool", "state": {"status": "completed"}}])
-    assert final_message([unrelated, tool], "input") is None
-    final = answer("c", "input", "stop", [{"type": "text", "text": "done"}])
-    assert final_message([unrelated, tool, final], "input") == ("done", None)
-    tool["parts"][0]["state"]["status"] = "running"
-    assert final_message([tool, final], "input") is None
+
 
 
 def test_path_rejects_escape_and_links(tmp_path):

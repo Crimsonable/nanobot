@@ -1,52 +1,11 @@
 """Mounted executable and plugin asset checks for the OpenCode facade."""
-import json
-from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from agent_backend.config import RuntimeConfig
 from bucket_runtime.opencode_server import OpenCodeServer
-
-
-@pytest.mark.asyncio
-async def test_mismatched_plugin_dependency_link_is_rejected(tmp_path, monkeypatch):
-    source = tmp_path / "source" / "opencode_plugin"
-    module = source / "node_modules/@opencode-ai/plugin/package.json"
-    module.parent.mkdir(parents=True)
-    module.write_text("{}")
-    plugin = source / "dist/index.mjs"
-    plugin.parent.mkdir()
-    plugin.write_text("export default {}")
-    for name in ["package.json", "package-lock.json"]:
-        (source / name).write_text("{}")
-    binary = tmp_path / "opencode"
-    binary.write_text("#!/bin/sh\nexit 1\n")
-    binary.chmod(0o555)
-    config_file = tmp_path / "opencode.json"
-    config_file.write_text(json.dumps({"autoupdate": False}))
-    config = RuntimeConfig(frontend_id="web", common_root=tmp_path / "common", bucket_id="b", state_root=tmp_path / "state",
-        workspace_root=tmp_path / "users", opencode={"binary": binary, "context_root": tmp_path / "context",
-            "config_file": config_file, "plugin_file": plugin, "dependency_dir": source})
-    modules = config.state_root / "opencode-home/config/opencode/node_modules"
-    modules.parent.mkdir(parents=True)
-    try:
-        modules.symlink_to(tmp_path / "old-image-plugin/node_modules", target_is_directory=True)
-    except OSError:
-        pytest.skip("symlink creation unavailable")
-
-    async def spawn(*args, **kwargs):
-        assert args[0] == str(binary)
-        assert json.loads(kwargs["env"]["OPENCODE_CONFIG_CONTENT"])["plugin"] == [plugin.as_uri()]
-        return SimpleNamespace(returncode=1)
-
-    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
-    opencode = OpenCodeServer(config)
-    try:
-        with pytest.raises(RuntimeError, match="dependency directory"):
-            await opencode._start_process()
-        assert modules.resolve() == tmp_path / "old-image-plugin/node_modules"
-    finally:
-        await opencode.close()
 
 
 @pytest.mark.asyncio
@@ -55,7 +14,27 @@ async def test_missing_mounted_binary_fails_before_launch(tmp_path):
         workspace_root=tmp_path / "users", opencode={"binary": tmp_path / "missing", "context_root": tmp_path / "context"})
     opencode = OpenCodeServer(config)
     try:
-        with pytest.raises(RuntimeError, match="executable missing"):
+        with pytest.raises(RuntimeError, match="runtime file missing"):
             await opencode._start_process()
     finally:
         await opencode.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final", [{"status": "completed"}, {"status": "error", "error": "unreadable history"}])
+async def test_waits_for_native_storage_upgrade_and_surfaces_failure(monkeypatch, final):
+    client = OpenCodeServer(RuntimeConfig(frontend_id="web", bucket_id="b"))
+    await client.http.aclose()
+    states = iter([{"status": "running", "progress": {"label": "Migrating sessions"}}, final])
+    def handle(request):
+        assert request.url.path == "/api/experimental/migration/v1"
+        return httpx.Response(200, json=next(states))
+    pause = AsyncMock()
+    monkeypatch.setattr("bucket_runtime.opencode_server.asyncio.sleep", pause)
+    async with httpx.AsyncClient(base_url="http://opencode", transport=httpx.MockTransport(handle)) as client.http:
+        if final["status"] == "error":
+            with pytest.raises(RuntimeError, match="unreadable history"):
+                await client._wait_for_storage()
+        else:
+            await client._wait_for_storage()
+    pause.assert_awaited_once_with(0.5)

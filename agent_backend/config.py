@@ -13,7 +13,6 @@ from agent_backend.common import frontend_common_root, frontend_segment, scoped_
 from agent_backend.models import StrictModel, digest
 from agent_backend.workspaces import workspace_volume_subpath
 
-
 BUCKET_SUFFIX_LENGTH = 12
 
 
@@ -95,8 +94,7 @@ class OpenCodeConfig(StrictModel):
     port: int = Field(default=4096, ge=1024, le=65535)
     context_root: Path = Path("/opt/runtime-context")
     config_file: Path = Path("/mnt/common/{frontend_id}/config/opencode-server.json")
-    plugin_file: Path = Path("/mnt/source/opencode_plugin/dist/index.mjs")
-    dependency_dir: Path = Path("/mnt/source/opencode_plugin")
+    plugin_dir: Path = Path("/mnt/source/opencode_plugin")
 
 
 class SessionLoggingConfig(StrictModel):
@@ -145,17 +143,23 @@ class StorageConfig(StrictModel):
 
 
 class EventForwarding(StrictModel):
+    """Native V2 event selection; streaming requests forward every attributable event."""
     include_types: list[str] = Field(default_factory=lambda: [
-        "message.updated", "message.part.updated", "message.part.delta",
-        "message.part.removed", "message.removed", "session.status", "session.error"])
-    include_part_types: list[str] = Field(default_factory=lambda: ["text", "file", "tool"])
+        "session.created", "session.metadata.updated", "session.inbox.enqueued", "session.inbox.delivered",
+        "session.execution.started", "session.execution.succeeded", "session.execution.failed",
+        "session.execution.interrupted", "session.step.started", "session.step.ended", "session.step.failed",
+        "session.text.started", "session.text.delta", "session.text.ended",
+        "session.tool.input.started", "session.tool.input.delta", "session.tool.input.ended",
+        "session.tool.called", "session.tool.progress", "session.tool.success", "session.tool.failed",
+        "session.retry.scheduled"])
     include_child_sessions: bool = False
 
     @model_validator(mode="after")
     def reply_dependencies(self):
-        required = {"message.updated", "message.part.updated", "session.status", "session.error"}
-        if not required.issubset(self.include_types) or "text" not in self.include_part_types:
-            raise ValueError("final channel replies require message snapshots, text, status and error events")
+        required = {"session.inbox.enqueued", "session.step.started", "session.step.ended",
+                    "session.text.ended", "session.execution.succeeded", "session.execution.failed"}
+        if not required.issubset(self.include_types):
+            raise ValueError("final channel replies require native input, step, text and execution events")
         return self
 
 
@@ -218,7 +222,7 @@ class RuntimeConfig(RuntimeSettings):
                     setattr(obj, name, Path(value.as_posix().replace("{frontend_id}", self.frontend_id)))
         workspace = self.workspace_root.resolve()
         protected = [self.state_root, self.opencode.context_root, self.opencode.config_file,
-                     self.opencode.plugin_file, self.opencode.dependency_dir]
+                     self.opencode.plugin_dir]
         if self.permissions_file:
             protected.append(self.permissions_file)
         if self.logging_file:
@@ -250,7 +254,7 @@ class Frontend(StrictModel):
 class BucketPoolConfig(StrictModel):
     namespace: str = "opencode-sv"
     name_prefix: str = Field(default="opencode-bucket", pattern=r"^[a-z][a-z0-9-]{0,35}$")
-    image: str = "agent-bucket-runtime:opencode-1.18.31-bwrap011"
+    image: str = "agent-bucket-runtime:opencode-2.3.2-bwrap011"
     image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = "IfNotPresent"
     max_users_per_bucket: int = Field(default=16, ge=1)
     ready_timeout_seconds: int = Field(default=120, ge=1)

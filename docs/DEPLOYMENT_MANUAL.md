@@ -58,8 +58,8 @@ Channel Gateway 与 CU 共用一个单副本 Pod，分别运行在 `gateway` 和
 | Gateway 调用 CU | `http://127.0.0.1:8001` |
 | Gateway NodePort | **`30081`**，以 `backend.yaml` 为准 |
 | 节点标签 | `opencode-runtime=true`，仅一个节点 |
-| CU 镜像 | `agent-container-up:opencode-1.18.31` |
-| bucket 镜像 | `agent-bucket-runtime:opencode-1.18.31-bwrap011` |
+| CU 镜像 | `agent-container-up:opencode-2.3.2` |
+| bucket 镜像 | `agent-bucket-runtime:opencode-2.3.2-bwrap011` |
 
 在 kubectl 操作机设置实际节点名和地址；以下 REPLACE 值必须替换，节点名用 `kubectl get nodes` 返回的名字：
 
@@ -119,7 +119,7 @@ df -h /data
 │   ├── bucket_runtime/
 │   ├── agent_backend/
 │   ├── web_server/
-│   └── opencode_plugin/            # 必须含 dist、node_modules 和 package 文件
+│   └── opencode_plugin/            # 必须含 dist 和 package.json
 ├── common/
 │   ├── frontends.json              # 后端总表：渠道、镜像、调度、回调、MinIO
 │   └── web-test/
@@ -260,28 +260,28 @@ node --version
 npm --version
 docker version
 bash scripts/vendor_opencode_backend.sh
-docker build -f Dockerfile.container_up -t agent-container-up:opencode-1.18.31 .
-docker build -f Dockerfile.bucket_runtime -t agent-bucket-runtime:opencode-1.18.31-bwrap011 .
+docker build -f Dockerfile.container_up -t agent-container-up:opencode-2.3.2 .
+docker build -f Dockerfile.bucket_runtime -t agent-bucket-runtime:opencode-2.3.2-bwrap011 .
 # 一并准备第 11 章异步回调测试使用的可选 Web 服务
-docker build -f Dockerfile.web_server -t agent-web-server:opencode-1.18.31 .
+docker build -f Dockerfile.web_server -t agent-web-server:opencode-2.3.2 .
 
 mkdir -p ../opencode-delivery
 docker save -o ../opencode-delivery/agent-images.tar \
-  agent-container-up:opencode-1.18.31 \
-  agent-bucket-runtime:opencode-1.18.31-bwrap011 \
-  agent-web-server:opencode-1.18.31
+  agent-container-up:opencode-2.3.2 \
+  agent-bucket-runtime:opencode-2.3.2-bwrap011 \
+  agent-web-server:opencode-2.3.2
 tar -czf ../opencode-delivery/agent-source.tar.gz \
-  --exclude=.git --exclude=.venv --exclude=.opencode-reference \
+  --exclude=.git --exclude='.venv*' --exclude=node_modules --exclude=.opencode-reference \
   --exclude=vendor --exclude='*.tar' --exclude='*.tar.gz' .
 cp vendor/opencode ../opencode-delivery/opencode
 ```
 
-每条命令成功后再继续。vendor 脚本下载并校验 OpenCode 1.18.31、固定 bwrap 包和 Python wheels，再构建插件。**完整镜像构建仍需要网络**，包括基础镜像、apt 和 Chromium 下载；vendor 完成不等于可以全离线构建。
+每条命令成功后再继续。vendor 脚本下载并校验 OpenCode 2.3.2、固定 bwrap 包和 Python wheels，再构建插件。**完整镜像构建仍需要网络**，包括基础镜像、apt 和 Chromium 下载；vendor 完成不等于可以全离线构建。
 
-交付包在仓库外的 `../opencode-delivery/`，避免 tar 把自己打进去。确认源码包包含插件产物与依赖：
+交付包在仓库外的 `../opencode-delivery/`，避免 tar 把自己打进去。确认源码包包含插件产物与包入口：
 
 ```bash
-tar -tzf ../opencode-delivery/agent-source.tar.gz | grep -E 'opencode_plugin/(dist/index.mjs|dist/permissions.mjs|node_modules/)' | head
+tar -tzf ../opencode-delivery/agent-source.tar.gz | grep -E 'opencode_plugin/(dist/index.mjs|dist/permissions.mjs|package.json)' | head
 ls -lh ../opencode-delivery/
 ```
 
@@ -352,7 +352,7 @@ sudoedit "$DEPLOY_ROOT/common/web-test/config/user-permissions.yaml"
 | frontends.json | `frontends[].attachment_storage` | 实际 MinIO endpoint、access_key、secret_key、bucket、public_base_url |
 | opencode-server.json | `provider.intranet.options` | 模型服务 baseURL 与 apiKey |
 | opencode-server.json | `provider.intranet.models`、`model` | models 中定义实际模型 ID；model 填 `intranet/实际模型ID` |
-| opencode-server.json | `instructions`、`skills.paths` | 保持指向本 frontend 的 `/mnt/common/web-test/app/` 下实际目录/文件 |
+| opencode-server.json | `instructions`、`skills` | 保持指向本 frontend 的 `/mnt/common/web-test/app/` 下实际目录/文件 |
 | user-permissions.yaml | `sandbox.enabled`、`session.enabled` | 必须均为 true；下载附件还需允许 sandbox.network |
 | session-logging.json | 会话日志开关 | 按 [日志说明](SESSION_LOGGING.md) 配置 |
 
@@ -367,7 +367,7 @@ sudo chmod -R a+rX "$DEPLOY_ROOT/source"
 sudo chmod -R u+rwX,go-rwx "$DEPLOY_ROOT/common" "$DEPLOY_ROOT/data"
 sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/dist/index.mjs"
 sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/dist/permissions.mjs"
-sudo test -d "$DEPLOY_ROOT/source/opencode_plugin/node_modules"
+sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/package.json"
 sudo test -r "$DEPLOY_ROOT/common/frontends.json"
 sudo test -r "$DEPLOY_ROOT/common/web-test/app/templates/AGENTS.md"
 ```
@@ -384,7 +384,7 @@ sudo mv -f "$DEPLOY_ROOT/opencode/opencode.new" "$DEPLOY_ROOT/opencode/opencode"
 sudo test -w "$DEPLOY_ROOT/state"
 ```
 
-预期 OpenCode 版本为 1.18.31。原子 rename 避免直接覆盖运行中的可执行文件。
+预期 OpenCode 版本为 2.3.2。原子 rename 避免直接覆盖运行中的可执行文件。
 
 ### 5.4 可选：已有旧镜像的 bwrap 兼容修复
 
@@ -395,11 +395,11 @@ bucket 镜像现在固定使用 Debian `bubblewrap=0.11.0-2+deb13u1`，从 Debia
 ```bash
 bash scripts/vendor_bubblewrap.sh
 docker build -f Dockerfile.bucket_runtime.compat \
-  --build-arg RUNTIME_IMAGE=agent-bucket-runtime:opencode-1.18.31 \
-  -t agent-bucket-runtime:opencode-1.18.31-bwrap011 .
-docker run --rm --entrypoint sh agent-bucket-runtime:opencode-1.18.31-bwrap011 \
+  --build-arg RUNTIME_IMAGE=agent-bucket-runtime:opencode-2.3.2 \
+  -t agent-bucket-runtime:opencode-2.3.2-bwrap011 .
+docker run --rm --entrypoint sh agent-bucket-runtime:opencode-2.3.2-bwrap011 \
   -c 'id; bwrap --version; dpkg-query -W bubblewrap; apt-mark showhold'
-docker save -o bucket-bwrap011.tar agent-bucket-runtime:opencode-1.18.31-bwrap011
+docker save -o bucket-bwrap011.tar agent-bucket-runtime:opencode-2.3.2-bwrap011
 ```
 
 预期用户为 root，bwrap 显示 0.11.0，Debian 包版本为 0.11.0-2+deb13u1，hold 列表包含 bubblewrap。镜像包传到实际运行节点后导入（K3s 使用 `k3s ctr`）：
@@ -411,7 +411,7 @@ sudo ctr -n k8s.io images import bucket-bwrap011.tar
 修改服务器 `/data/opencode_backend_k8s/common/frontends.json` 中 `control.bucket_pool.image` 为下面的值；只改 image，不要覆盖现有模型/渠道/存储配置：
 
 ```json
-"image": "agent-bucket-runtime:opencode-1.18.31-bwrap011"
+"image": "agent-bucket-runtime:opencode-2.3.2-bwrap011"
 ```
 
 暂停业务提交后更新服务。CU 重启读取新镜像配置；已有 bucket 使用 set image 更新，不能只 rollout restart 旧镜像：
@@ -420,7 +420,7 @@ sudo ctr -n k8s.io images import bucket-bwrap011.tar
 kubectl -n opencode-sv rollout restart deployment/container-up
 kubectl -n opencode-sv rollout status deployment/container-up --timeout=180s
 kubectl -n opencode-sv set image deployment -l app=opencode-bucket \
-  runtime=agent-bucket-runtime:opencode-1.18.31-bwrap011
+  runtime=agent-bucket-runtime:opencode-2.3.2-bwrap011
 kubectl -n opencode-sv get pods -l app=opencode-bucket
 kubectl -n opencode-sv logs -f -l app=opencode-bucket \
   --all-containers=true --prefix=true --tail=100 --max-log-requests=20
@@ -517,10 +517,10 @@ curl -fsS "$GATEWAY_URL/health/ready"
 | 改动 | 要做的事 |
 | --- | --- |
 | Python 业务源码 | 同步 source，重启受影响服务 |
-| 插件 | 重新 npm ci/build，同步 dist、node_modules、package 文件，重启 bucket |
+| 插件 | 重新 npm ci/build，同步 dist 与 package.json，按原生插件加载边界生效 |
 | skills/模板/规则 | 更新实际 common/<frontend>/app；涉及启动配置时重启相关桶 |
 | 总表 frontends.json | 更新实际 common 文件，重启 CU 及相关桶 |
-| opencode-server.json（模型/provider/MCP 等） | 更新该 frontend 的 config，按 frontend_id 调用第 8.4 节批量重置接口 |
+| opencode-server.json（模型/provider/MCP 等） | 更新该 frontend 的原生配置文件，由 OpenCode 热加载，见第 8.4 节 |
 | user-permissions.yaml | 更新该 frontend 的 config，处理已有会话后重启该 frontend 的桶 |
 | Python/系统依赖 | 重建镜像，使用新标签，导入或推送，修改清单和实际总表 |
 | bucket 镜像、挂载、启动参数 | 更新总表/源码，并重新生成已有 bucket Deployment；仅 restart 不会改 Pod 模板 |
@@ -564,42 +564,17 @@ kubectl apply -f k8s/opencode/backend.yaml
 
 工具要求 bucket 有明确的 `opencode.io/frontend-id` annotation，保留当前副本数。旧统一启动器升级也需要重新生成模板；CU 启动入口是 `python -m container_up`，bucket 是 `python -m bucket_runtime`，`agent_backend` 仅为库。
 
-session 权限变化不能只靠重启修复：先完成对应 frontend 的整桶回收，再更新配置，下一次分配创建新 session；旧 session 权限回读不一致会拒绝执行。会话迁移与历史保留限制见 [日志与会话说明](SESSION_LOGGING.md)。
+用户权限配置由 runtime 启动时读取；更新文件后滚动重启 bucket。每轮复用会话时按当前用户策略更新原生 permissions 并回读校验，无需丢弃会话历史。会话迁移与历史保留限制见 [日志与会话说明](SESSION_LOGGING.md)。
 
-### 8.4 手动重新加载 OpenCode 配置
+### 8.4 OpenCode 配置热加载
 
-将新配置写入实际 `common/<frontend_id>/config/opencode-server.json` 后，调用 CU 内部接口：
+直接更新实际 `common/<frontend_id>/config/opencode-server.json`，建议先写临时文件再原子 rename。OpenCode 2.3.2 原生监听该文件，现有进程和会话继续运行，下一轮提交读取更新后的默认模型。无需调用 CU 或重启 bucket。
 
-```bash
-curl --fail-with-body -X POST \
-  "http://container-up:8000/internal/frontends/<frontend_id>/opencode/reset"
-```
+后端通过 `OPENCODE_CONFIG` 传递真实路径，不把配置全文固定在环境变量。旧 reset API 和回退机制已删除。配置语法和字段采用 2.x；排查失败时检查 OpenCode 自身日志和当前有效配置。
 
-此地址从集群内部访问；使用端口转发时将主机和端口替换为对应本地地址。接口无请求体，按 frontend_id 查找所属 bucket，并发重启其中的 OpenCode 子进程，等待健康检查、插件握手和事件订阅恢复；保留 runtime、Pod、控制连接、会话历史和工作目录。其他 frontend 不受影响。没有配置文件监听器，每次调用都重新读取配置。已回收的 idle bucket 没有运行进程，会列入 skipped_buckets；之后启动时直接加载最新配置。成功响应示例：
+此热加载只覆盖 OpenCode 管理的配置/插件/技能注册表。修改 frontend 总表、用户权限、日志配置、Python 代码或升级二进制时，仍需按相应服务的部署流程处理。
 
-```json
-{
-  "frontend_id": "web-test",
-  "status": "ready",
-  "buckets": [
-    {"bucket_id": "bucket-a", "status": "ready"},
-    {"bucket_id": "bucket-b", "status": "ready"}
-  ],
-  "skipped_buckets": []
-}
-```
-
-全部成功返回 HTTP `200`；没有运行中的 bucket 时返回 `200`、`status=no_running_buckets`；frontend 未注册返回 `404`。只要有 bucket 未成功重置，就返回 HTTP `207`、`status=partial_failure`，每个失败项包含 `bucket_id`、`status=failed`、`status_code` 和 `detail`。其余 bucket 仍独立完成重置，不能把 `207` 当作全部成功。失败项的 status_code 含义如下：
-
-| status_code | 含义及处理 |
-| --- | --- |
-| 409 | bucket 不在 running 状态、有未完成请求/会话操作/未确认命令，或正在重置；稍后重试 |
-| 502 | 配置读取或启动失败；响应说明是否已恢复旧配置，或 bucket 仍不可用 |
-| 503 | bucket 未连接或调用中断开；重置结果可能未知，应检查状态后再操作 |
-
-重置期间相应 bucket 不接收新分配，已有会话迁移等待重置结束。调用方 HTTP 断开不会取消已经开始的批量重置。配置解析失败时保留原进程；新配置启动失败时尝试使用内存中的上一份配置恢复。若恢复也失败，runtime 保持在线但不接单，修正配置后可再次调用。回退不会改写磁盘上的配置文件。再次按 frontend 调用会重新尝试当时所有非 idle bucket，包括上次已成功的 bucket。
-
-此接口仅重新读取 `opencode-server.json`，不重新加载 `frontends.json`、`user-permissions.yaml` 或日志配置，也不清空对话。首次部署本接口仍需更新并重启 CU 和 bucket runtime；之后修改 OpenCode 配置即可调用接口生效。
+首次从 1.x 升级应停止入站并完成旧请求，备份状态，统一替换 OpenCode 2.3.2、Python 源码、原生配置、插件包和 frontend 总表。让所有保留历史的旧桶（包括闲置桶）启动新版，等 OpenCode 自带升级器完成数据库转换、BU 就绪后再恢复入站和跨桶调度。BU 启动会等待原生迁移状态完成；跨桶迁移通过 2.x 原生 export/import API 转移已完成历史，后端不读取原生内部表；inbox 和后台任务清空后才允许迁移。
 
 ## 9. 删除命名空间与重装
 
@@ -682,7 +657,7 @@ kubectl get nodes -L opencode-runtime
 | FailedMount | hostPath/subPath 是否存在；NFS server/path、客户端、网络及导出权限 |
 | ImagePullBackOff | 镜像是否导入实际运行时；镜像名称、标签和仓库认证 |
 | Permission denied | 本地 state 可写、二进制执行位；NFS root_squash 映射与服务端 UID |
-| CU Ready 但建桶失败 | runtime 日志、插件 dist/node_modules、OpenCode 二进制、bwrap 探测 |
+| CU Ready 但建桶失败 | runtime 日志、插件 package.json + dist、OpenCode 二进制、bwrap 探测 |
 | bwrap Function not implemented | 旧内核与 bwrap 版本，见第 5.4 节；privileged 不能补系统调用 |
 | 404 frontend is not registered | 总表 frontend_id 与请求路径是否一致 |
 | 422 | chat_id 缺失/为空、旧 raw 字段、未知字段或类型错误 |
@@ -811,7 +786,7 @@ curl -i -sS -X POST 'http://192.168.199.168:30081/inbound/web-test' \
     "user_id": "deploy-cancel",
     "chat_id": "cancel-chat-001",
     "request_id": "cancel-request-001",
-    "content": "请用 bash 执行 sleep 60，然后回复结束。",
+    "content": "请用 shell 执行 sleep 60，然后回复结束。",
     "attachments": [],
     "metadata": {}
   }'
@@ -842,7 +817,7 @@ curl -i -sS --max-time 660 -X POST 'http://192.168.199.168:30081/inbound-sync/we
     "user_id": "deploy-smoke",
     "chat_id": "file-chat-001",
     "request_id": "file-request-001",
-    "content": "请用 bash 在当前工作目录的 deploy-smoke.txt 写入 opencode-file-ok，然后必须调用 publish_attachment 发布这个文件。",
+    "content": "请用 shell 在当前工作目录的 deploy-smoke.txt 写入 opencode-file-ok，然后必须调用 publish_attachment 发布这个文件。",
     "attachments": [],
     "metadata": {}
   }'

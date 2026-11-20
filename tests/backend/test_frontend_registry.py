@@ -1,4 +1,3 @@
-from tests.backend.support import plugin_scope
 import json
 import shutil
 import sys
@@ -8,13 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from agent_backend.config import FrontendsConfig, load_frontends
+from agent_backend.ingress import Inbound
 from agent_backend.models import Identity, Submit
 from bucket_runtime.adapter import BucketRuntimeAdapter
-from bucket_runtime.sandbox_executor import SandboxExecutor
 from bucket_runtime.opencode_server import OpenCodeServer
+from bucket_runtime.sandbox_executor import SandboxExecutor
 from container_up.bucket_manager import BucketManager
-from agent_backend.ingress import Inbound
 from container_up.server import ControlService
+from tests.backend.support import plugin_scope
 
 
 @pytest.fixture
@@ -33,11 +33,11 @@ def registry(tmp_path):
         (own / "config/opencode-server.json").write_text(json.dumps({
             "model": "local/" + frontend,
             "instructions": [str(own / "app/templates/AGENTS.md")],
-            "provider": {"local": {"options": {"apiKey": "model-secret-" + frontend}}},
-            "skills": {"paths": [str(common / "{frontend_id}/app/skills")]}}))
+            "providers": {"local": {"settings": {"apiKey": "model-secret-" + frontend}}},
+            "skills": [str(own / "app/skills")]}))
         (own / "config/user-permissions.yaml").write_text(json.dumps({
             "defaults": {"filesystem": {"workspace": "read_only" if frontend == "web-a" else "read_write"}},
-            "users": [{"user_id": "alice", "session": {"tools": {"bash": frontend == "web-b"}}}]}))
+            "users": [{"user_id": "alice", "session": {"tools": {"shell": frontend == "web-b"}}}]}))
         (own / "config/session-logging.json").write_text(json.dumps({"enabled": frontend == "web-a"}))
         entries.append({"frontend_id": frontend, "provider": "web", "instance_idle_ttl_seconds": 1 if frontend == "web-a" else 0,
             "runtime": {"common_root": str(common),
@@ -68,21 +68,21 @@ async def test_models_permissions_and_templates_are_selected_per_frontend(regist
         runtime, submit = runtime_for(path, config, frontend, tmp_path)
         opencode = OpenCodeServer(runtime.config)
         try:
-            native = opencode.server_config()
+            native = json.loads(runtime.config.opencode.config_file.read_text())
             assert native["model"] == "local/" + frontend
-            assert native["provider"]["local"]["options"]["apiKey"] == "model-secret-" + frontend
-            assert native["skills"]["paths"] == [str(path.parent / frontend / "app/skills")]
+            assert native["providers"]["local"]["settings"]["apiKey"] == "model-secret-" + frontend
+            assert native["skills"] == [str(path.parent / frontend / "app/skills")]
             from agent_backend.config import SessionLoggingConfig, load_config
             assert load_config(runtime.config.logging_file, SessionLoggingConfig).enabled == (frontend == "web-a")
             assert runtime.policy(submit).filesystem.workspace == ("read_only" if frontend == "web-a" else "read_write")
-            assert runtime.policy(submit).session.tools["bash"] is (frontend == "web-b")
+            assert runtime.policy(submit).session.tools["shell"] is (frontend == "web-b")
             assert native["instructions"] == [str(path.parent / frontend / "app/templates/AGENTS.md")]
             assert not (runtime.workspace(submit) / "README.txt").exists()
             assert not (runtime.workspace(submit) / "AGENTS.md").exists()
             for filename in ["opencode-server.json", "user-permissions.yaml", "session-logging.json", "future-secret.txt"]:
                 with pytest.raises(PermissionError, match="outside user permission scope"):
-                    plugin_scope(runtime, frontend, filename, "read", {"filePath": str(path.parent / frontend / "config" / filename)})
-            plugin_scope(runtime, frontend, "public", "read", {"filePath": str(path.parent / frontend / "app/manual.txt")})
+                    plugin_scope(runtime, frontend, filename, "read", {"path": str(path.parent / frontend / "config" / filename)})
+            plugin_scope(runtime, frontend, "public", "read", {"path": str(path.parent / frontend / "app/manual.txt")})
             plugin_scope(runtime, frontend, "search", "grep", {"path": str(path.parent / frontend / "app"), "pattern": "secret"})
         finally:
             runtime.db.close()

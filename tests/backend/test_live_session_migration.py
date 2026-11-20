@@ -1,9 +1,8 @@
-"""Exercise native SQLite moves against two real pinned servers; no model calls."""
+"""Exercise native transcript APIs and cross-bucket continuation on real servers."""
 import asyncio
 import json
 import os
 import socket
-import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 
@@ -11,81 +10,97 @@ import httpx
 import pytest
 
 from agent_backend.models import Identity, Submit
-from agent_backend.session_history import (
-    database, delete_history, export_history, import_history, validate_destination,
-)
+from agent_backend.config import RuntimeConfig
+from bucket_runtime.opencode_server import OpenCodeServer
+
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "linux" or not os.environ.get("OPENCODE_TEST_BINARY"),
-                    reason="requires explicit pinned Linux OpenCode binary")
+@pytest.mark.skipif(not os.environ.get("OPENCODE_TEST_BINARY"),
+                    reason="requires explicit pinned OpenCode 2.x binary")
 async def test_native_servers_read_complete_history_after_round_trip(tmp_path):
     identity = Identity(frontend_id="web", user_id="alice")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    processes, clients, paths = [], [], []
+    processes, clients = [], []
     try:
         for name in ["a", "b"]:
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             home = tmp_path / name
-            env = {key: os.environ[key] for key in ["PATH", "TMPDIR"] if key in os.environ}
-            env.update({"HOME": str(home), "XDG_DATA_HOME": str(home / "data"),
+            env = {key: os.environ[key] for key in ["PATH", "TMPDIR", "SYSTEMROOT", "TEMP", "TMP"] if key in os.environ}
+            env.update({"HOME": str(home), "USERPROFILE": str(home), "XDG_DATA_HOME": str(home / "data"),
                 "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
-                "XDG_STATE_HOME": str(home / "state"),
-                "OPENCODE_CONFIG_CONTENT": json.dumps({"autoupdate": False, "plugin": []})})
+                "XDG_STATE_HOME": str(home / "state"), "OPENCODE_PASSWORD":"migration-test",
+                "OPENCODE_DISABLE_MODELS_FETCH": "true",
+                "OPENCODE_CONFIG_CONTENT": json.dumps({"update": "disable", "snapshots": False, "plugins": []})})
             processes.append(await asyncio.create_subprocess_exec(os.environ["OPENCODE_TEST_BINARY"],
                 "serve", "--hostname", "127.0.0.1", "--port", str(port), env=env, cwd=workspace,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE))
+                stdout=asyncio.subprocess.DEVNULL))
+            # Match the runtime transport budget for cold location initialization.
+            # Inherit stderr so native diagnostics cannot fill an undrained pipe.
             client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}",
-                                       params={"directory": str(workspace)}, timeout=10, trust_env=False)
+                                       timeout=30, trust_env=False, auth=("opencode","migration-test"))
             clients.append(client)
             for _ in range(200):
                 if processes[-1].returncode is not None:
-                    pytest.fail((await processes[-1].stderr.read()).decode())
+                    pytest.fail(f"OpenCode exited with {processes[-1].returncode}; see captured stderr")
                 try:
-                    response = await client.get("/global/health")
+                    response = await client.get("/api/info")
                     response.raise_for_status()
                     break
                 except (httpx.TransportError, httpx.HTTPStatusError):
                     await asyncio.sleep(0.1)
             else:
                 pytest.fail("OpenCode did not become healthy")
-            response = await client.get("/path")
+            response = await client.get("/api/location", params={"location[directory]":str(workspace)})
             response.raise_for_status()
-            paths.append(home / "data/opencode/opencode.db")
         context = {**identity.model_dump(), "identity_id": identity.identity_id,
                    "chat_id": "chat", "schema_version": 1, "bucket_id": "a", "requests": {}}
-        response = await clients[0].post("/session", json={"title": "Migration", "permission": [],
+        response = await clients[0].post("/api/session", json={"location":{"directory":str(workspace)}, "title": "Migration", "permissions": [],
                                             "metadata": {"bucket_runtime": context}})
         response.raise_for_status()
-        session = response.json()["id"]
-        message = {"role": "user", "time": {"created": 1234}, "agent": "build",
-                   "model": {"providerID": "test", "modelID": "test"}}
-        with database(paths[0]) as db:
-            db.execute("INSERT INTO message (id,session_id,time_created,time_updated,data) VALUES (?,?,?,?,?)",
-                       ("msg_test_history", session, 1234, 1234, json.dumps(message)))
-            db.execute("INSERT INTO part (id,message_id,session_id,time_created,time_updated,data) VALUES (?,?,?,?,?,?)",
-                       ("prt_test_history", "msg_test_history", session, 1234, 1234,
-                        json.dumps({"type": "text", "text": "Preserve this native history"})))
+        info = response.json()["data"]
+        session = info["id"]
+        # Seed a settled native transcript through the public import API.
+        (await clients[0].delete(f"/api/session/{session}")).raise_for_status()
+        messages = [{"id": "msg_history", "type": "assistant", "agent": "build",
+            "model": {"providerID": "test", "id": "test"},
+            "content": [{"type": "text", "text": "Preserve this native history"},
+                {"type": "tool", "id": "call_history", "name": "read", "executed": True,
+                 "state": {"status": "completed", "input": {"path": "notes.txt"},
+                           "content": [{"type": "text", "text": "kept tool result"}]},
+                 "time": {"created": 1, "ran": 1, "completed": 2}}],
+            "time": {"created": 1, "completed": 2}}]
+        response = await clients[0].post("/api/experimental/session/import",
+            json={"info": info, "messages": messages, "location": {"directory": str(workspace)}})
+        assert response.is_success, response.text
         for source, target in [(0, 1), (1, 0)]:
-            history = export_history(paths[source], session, identity, "chat")
-            validate_destination(paths[target], history)
-            response = await clients[source].delete(f"/session/{session}")
+            response = await clients[source].get(f"/api/experimental/session/{session}/export")
             response.raise_for_status()
-            with database(paths[source]) as db:
-                assert db.execute("SELECT COUNT(*) FROM session WHERE id=?", (session,)).fetchone()[0] == 0
-            import_history(paths[target], history, identity, "chat", "ab"[target])
-            response = await clients[target].get(f"/session/{session}/message")
-            response.raise_for_status()
-            messages = response.json()
-            assert messages[0]["parts"][0]["text"] == "Preserve this native history"
-            response = await clients[target].get(f"/session/{session}")
-            response.raise_for_status()
-            assert response.json()["metadata"]["bucket_runtime"]["bucket_id"] == "ab"[target]
-        final = export_history(paths[0], session, identity, "chat")
-        delete_history(paths[0], final)
+            history = response.json()["data"]
+            assert history["messages"][0]["content"][1]["state"]["content"][0]["text"] == "kept tool result"
+            response = await clients[target].post("/api/experimental/session/import",
+                json={**history, "location": {"directory": str(workspace)}})
+            assert response.is_success, response.text
+            copied = (await clients[target].get(f"/api/experimental/session/{session}/export")).json()["data"]
+            assert copied["info"]["id"] == session
+            assert copied["messages"] == history["messages"]
+            (await clients[source].delete(f"/api/session/{session}")).raise_for_status()
+            assert (await clients[source].get(f"/api/session/{session}")).status_code == 404
+        # A parked inbox item is unfinished work, even when no execution is active.
+        native = OpenCodeServer(RuntimeConfig(frontend_id="web", bucket_id="a",
+            state_root=tmp_path / "runtime", workspace_root=workspace))
+        await native.http.aclose()
+        native.http = clients[0]
+        assert await native.sessions_idle(await native.session_tree(session))
+        response = await clients[0].post(f"/api/session/{session}/prompt", json={
+            "id": "msg_pending", "text": "not completed", "resume": False})
+        response.raise_for_status()
+        assert not await native.sessions_idle(await native.session_tree(session))
+        exported = (await clients[0].get(f"/api/experimental/session/{session}/export")).json()["data"]
+        assert exported["messages"] == copied["messages"]
     finally:
         for client in clients:
             await client.aclose()
@@ -100,21 +115,22 @@ async def test_native_servers_read_complete_history_after_round_trip(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "linux" or not os.environ.get("OPENCODE_TEST_BINARY"),
-                    reason="requires explicit pinned Linux OpenCode binary and built plugin")
+@pytest.mark.skipif(not os.environ.get("OPENCODE_TEST_BINARY"),
+                    reason="requires explicit pinned OpenCode 2.x binary and built plugin")
 async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp_path):
     from fastapi import FastAPI, Request
     from fastapi.responses import StreamingResponse
-    from websockets.asyncio.client import connect
-    from agent_backend.config import ControlConfig, RuntimeConfig, GatewaySettings
-    from agent_backend.wire import Peer
-    from bucket_runtime.adapter import BucketRuntimeAdapter
-    from bucket_runtime.server import rpc_app
-    from bucket_runtime.opencode_server import OpenCodeServer
-    from bucket_runtime.sandbox_executor import SandboxExecutor
-    from container_up.server import create_app
     from support import register_bucket
     from test_live_opencode import Channels, port, running
+    from websockets.asyncio.client import connect
+
+    from agent_backend.config import ControlConfig, GatewaySettings, RuntimeConfig
+    from agent_backend.wire import Peer
+    from bucket_runtime.adapter import BucketRuntimeAdapter
+    from bucket_runtime.opencode_server import OpenCodeServer
+    from bucket_runtime.sandbox_executor import SandboxExecutor
+    from bucket_runtime.server import rpc_app
+    from container_up.server import create_app
 
     model_port, cu_port = port(), port()
     calls, runtimes, servers, tasks = [], [], [], []
@@ -144,9 +160,9 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
     (common / "web/app").mkdir(parents=True)
     (common / "web/config").mkdir()
     config_path = common / "web/config/opencode.json"
-    config_path.write_text(json.dumps({"autoupdate": False, "provider": {"test": {
-        "npm": "@ai-sdk/openai-compatible", "name": "Local test",
-        "options": {"baseURL": f"http://127.0.0.1:{model_port}/v1", "apiKey": "unused"},
+    config_path.write_text(json.dumps({"update": "disable", "snapshots": False, "providers": {"test": {
+        "package": "@opencode/ai/providers/openai-compatible", "name": "Local test",
+        "settings": {"baseURL": f"http://127.0.0.1:{model_port}/v1", "apiKey": "unused"},
         "models": {"test": {"name": "test", "limit": {"context": 32000, "output": 4096}}}}},
         "model": "test/test"}))
     control = ControlConfig(state_root=tmp_path / "control", frontends={"web": {"provider": "web"}},
@@ -170,14 +186,13 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
                 control_url=f"ws://127.0.0.1:{cu_port}/internal/buckets/ws", rpc_port=port(), health_port=port(),
                 opencode={"binary": os.environ["OPENCODE_TEST_BINARY"], "port": port(),
                     "context_root": tmp_path / "context", "config_file": config_path,
-                    "plugin_file": plugin, "dependency_dir": plugin.parent.parent})
+                    "plugin_dir": plugin.parent.parent})
             opencode = OpenCodeServer(config)
             servers.append(opencode)
             runtime = BucketRuntimeAdapter(config, opencode, SandboxExecutor(config.sandbox, config.limits.output_bytes))
             runtimes.append(runtime)
             await stack.enter_async_context(running(rpc_app(runtime, opencode.rpc_token), config.rpc_port))
             await opencode.start(runtime.on_opencode_event)
-            (await opencode.http.get("/agent")).raise_for_status()
             assert runtime.opencode.plugin_ready.is_set()
             register_bucket(app.state.service, bucket_id)
             template = control.runtime_templates["web"]
@@ -214,7 +229,7 @@ async def test_capacity_reassignment_continues_history_through_real_runtimes(tmp
             assert "ORIGINAL_MEMORY_721" in str(calls[-1]["messages"])
             assert "Memory retained." in str(calls[-1]["messages"])
             response = await source.opencode.http.get(
-                f"/session/{session_id}", params={"directory": str(tmp_path / "users/web/alice")})
+                f"/api/session/{session_id}")
             assert response.status_code == 404
             key = Submit.model_validate(source.db.get("run", "first")["submit"]).session_key
             assert source.db.get("session", key) is None

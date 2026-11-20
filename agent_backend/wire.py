@@ -49,7 +49,7 @@ class Peer:
             # A live operation must finish before reusing this session's key.
             # Native HTTP calls have their own timeout; disconnect fails all
             # pending calls below. A local timer could misattribute a late reply
-            # to the next delete/quiesce on the same session.
+            # to the next export/import/delete on the same session.
             await future
         finally:
             self.session_calls.pop(key, None)

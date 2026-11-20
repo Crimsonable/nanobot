@@ -8,12 +8,12 @@ from bucket_runtime.opencode_server import OpenCodeServer
 
 
 @pytest.mark.asyncio
-async def test_create_and_reuse_metadata_preserves_identity_and_never_patches_permissions():
+async def test_reuse_preserves_identity_and_applies_current_native_permissions():
     context = {"schema_version": 1, "frontend_id": "web", "user_id": "alice", "identity_id": "identity",
                "chat_id": "group-1", "bucket_id": "b", "input_message_id": "m1",
                "requests": {"m1": "r1"}, "execution": {"version": 1, "deadline_at": 100}}
-    info = {"id": "ses_generated", "directory": str(OpenCodeConfig().context_root.resolve()),
-            "permission": [], "metadata": {"other_plugin": "keep"}}
+    info = {"id": "ses_generated", "location": {"directory": str(OpenCodeConfig().context_root.resolve())},
+            "permissions": [], "metadata": {"other_plugin": "keep"}}
     calls = []
 
     def handle(request):
@@ -22,9 +22,11 @@ async def test_create_and_reuse_metadata_preserves_identity_and_never_patches_pe
         if request.method == "POST":
             info["metadata"].update(body["metadata"])
         if request.method == "PATCH":
-            assert set(body) == {"metadata"}
+            assert set(body) == {"metadata", "permissions"}
             info["metadata"] = body["metadata"]
-        return httpx.Response(200, json=info)
+            info["permissions"] = body["permissions"]
+            return httpx.Response(204)
+        return httpx.Response(200, json={"data": info})
 
     client = OpenCodeServer(RuntimeConfig(frontend_id="web", bucket_id="b"), "password")
     await client.http.aclose()
@@ -32,14 +34,16 @@ async def test_create_and_reuse_metadata_preserves_identity_and_never_patches_pe
         assert await client.create_session([], context) == "ses_generated"
         next_context = {k: v for k, v in context.items() if k != "execution"}
         next_context.update(input_message_id="m2", requests={"m2": "r2"})
-        await client.set_context("ses_generated", next_context, info)
+        permissions = [{"action": "*", "resource": "*", "effect": "deny"}]
+        await client.set_context("ses_generated", next_context, info, permissions=permissions)
+        assert info["permissions"] == permissions
         assert "execution" not in info["metadata"]["bucket_runtime"]
         assert info["metadata"]["other_plugin"] == "keep"
         assert info["metadata"]["bucket_runtime"]["requests"] == {"m1": "r1", "m2": "r2"}
         with pytest.raises(PermissionError, match="ownership mismatch"):
-            await client.set_context("ses_generated", {**next_context, "user_id": "bob"}, info)
+            await client.set_context("ses_generated", {**next_context, "user_id": "bob"}, info, permissions=permissions)
         with pytest.raises(PermissionError, match="ownership mismatch"):
-            await client.set_context("ses_generated", {**next_context, "chat_id": "group-2"}, info)
+            await client.set_context("ses_generated", {**next_context, "chat_id": "group-2"}, info, permissions=permissions)
         with pytest.raises(KeyError):
-            await client.set_context("ses_generated", next_context, {**info, "metadata": {}})
+            await client.set_context("ses_generated", next_context, {**info, "metadata": {}}, permissions=permissions)
     assert len([call for call in calls if call[0] == "PATCH"]) == 1

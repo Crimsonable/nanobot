@@ -1,5 +1,6 @@
 import time
 from types import SimpleNamespace
+
 from agent_backend.config import RuntimeSettings
 
 
@@ -14,30 +15,46 @@ def register_bucket(service, bucket_id="b", frontend_id="web"):
     service.pool.peers[bucket_id] = SimpleNamespace(closed=False)
 
 
-def emit_answer(runtime, session_id, request_id, input_id, directory, message):
+def native(runtime, session_id, kind, data=None, *, event_id=None, directory=None):
     from uuid import uuid4
-    base = {"type": "opencode.event", "directory": directory}
-    runtime.native_event({**base, "event_id": uuid4().hex, "event": {"type": "session.status",
-        "properties": {"sessionID": session_id, "status": {"type": "busy"}}}})
-    for i, part in enumerate(message["parts"]):
-        runtime.native_event({**base, "event_id": uuid4().hex, "event": {"type": "message.part.updated",
-            "properties": {"part": {**part, "id": str(i), "sessionID": session_id, "messageID": message["info"]["id"]}}}})
-    event = {**base, "event_id": uuid4().hex, "event": {"type": "message.updated", "properties": {"info": message["info"]}}}
-    runtime.native_event(event)
-    if message["info"].get("time", {}).get("completed") and message["info"].get("finish") in {"stop", "end_turn", "length", "content-filter"}:
-        runtime.native_event({**base, "event_id": uuid4().hex, "event": {"type": "session.status",
-            "properties": {"sessionID": session_id, "status": {"type": "idle"}}}})
+    event_id = event_id or uuid4().hex
+    row = next((r for r in runtime.db.records("run") if r.get("session_id") == session_id), {})
+    directory = directory or row.get("directory", "global")
+    event = {"id": event_id, "type": kind, "created": 1000,
+             "data": {"sessionID": session_id, **(data or {})}}
+    body = {"type": "opencode.event", "directory": directory, "event_id": event_id, "event": event}
+    runtime.native_event(body)
     while runtime.process_next_event():
         pass
-    return event
+    return body
+
+
+def emit_answer(runtime, session_id, input_id, directory, text="done", *, message_id="answer",
+                finish="stop", tokens=None, complete=True):
+    native(runtime, session_id, "session.inbox.enqueued", {"inboxID": input_id,
+        "item": {"type": "user", "payload": {"text": "hello"}, "delivery": "queue"}}, directory=directory)
+    native(runtime, session_id, "session.inbox.delivered", {"inboxID": input_id})
+    native(runtime, session_id, "session.execution.started")
+    base = {"assistantMessageID": message_id}
+    native(runtime, session_id, "session.step.started", {**base, "started": 1000,
+        "agent": "build", "model": {"providerID": "test", "id": "test"}})
+    native(runtime, session_id, "session.text.started", {**base, "ordinal": 0})
+    native(runtime, session_id, "session.text.delta", {**base, "ordinal": 0, "delta": text})
+    native(runtime, session_id, "session.text.ended", {**base, "ordinal": 0, "text": text})
+    last = native(runtime, session_id, "session.step.ended", {**base, "finish": finish,
+        "cost": 0, "tokens": tokens or {"input": 12, "output": 4, "reasoning": 0, "cache": {"read": 0, "write": 0}}})
+    if complete:
+        last = native(runtime, session_id, "session.execution.succeeded")
+    return last
 
 
 def plugin_scope(runtime, session_id, call_id, tool, args):
     """Exercise TypeScript permissions with the scope returned by BU."""
     import json
     import os
-    from pathlib import Path
     import subprocess
+    from pathlib import Path
+
     from agent_backend.models import Submit
     row = next((r for r in runtime.db.records("run") if r.get("session_id") == session_id), None)
     if row is None:

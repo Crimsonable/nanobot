@@ -14,7 +14,7 @@
 | 节点标签 | `opencode-sv-formal=true`（166、168 都打） |
 | Gateway NodePort | **30080**（承接原 nanobot 入口） |
 | control Service | ClusterIP 8000 → `control-http`（仅集群内） |
-| 镜像 | `agent-container-up:opencode-1.18.31`、`agent-bucket-runtime:opencode-1.18.31-bwrap011` |
+| 镜像 | `agent-container-up:opencode-2.3.2`、`agent-bucket-runtime:opencode-2.3.2-bwrap011` |
 
 ## 本目录清单
 
@@ -67,7 +67,7 @@ kubectl label node zcaj-166 anquanzhouqi-168 opencode-sv-formal=true
 /data/mnt/opencode-sv-formal/
 ├── source/   源码与插件（RO，10001:10001）        → /mnt/source
 ├── common/   frontends.json + <fe>/{app,config}（RO，10001:10001） → /mnt/common
-├── opencode/ opencode 1.18.31 程序目录（10001:10001），bucket 以 hostPath 方式引用
+├── opencode/ opencode 2.3.2 程序目录（10001:10001），bucket 以 hostPath 方式引用
 ├── data/     workspaces/<fe>/（RWX，root）        → /mnt/env
 └── state/    control/gateway SQLite 与 bucket runtime（RWX，root） → /data
 ```
