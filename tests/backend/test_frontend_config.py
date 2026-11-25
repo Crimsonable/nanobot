@@ -28,7 +28,7 @@ def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
     )
     assert config.model_dump()["frontend_id"] == "web-test"
     assert "id" not in config.model_dump()
-    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-0123456789ab")
+    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-web-test-0123456789ab")
     assert runtime.frontend_id == "web-test"
     assert not hasattr(runtime, "credential_file")
     assert not hasattr(runtime, "rpc_port")
@@ -42,7 +42,7 @@ def test_default_values_can_still_be_overridden():
     config = FrontendConfig.model_validate(raw)
     assert config.control.port == 8100
     assert config.control.bucket_pool.max_sessions_per_bucket == 8
-    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-0123456789ab")
+    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-web-test-0123456789ab")
     assert runtime.opencode.port == 4106
     assert runtime.limits.file_bytes == 3000
 
@@ -55,11 +55,11 @@ def selected_config():
 def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
     config = selected_config()
     cu = config.control_config()
-    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-0123456789ab")
+    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-web-test-0123456789ab")
     assert list(cu.frontends) == ["web-test"]
     frontend = cu.frontends["web-test"]
     assert frontend.channel_config["send_msg_url"] == config.send_msg_url
-    assert runtime.bucket_id == "opencode-bucket-0123456789ab"
+    assert runtime.bucket_id == "opencode-bucket-web-test-0123456789ab"
     assert not hasattr(runtime, "storage")
     assert frontend.attachment_storage.key_prefix == "web-outbound"
     assert frontend.attachment_storage.presign_expiry_seconds == 3600

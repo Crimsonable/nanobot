@@ -393,4 +393,4 @@ SSE 开始前的错误仍使用第 6 节的 HTTP 错误。开始发送后不能�
 
 此协议不是 `useChatRuntime` 默认接受的 UI Message Stream，assistant-ui 前端仍需要将 1.x 事件适配为 UI 消息。Gateway 的状态投影仅负责 2.x → 1.x 协议转换。
 
-上线时同步更新 Gateway、CU、插件、桶镜像和 frontend 配置；桶直接启动原生 OpenCode server。旧执行适配服务的协调升级步骤见 [渠道层说明](CHANNEL_GATEWAY.md)。
+上线时同步更新 Gateway、CU、插件、桶镜像和 frontend 配置；桶直接启动原生 OpenCode server，使用当前结构的桶记录和会话元数据。运行链路见 [渠道层说明](CHANNEL_GATEWAY.md)。

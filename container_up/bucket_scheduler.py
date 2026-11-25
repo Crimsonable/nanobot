@@ -1,4 +1,4 @@
-"""Place independent frontend/user/chat sessions by available bucket capacity."""
+"""Route sessions to a shared pool or a deterministic user-owned bucket."""
 from __future__ import annotations
 
 import asyncio
@@ -11,10 +11,11 @@ from uuid import uuid4
 
 import httpx
 
-from agent_backend.config import BUCKET_SUFFIX_LENGTH, ControlConfig, bucket_name_prefix
+from agent_backend.config import BUCKET_SUFFIX_LENGTH, ControlConfig, bucket_name_prefix, individual_bucket_id
 from agent_backend.journal import Journal
 from agent_backend.models import Identity, Submit, session_key
 from agent_backend.opencode import OpenCode
+from agent_backend.session_history import SessionBusyError
 from agent_backend.workspaces import workspace_path
 from container_up.bucket_manager import BucketManager, BucketMissingError
 
@@ -27,11 +28,24 @@ class BucketScheduler:
         self.db = db
         self.clients: dict[str, tuple[dict, OpenCode]] = {}
         self.interrupt_requests = interrupt_requests
-        self.manager = BucketManager(config)
+        self.manager = BucketManager(config, db)
         self.start_locks: dict[str, asyncio.Lock] = {}
         self.pins: dict[str, int] = {}
         self.reservations: dict[str, int] = {}
         self.stopped: dict[str, asyncio.Event] = {}
+
+    def check_owner(self, bucket: dict, identity: Identity) -> None:
+        if bucket["frontend_id"] != identity.frontend_id:
+            raise PermissionError("session bucket frontend mismatch")
+        if bucket["behavior"] == "individual" and (
+                bucket["owner"] != identity.model_dump()
+                or bucket["bucket_id"] != individual_bucket_id(identity)):
+            raise PermissionError("individual bucket owner mismatch")
+
+    def matches_mode(self, bucket: dict, identity: Identity) -> bool:
+        self.check_owner(bucket, identity)
+        return bucket["behavior"] == self.config.bucket_for(identity.frontend_id).behavior
+
     def connected(self, bucket_id: str) -> bool:
         bucket = self.db.get("bucket", bucket_id)
         return bool(bucket and bucket.get("opencode") and bucket["status"] == "running")
@@ -96,11 +110,14 @@ class BucketScheduler:
         with self.db.transaction():
             for binding in self.db.records("binding"):
                 self.release(binding["session_key"])
+            movement = self.db.get("migration", key)
             existing = self.db.get("binding", key)
             if existing:
                 bucket = self.db.get("bucket", existing["bucket_id"])
                 if not bucket or bucket["frontend_id"] != identity.frontend_id:
                     raise ValueError("bucket frontend ownership mismatch")
+                if not self.matches_mode(bucket, identity) and not movement:
+                    raise SessionBusyError(bucket["bucket_id"])
                 self.touch(bucket["bucket_id"])
                 return existing
             runtime = self.config.bucket_for(identity.frontend_id)
@@ -110,17 +127,24 @@ class BucketScheduler:
             if owner and owner["identity_id"] != identity.identity_id:
                 raise ValueError("workspace path collides with another user")
             self.db.put("workspace_owner", workspace, {"identity_id": identity.identity_id})
-            candidates = [b for b in self.db.records("bucket") if b["status"] in {"creating", "running"}
-                          and (b["status"] == "creating" or self.connected(b["bucket_id"]))
-                          and b["frontend_id"] == identity.frontend_id
-                          and len(self.bindings(b["bucket_id"])) < self.config.bucket_pool.max_sessions_per_bucket]
-            movement = self.db.get("migration", key)
+            candidates = []
+            if runtime.behavior == "pool":
+                candidates = [b for b in self.db.records("bucket") if b["behavior"] == "pool"
+                              and b["status"] in {"creating", "running"}
+                              and (b["status"] == "creating" or self.connected(b["bucket_id"]))
+                              and b["frontend_id"] == identity.frontend_id
+                              and len(self.bindings(b["bucket_id"])) < self.config.bucket_pool.max_sessions_per_bucket]
             preferred_bucket = movement["target"] if movement else preferred_bucket
+            if runtime.behavior == "individual" and not movement:
+                preferred_bucket = individual_bucket_id(identity)
+                if not self.db.get("bucket", preferred_bucket):
+                    self.db.put("bucket", preferred_bucket, self.new_bucket(preferred_bucket, identity, runtime.behavior))
             if not preferred_bucket and (catalog := self.db.get("session", key)):
                 previous = self.db.get("bucket", catalog["bucket_id"])
                 # History affinity precedes load balancing. A dormant bucket can
                 # wake in place; an interrupted transfer must keep its recorded target.
                 if (previous and previous["frontend_id"] == identity.frontend_id
+                        and previous["behavior"] == "pool"
                         and previous["status"] in {"creating", "running", "idle", "draining"}
                         and len(self.bindings(previous["bucket_id"])) < self.config.bucket_pool.max_sessions_per_bucket):
                     preferred_bucket = previous["bucket_id"]
@@ -128,14 +152,16 @@ class BucketScheduler:
                 bucket = self.db.get("bucket", preferred_bucket)
                 if not bucket or bucket["frontend_id"] != identity.frontend_id:
                     raise PermissionError("session bucket frontend mismatch")
+                self.check_owner(bucket, identity)
+                if not movement and not self.matches_mode(bucket, identity):
+                    raise PermissionError("bucket does not match frontend routing mode")
             elif candidates:
                 bucket = min(candidates, key=lambda b: (not self.connected(b["bucket_id"]),
                                                         len(self.bindings(b["bucket_id"]))))
             else:
                 prefix = bucket_name_prefix(self.config.bucket_pool.name_prefix, identity.frontend_id)
                 bucket_id = f"{prefix}-{uuid4().hex[:BUCKET_SUFFIX_LENGTH]}"
-                bucket = {"bucket_id": bucket_id, "created_at": time.time(), "status": "creating",
-                          "password": secrets.token_urlsafe(32)}
+                bucket = self.new_bucket(bucket_id, identity, runtime.behavior)
             bucket_id = bucket["bucket_id"]
             self.db.put("bucket", bucket_id, {**bucket, "frontend_id": identity.frontend_id,
                                               "last_active_at": time.time()})
@@ -143,6 +169,14 @@ class BucketScheduler:
                        "session_key": key, "chat_id": chat_id, "workspace_path": workspace}
             self.db.put("binding", key, binding)
             return binding
+
+    @staticmethod
+    def new_bucket(bucket_id, identity, behavior):
+        return {"bucket_id": bucket_id, "frontend_id": identity.frontend_id,
+                "behavior": behavior,
+                "owner": identity.model_dump() if behavior == "individual" else None,
+                "created_at": time.time(), "last_active_at": time.time(), "status": "creating",
+                "password": secrets.token_urlsafe(32)}
 
     async def ready(self, bucket_id: str, *, recover: bool = False):
         async with self.start_locks.setdefault(bucket_id, asyncio.Lock()), asyncio.timeout(self.config.bucket_pool.ready_timeout_seconds):
@@ -188,8 +222,13 @@ class BucketScheduler:
             self.reservations[key] = self.reservations.get(key, 0) + 1
             with self.hold(bucket_id):
                 try:
+                    workspace = workspace_path(self.config.bucket_for(identity.frontend_id).workspace_root, identity)
+                    if workspace.resolve() != workspace.absolute():
+                        raise PermissionError("workspace cannot contain symbolic links")
+                    workspace.mkdir(parents=True, exist_ok=True)
                     try:
-                        if any(m["target"] == bucket_id for m in self.db.records("migration")):
+                        if (self.db.get("bucket", bucket_id)["behavior"] == "individual"
+                                or any(m["target"] == bucket_id for m in self.db.records("migration"))):
                             await self.ready(bucket_id, recover=True)
                         else:
                             await self.ready(bucket_id)

@@ -16,7 +16,7 @@ def test_shared_instructions_use_the_bucket_container_mount():
     )
     assert native["instructions"] == ["/mnt/common/web-test/app/templates/AGENTS.md"]
     deployment = BucketManager(config.control_config()).deployment(
-        "opencode-bucket-0123456789ab", config.frontend_id, password="test"
+        "opencode-bucket-web-test-0123456789ab", config.frontend_id, password="test"
     )
     mounts = deployment["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert any(
@@ -42,7 +42,7 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
             if d["kind"] == "Deployment"
         )
     runtime = BucketManager(config.control_config()).deployment(
-        "opencode-bucket-0123456789ab", config.frontend_id, password="test"
+        "opencode-bucket-web-test-0123456789ab", config.frontend_id, password="test"
     )
     workloads.append(runtime)
     for deployment in workloads:
@@ -86,7 +86,7 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
     docker = (ROOT / "Dockerfile.opencode").read_text(encoding="utf-8")
     assert "COPY vendor/plugin" not in docker and "COPY vendor/opencode" not in docker
     other = BucketManager(config.control_config()).deployment(
-        "opencode-bucket-abcdef123456", config.frontend_id, password="test"
+        "opencode-bucket-web-test-abcdef123456", config.frontend_id, password="test"
     )
     for workload in [runtime, other]:
         volumes = {v["name"]: v for v in workload["spec"]["template"]["spec"]["volumes"]}
@@ -96,7 +96,7 @@ def test_all_services_use_one_source_mount_and_shared_opencode_binary():
         }
     config.control.bucket_pool.opencode_host_path = "/custom/opencode"
     custom = BucketManager(config.control_config()).deployment(
-        "opencode-bucket-0123456789ab", config.frontend_id, password="test"
+        "opencode-bucket-web-test-0123456789ab", config.frontend_id, password="test"
     )
     volume = next(
         v for v in custom["spec"]["template"]["spec"]["volumes"] if v["name"] == "opencode"
@@ -119,7 +119,7 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
     )
     control = next(d for d in docs if d["kind"] == "Deployment")
     runtime = BucketManager(config.control_config()).deployment(
-        "opencode-bucket-0123456789ab", config.frontend_id, password="test"
+        "opencode-bucket-web-test-0123456789ab", config.frontend_id, password="test"
     )
     for deployment in [control, runtime]:
         pod = deployment["spec"]["template"]["spec"]
@@ -157,7 +157,7 @@ def test_original_pvc_mounts_match_control_and_dynamic_buckets():
     assert mounts["/mnt/common/frontends.json"]["subPath"] == "frontends.json"
     config.frontend_id = "qxt-main"
     other = BucketManager(config.control_config()).deployment(
-        "opencode-bucket-abcdef123456", config.frontend_id, password="test"
+        "opencode-bucket-qxt-main-abcdef123456", config.frontend_id, password="test"
     )
     mounts = other["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert {m["subPath"] for m in mounts if m["name"] == "common"} == {
@@ -184,7 +184,7 @@ def test_frontend_configuration_uses_common_pvc_without_global_credentials():
     )
     control = next(d for d in docs if d["kind"] == "Deployment")
     runtime = BucketManager(config.control_config()).deployment(
-        "opencode-bucket-0123456789ab", config.frontend_id, password="test"
+        "opencode-bucket-web-test-0123456789ab", config.frontend_id, password="test"
     )
     for deployment in [control, runtime]:
         pod = deployment["spec"]["template"]["spec"]
@@ -195,7 +195,7 @@ def test_frontend_configuration_uses_common_pvc_without_global_credentials():
         )
         assert pod["automountServiceAccountToken"] is False
     cfg = config.bucket_config(
-        ROOT / "config/opencode/frontends.json", "opencode-bucket-0123456789ab"
+        ROOT / "config/opencode/frontends.json", "opencode-bucket-web-test-0123456789ab"
     )
     assert cfg.opencode.config_file == Path("/mnt/common/web-test/config/opencode-server.json")
     assert cfg.permissions_file == Path("/mnt/common/web-test/config/user-permissions.yaml")
@@ -233,7 +233,7 @@ def test_gateway_and_control_share_pod_with_distinct_service_ports():
     assert gateway.control_url == f"http://127.0.0.1:{config.control.port}"
     assert config.control.state_root != gateway.state_root
     runtime = config.frontend("web-test").bucket_config(
-        ROOT / "config/opencode/frontends.json", "opencode-bucket-0123456789ab"
+        ROOT / "config/opencode/frontends.json", "opencode-bucket-web-test-0123456789ab"
     )
     assert runtime.gateway_url == "http://channel-gateway:8000"
     assert services["container-up"]["type"] == "ClusterIP"
@@ -277,8 +277,8 @@ def test_bucket_upgrade_preserves_sleeping_and_running_replica_counts():
     config = load_frontends(ROOT / "config/opencode/frontends.json").frontend("web-test")
     manager = BucketManager(config.control_config())
     current = [
-        manager.deployment("opencode-bucket-0123456789ab", config.frontend_id, password="test"),
-        manager.deployment("opencode-bucket-abcdef012345", config.frontend_id, password="test"),
+        manager.deployment("opencode-bucket-web-test-0123456789ab", config.frontend_id, password="test"),
+        manager.deployment("opencode-bucket-web-test-abcdef012345", config.frontend_id, password="test"),
     ]
     current[0]["spec"]["replicas"] = 0
     for workload in current:

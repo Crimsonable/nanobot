@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
+
 from agent_backend.config import ControlConfig
 from agent_backend.journal import Journal
 from agent_backend.models import ExecutionStatus, Submit, uid
@@ -13,7 +15,6 @@ from agent_backend.session_history import (
     verify_history,
     write_history,
 )
-from container_up.migrations import upgrade_native_owner
 
 
 class SessionManager:
@@ -53,11 +54,19 @@ class SessionManager:
         if existing and not movement:
             if source_bucket != target_bucket:
                 await self.pool.ready(source_bucket, recover=True)
-            found = await upgrade_native_owner(await self.pool.client(source_bucket), session_id, owner)
-            if not found and catalog.get("provisioned") is False:
+            source = await self.pool.client(source_bucket)
+            try:
+                info = await source.session(session_id)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                if catalog["provisioned"]:
+                    raise RuntimeError("persisted native session history is missing") from exc
                 self.record(submit, target_bucket, session_id, provisioned=False)
                 catalog = self.db.get("session", submit.session_key)
                 source_bucket = target_bucket
+            else:
+                check_owner(info, submit.identity, submit.chat_id)
         if source_bucket != target_bucket or movement:
             await self.transfer(submit, catalog, target_bucket, workspace, movement)
         client = await self.pool.client(target_bucket)
@@ -73,8 +82,7 @@ class SessionManager:
         if movement["source"] != source_bucket or movement["target"] != target_bucket:
             raise RuntimeError("resume the recorded migration target before placing new work")
         for bucket_id in (source_bucket, target_bucket):
-            if self.db.get("bucket", bucket_id)["frontend_id"] != submit.identity.frontend_id:
-                raise PermissionError("session bucket frontend mismatch")
+            self.pool.check_owner(self.db.get("bucket", bucket_id), submit.identity)
         path = self.config.state_root / "session-transfers" / (submit.session_key + ".json")
         with self.pool.hold(source_bucket), self.pool.hold(target_bucket):
             await self.pool.ready(source_bucket, recover=True)
@@ -83,7 +91,7 @@ class SessionManager:
             if movement["step"] == "export":
                 tree = await source.tree(session_id)
                 check_owner(tree[0], submit.identity, submit.chat_id)
-                pending = any(not r.get("result") and Submit.model_validate(r["submit"]).session_key == submit.session_key
+                pending = any(not r.get("output_collected") and Submit.model_validate(r["submit"]).session_key == submit.session_key
                               for r in self.db.records("request"))
                 if pending or not await source.idle(tree):
                     self.db.delete("migration", submit.session_key)

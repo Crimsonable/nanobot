@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from agent_backend.config import FrontendConfig, FrontendsConfig, load_frontends, valid_bucket_id
+from agent_backend.models import Identity
 from container_up.bucket_manager import BucketManager
 
 
@@ -25,16 +26,27 @@ def render(config: FrontendConfig | FrontendsConfig, current: dict,
         if not owner:
             raise ValueError(f"Deployment is missing its frontend_id annotation: {name}")
         if (metadata.get("namespace") != config.control.bucket_pool.namespace
-                or metadata.get("labels", {}).get("bucket-id") != name
-                or not valid_bucket_id(config.control.bucket_pool.name_prefix, owner, name)):
+                or metadata.get("labels", {}).get("bucket-id") != name):
             raise ValueError(f"Deployment is not owned by this bucket pool: {name}")
         if owner and frontend_id and owner != frontend_id:
             continue
         env = workload["spec"]["template"]["spec"]["containers"][0].get("env", [])
         password = next((entry.get("value") for entry in env if entry["name"] == "OPENCODE_PASSWORD"), None)
         if not password:
-            raise ValueError("Native bucket credentials missing; complete the coordinated upgrade first")
-        desired = manager.deployment(name, owner, password)
+            raise ValueError("Native bucket credentials missing")
+        saved = next((entry.get("value") for entry in env if entry["name"] == "MANAGED_BUCKET"), None)
+        if not saved:
+            raise ValueError("Native bucket deployment configuration is missing")
+        identity = json.loads(saved)
+        if identity.get("frontend_id") != owner or identity.get("bucket_id") != name:
+            raise ValueError("Deployment configuration ownership mismatch")
+        runtime = manager.config.deployment_for(owner, name,
+            behavior=identity["behavior"],
+            owner=Identity.model_validate(identity["owner"]) if identity["owner"] else None)
+        if runtime.behavior == "pool" and not valid_bucket_id(config.control.bucket_pool.name_prefix, owner, name):
+            raise ValueError(f"Deployment is not owned by this bucket pool: {name}")
+        manager.check_ownership(metadata, runtime)
+        desired = manager.deployment(name, owner, password, runtime=runtime)
         desired["spec"]["replicas"] = workload["spec"].get("replicas", 1)
         items.append(desired)
     return {"apiVersion": "v1", "kind": "List", "items": items}

@@ -305,6 +305,8 @@ async def test_direct_native_queue_permissions_attachment_and_cancel(tmp_path):
             {
                 "bucket_id": "b",
                 "frontend_id": "web",
+                "behavior": "pool",
+                "owner": None,
                 "status": "running",
                 "password": endpoint["password"],
                 "opencode": endpoint,
@@ -425,6 +427,8 @@ async def test_direct_native_queue_permissions_attachment_and_cancel(tmp_path):
                     {
                         "bucket_id": "b2",
                         "frontend_id": "web",
+                        "behavior": "pool",
+                        "owner": None,
                         "status": "running",
                         "password": target_endpoint["password"],
                         "opencode": target_endpoint,

@@ -42,7 +42,7 @@ Channel Gateway 与 CU 共用一个单副本 Pod，分别运行在 `gateway` 和
 
 当前仓库 CU 与 bucket 使用 **UID/GID 0 + privileged**；可选 Web 使用 UID/GID 10001。集群准入策略必须允许当前清单。不要再按旧文档假定所有进程都是 10001。privileged 权限较大，这是当前实现的部署条件；它也不能补齐旧内核缺失的系统调用。
 
-节点须支持插件的 bwrap 隔离。部署后用真实 shell/权限测试验证，执行失败不会自动关闭沙箱。单 bucket 请求 1 CPU / 1Gi 内存、上限 4 CPU / 4Gi；还需给 CU、系统和可选服务留余量。
+pool 桶的节点须支持插件的 bwrap 隔离；individual 不使用 bwrap，使用目录级挂载和原生 shell。部署后用真实 shell/权限测试验证。单 bucket 请求 1 CPU / 1Gi 内存、上限 4 CPU / 4Gi；还需给 CU、系统和可选服务留余量。
 
 ### 1.3 固定参数与需替换的值
 
@@ -395,7 +395,7 @@ docker run --rm --entrypoint sh agent-opencode:opencode-2.3.2-bwrap011 \
   -c 'id; bwrap --version; dpkg-query -W bubblewrap; apt-mark showhold'
 ```
 
-从旧执行适配服务升级时使用完整的新桶镜像，并按 [协调升级步骤](CHANNEL_GATEWAY.md#从旧执行适配服务升级) 停服排空后更新；不能只替换旧进程的镜像标签。
+桶使用完整的当前镜像，CU 仅处理当前结构的桶记录和原生会话元数据。
 
 ## 6. 启动服务
 
@@ -529,11 +529,11 @@ kubectl apply -f /tmp/opencode-bucket-updates.yaml
 kubectl apply -f k8s/opencode/backend.yaml
 ```
 
-工具要求 bucket 有明确的 `opencode.io/frontend-id` annotation，保留当前副本数与原生认证信息。CU 启动入口是 `python -m container_up`，bucket 命令为 `opencode serve`，`agent_backend` 仅为库。旧执行适配服务的首次升级使用协调停服步骤，不使用此工具套用旧模板。
+工具要求 bucket 有明确的 frontend、behavior 和 owner annotations，保留当前副本数与原生认证信息。CU 启动入口是 `python -m container_up`，bucket 命令为 `opencode serve`，`agent_backend` 仅为库。
 
-调度容量配置为 `control.bucket_pool.max_sessions_per_bucket`，按活动会话计数。同一用户不同 chat 独立占用名额。原生 inbox 管理排队，不再设置额外执行 active/queued 上限。
+frontend 的 `bucket.behavior` 默认 pool，也可以配置为 individual。pool 容量由 `control.bucket_pool.max_sessions_per_bucket` 控制，同一用户不同 chat 独立占用名额。individual 按 frontend_id + user_id 计算固定桶 ID，不计算会话容量。原生 inbox 管理排队。
 
-用户权限文件由插件按次读取，修改后对后续工具调用生效；工作区与会话历史保持不变。会话迁移使用原生 API，见 [日志与会话说明](SESSION_LOGGING.md)。
+修改 behavior 并重启 CU 后，后续请求按新模式路由，源桶与目标桶不同就按需迁移；不批量迁移或清空旧桶。旧会话与未采集输出结束前新请求等待重试。桶不保存 settings/runtime 配置快照，启动时读取 frontend 配置并保留桶自身模式。两种模式的插件权限都按次读取原 JSON/YAML 文件；individual 的 CU 在创建/唤醒时现读权限并生成挂载，运行中修改文件不会即时改变挂载。individual config 可读只读，shell 不再包装。完整配置及恢复规则见 [桶模式与按需切换](OPENCODE_BACKEND_IMPLEMENTATION.md#桶模式与按需切换)。
 
 ### 8.4 OpenCode 配置热加载
 
@@ -543,7 +543,7 @@ kubectl apply -f k8s/opencode/backend.yaml
 
 此热加载只覆盖 OpenCode 管理的配置/插件/技能注册表。修改 frontend 总表、用户权限、日志配置、Python 代码或升级二进制时，仍需按相应服务的部署流程处理。
 
-首次从 1.x 升级应停服排空、备份状态，并统一更新 OpenCode、原生配置和插件。CU 等待 OpenCode 自带升级器完成后才接单，后端不访问原生内部表。从旧执行适配服务升级还需把 frontend.runtime 改为 frontend.bucket，并清理旧 WS/RPC/event_forwarding 配置，步骤见 [渠道层说明](CHANNEL_GATEWAY.md#从旧执行适配服务升级)。
+OpenCode、原生配置和插件使用仓库固定的同一版本。CU 等待 OpenCode 就绪后才接单，后端不访问原生内部表。
 
 ## 9. 删除命名空间与重装
 

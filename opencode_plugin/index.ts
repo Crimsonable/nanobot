@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import { configuration, scopeFor } from "./policy.js"
 import { publication } from "./publication.js"
 import * as path from "node:path"
+import * as fs from "node:fs"
 import { applyPermissions, visibleSkill, workspaceInstructions } from "./permissions.js"
 
 function quote(value: string): string {
@@ -42,7 +43,7 @@ export default {
     const config = configuration()
     const publicRoot = path.join(config.common_root, config.frontend_id, "app")
 
-    await ctx.skill.transform(editor => {
+    if (config.behavior === "pool") await ctx.skill.transform(editor => {
       for (const skill of editor.list()) {
         if (!visibleSkill(skill.path, directory, publicRoot)) editor.remove(skill.id)
       }
@@ -60,11 +61,12 @@ export default {
         const scope = await scopeFor(ctx, config, event.sessionID)
         const readable = scope.policy.filesystem.workspace !== "none" &&
           (scope.policy.session.tools.read ?? scope.policy.session.default_tools)
-        const instructions = readable ? workspaceInstructions(directory) : undefined
+        const instructions = readable ? (config.behavior === "pool" ? workspaceInstructions(directory)
+          : fs.existsSync(path.join(directory,"AGENTS.md")) ? fs.readFileSync(path.join(directory,"AGENTS.md"),"utf8") : undefined) : undefined
         if (instructions) event.system.push({type: "text", text: instructions})
         for (const name of Object.keys(event.tools)) {
           if (!(scope.policy.session.tools[name] ?? scope.policy.session.default_tools) ||
-              (scope.policy.filesystem.workspace !== "read_write" && ["write", "edit", "patch"].includes(name)) ||
+              (config.behavior === "pool" && scope.policy.filesystem.workspace !== "read_write" && ["write", "edit", "patch"].includes(name)) ||
               (scope.policy.filesystem.workspace === "none" && name === "publish_attachment")) delete event.tools[name]
         }
       })
@@ -93,6 +95,13 @@ export default {
       if (event.tool === "publish_attachment") return
       const args = structuredClone(event.input) as Record<string, any>
       const scope = await scopeFor(ctx, config, event.sessionID, event.messageID)
+      if (config.behavior === "individual") {
+        if (event.tool.startsWith("opencode_")) throw new Error("Server control is not available to managed sessions")
+        if (!(scope.policy.session.tools[event.tool] ?? scope.policy.session.default_tools))
+          throw new Error("Tool disabled for this user")
+        // The native tool owns its command, workdir, timeout and cancellation unchanged.
+        return
+      }
       const authorized = applyPermissions(scope, event.tool, args)
       if (event.tool === "shell") {
         // Native shell owns execution/cancellation; a hard deadline ends the sandbox

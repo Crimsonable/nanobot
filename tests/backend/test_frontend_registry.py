@@ -71,7 +71,7 @@ def test_cross_frontend_configuration_paths_fail_closed(registry):
         else:
             setattr(frontend.bucket, section, wrong / "user-permissions.yaml")
         with pytest.raises(ValueError, match="must belong to this frontend"):
-            frontend.bucket_config(path, "opencode-bucket-0123456789ab")
+            frontend.bucket_config(path, "opencode-bucket-web-a-0123456789ab")
 
 
 @pytest.mark.parametrize("section", ["opencode", "permissions_file", "storage"])
@@ -93,7 +93,7 @@ def test_configuration_and_content_cannot_swap_subtrees(registry, section):
             secret_key_file=own / "config/secret-key",
         )
     with pytest.raises(ValueError, match="must belong to this frontend"):
-        frontend.bucket_config(path, "opencode-bucket-0123456789ab")
+        frontend.bucket_config(path, "opencode-bucket-web-a-0123456789ab")
 
 
 def test_config_symlink_cannot_alias_public_content(registry):
@@ -107,7 +107,7 @@ def test_config_symlink_cannot_alias_public_content(registry):
         pytest.skip("symlink creation unavailable")
     frontend.bucket.permissions_file = link / "manual.txt"
     with pytest.raises(ValueError, match="without symbolic links"):
-        frontend.bucket_config(path, "opencode-bucket-0123456789ab")
+        frontend.bucket_config(path, "opencode-bucket-web-a-0123456789ab")
 
 
 def test_registry_rejects_duplicate_ids_and_global_frontend_credentials(registry):

@@ -5,8 +5,11 @@ import { parse } from "yaml"
 
 export function configuration() {
   const config = JSON.parse(process.env.MANAGED_BUCKET ?? "null")
-  if (!config?.frontend_id || !config.bucket_id || !config.permissions_file)
+  if (!config?.frontend_id || !config.bucket_id)
     throw new Error("Missing managed bucket configuration")
+  if (config.behavior === "pool" ? !config.permissions_file :
+      config.behavior !== "individual" || !config.owner || !config.user_workspace)
+    throw new Error("Missing managed bucket policy")
   return config
 }
 
@@ -15,11 +18,13 @@ function inside(target: string, root: string) {
   return relative === "" || (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative))
 }
 
-export function policyFor(file: string, frontend: string, user: string) {
+export function policyFor(file: string | null | undefined, frontend: string, user: string,
+                          behavior: "pool" | "individual" = "pool", mounts: {name: string}[] = []) {
   // Read on use: policy edits apply to existing sessions without a watcher or RPC.
-  const config = parse(fs.readFileSync(file, "utf8")) ?? {}
+  const config = (file ? parse(fs.readFileSync(file, "utf8")) : {}) ?? {}
   const policy = {session: {enabled: true, default_tools: true, tools: {} as Record<string, boolean>},
-    sandbox: {enabled: true, network: true}, filesystem: {workspace: "read_write", public_roots: [] as string[]}}
+    sandbox: {enabled: behavior === "pool", network: true},
+    filesystem: {workspace: "read_write", public_roots: [] as string[], mounts: {} as Record<string, string>}}
   const seen = new Set<string>()
   for (const user of config.users ?? []) {
     const key = JSON.stringify([user.frontend_id ?? null, user.user_id])
@@ -31,15 +36,28 @@ export function policyFor(file: string, frontend: string, user: string) {
     for (const section of ["session", "sandbox", "filesystem"] as const) {
       if (!patch[section]) continue
       const tools = {...policy.session.tools, ...patch.session?.tools}
+      const grants = {...policy.filesystem.mounts, ...patch.filesystem?.mounts}
       Object.assign(policy[section], patch[section])
       policy.session.tools = tools
+      policy.filesystem.mounts = grants
     }
   }
-  if (policy.session.enabled !== true || policy.sandbox.enabled !== true ||
-      typeof policy.session.default_tools !== "boolean" || typeof policy.sandbox.network !== "boolean" ||
+  if (typeof policy.session.default_tools !== "boolean" || typeof policy.sandbox.network !== "boolean" ||
       !Object.values(policy.session.tools).every(value => typeof value === "boolean") ||
       !["none", "read_only", "read_write"].includes(policy.filesystem.workspace))
     throw new Error("Invalid user isolation policy")
+  if (behavior === "pool") {
+    if (!file || policy.session.enabled !== true || policy.sandbox.enabled !== true)
+      throw new Error("Invalid user isolation policy")
+  } else {
+    if (policy.sandbox.network !== true) throw new Error("Individual native shell does not support sandbox.network=false")
+    if (policy.filesystem.public_roots.length) throw new Error("Individual public directories must be declared in bucket.mounts")
+    for (const [name, access] of Object.entries(policy.filesystem.mounts)) {
+      if (!mounts.some(mount => mount.name === name) || !["none", "read_only", "read_write"].includes(access))
+        throw new Error("Invalid individual mount permission")
+    }
+    policy.sandbox.enabled = false
+  }
   return policy
 }
 
@@ -83,6 +101,19 @@ export async function scopeFor(ctx: any, config: any, sessionID: string, message
       !inside(directory, path.resolve(config.workspace_root, config.frontend_id)) ||
       directory === path.resolve(config.workspace_root, config.frontend_id))
     throw new Error("Missing managed root session")
+  if (config.behavior === "individual") {
+    const expected = config.owner
+    const identity = createHash("sha256").update(JSON.stringify({frontend_id:expected.frontend_id,user_id:expected.user_id})).digest("hex")
+    if (owner.frontend_id !== expected.frontend_id || owner.user_id !== expected.user_id ||
+        owner.identity_id !== identity || directory !== path.resolve(config.user_workspace))
+      throw new Error("Individual bucket owner mismatch")
+    const input = await inputFor(config, sessionID, messageID)
+    if (input.deadline_at * 1000 <= Date.now()) throw new Error("Request deadline expired")
+    return {version:1, behavior:"individual", owner, root_session:info.id, request_id:input.request_id,
+      workspace:directory, policy:policyFor(config.permissions_file, owner.frontend_id, owner.user_id, "individual", config.mounts ?? []),
+      deadline_at:input.deadline_at,
+      file_bytes:config.limits.file_bytes, spool_bytes:config.limits.spool_bytes}
+  }
   const policy = policyFor(config.permissions_file, owner.frontend_id, owner.user_id)
   const privateFiles = [config.opencode.config_file, config.permissions_file, config.logging_file,
     config.frontend_config_file].filter(Boolean).map((value: string) => path.resolve(value))
@@ -100,7 +131,7 @@ export async function scopeFor(ctx: any, config: any, sessionID: string, message
   if (input.deadline_at * 1000 <= Date.now()) throw new Error("Request deadline expired")
   const lock = path.join(config.state_root, "locks", createHash("sha256").update(info.id).digest("hex") + ".lock")
   fs.mkdirSync(path.dirname(lock), {recursive: true})
-  return {version: 1, owner, root_session: info.id, request_id: input.request_id,
+  return {version: 1, behavior:"pool", owner, root_session: info.id, request_id: input.request_id,
     workspace: directory, policy, public_roots: publicRoots, private_files: privateFiles,
     sandbox: config.sandbox, deadline_at: input.deadline_at, lock_path: lock,
     file_bytes: config.limits.file_bytes, spool_bytes: config.limits.spool_bytes}

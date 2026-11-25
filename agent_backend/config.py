@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, TypeVar
 from urllib.parse import urlparse
 
@@ -10,10 +10,14 @@ import yaml
 from pydantic import Field, SecretStr, field_validator, model_validator
 
 from agent_backend.common import frontend_common_root, frontend_segment, scoped_public_path
-from agent_backend.models import StrictModel, digest
-from agent_backend.workspaces import workspace_volume_subpath
+from agent_backend.models import Identity, StrictModel, digest
+from agent_backend.workspaces import workspace_path, workspace_volume_subpath
 
 BUCKET_SUFFIX_LENGTH = 12
+
+
+def individual_bucket_id(identity: Identity) -> str:
+    return "opencode-user-" + identity.identity_id[:32]
 
 
 def bucket_name_prefix(name_prefix: str, frontend_id: str) -> str:
@@ -24,7 +28,7 @@ def bucket_name_prefix(name_prefix: str, frontend_id: str) -> str:
 
 def valid_bucket_id(name_prefix: str, frontend_id: str, bucket_id: str) -> bool:
     prefix, _, suffix = bucket_id.rpartition("-")
-    return (prefix in (name_prefix, bucket_name_prefix(name_prefix, frontend_id))
+    return (prefix == bucket_name_prefix(name_prefix, frontend_id)
             and len(suffix) == BUCKET_SUFFIX_LENGTH and re.fullmatch(r"[0-9a-f]+", suffix) is not None)
 
 
@@ -105,7 +109,25 @@ class GatewaySettings(StrictModel):
         return self
 
 
+class BucketMount(StrictModel):
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,40}$")
+    volume: Literal["common"] = "common"
+    sub_path: str
+    mount_path: str
+    access: Literal["read_only", "read_write", "none"] = "read_only"
+
+    @model_validator(mode="after")
+    def literal_paths(self):
+        source, target = PurePosixPath(self.sub_path), PurePosixPath(self.mount_path)
+        if (source.is_absolute() or not source.parts or ".." in source.parts
+                or not target.is_relative_to("/mnt/shared") or str(target) == "/mnt/shared"
+                or ".." in target.parts or any(c in self.sub_path + self.mount_path for c in "\\\x00\n\r{}")):
+            raise ValueError("mounts require a relative common sub_path and a path below /mnt/shared")
+        return self
+
+
 class BucketSettings(StrictModel):
+    behavior: Literal["pool", "individual"] = "pool"
     gateway_url: str = "http://channel-gateway:8000"
     state_root: Path = Path("/data/runtime")
     workspace_root: Path = Path("/mnt/env/workspaces")
@@ -115,6 +137,7 @@ class BucketSettings(StrictModel):
     logging_file: Path | None = None
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     limits: AttachmentLimits = Field(default_factory=AttachmentLimits)
+    mounts: list[BucketMount] = Field(default_factory=list)
 
     @field_validator("gateway_url")
     @classmethod
@@ -128,9 +151,18 @@ class BucketConfig(BucketSettings):
     bucket_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     frontend_id: str = Field(min_length=1)
     frontend_config_file: Path | None = None
+    owner: Identity | None = None
+    user_workspace: Path | None = None
 
     @model_validator(mode="after")
     def independent_roots(self) -> BucketConfig:
+        if self.behavior == "individual":
+            if (not self.owner or self.owner.frontend_id != self.frontend_id
+                    or self.bucket_id != individual_bucket_id(self.owner)):
+                raise ValueError("individual bucket requires its deterministic owner identity")
+            self.user_workspace = workspace_path(self.workspace_root, self.owner)
+        elif self.owner is not None:
+            raise ValueError("pool bucket cannot have an exclusive owner")
         if self.frontend_id:
             frontend_segment(self.frontend_id)
             for obj, name in [(self.opencode, "config_file"), (self, "permissions_file"),
@@ -149,7 +181,16 @@ class BucketConfig(BucketSettings):
             raise ValueError("frontend config must not be inside workspace_root")
         if any(p.resolve().is_relative_to(workspace) for p in protected):
             raise ValueError("service files must not be inside workspace_root")
-        for root in self.sandbox.readonly_roots:
+        names, paths = set(), []
+        for mount in self.mounts:
+            source, target = PurePosixPath(mount.sub_path), PurePosixPath(mount.mount_path)
+            if not (source.is_relative_to("shared") or source.is_relative_to(self.frontend_id + "/app")):
+                raise ValueError("extra mounts must belong to shared/ or this frontend app/")
+            if mount.name in names or any(target.is_relative_to(p) or p.is_relative_to(target) for p in paths):
+                raise ValueError("duplicate or overlapping mounts")
+            names.add(mount.name)
+            paths.append(target)
+        for root in self.sandbox.readonly_roots if self.behavior == "pool" else []:
             root = scoped_public_path(root, self.common_root, self.frontend_id)
             if any(root.is_relative_to(Path(p).resolve()) for p in ["/proc", "/sys", "/dev"]):
                 raise ValueError("host process, device and kernel filesystems cannot be mounted")
@@ -205,12 +246,17 @@ class ControlConfig(StrictModel):
         runtime = self.bucket_templates[frontend_id]
         return runtime
 
-    def deployment_for(self, frontend_id: str, bucket_id: str) -> BucketConfig:
+    def deployment_for(self, frontend_id: str, bucket_id: str, *,
+                       behavior: Literal["pool", "individual"] | None = None,
+                       owner: Identity | None = None) -> BucketConfig:
+        settings = self.bucket_for(frontend_id).model_dump()
+        if behavior is not None:
+            settings["behavior"] = behavior
         selected = FrontendConfig(frontend_id=frontend_id,
             provider=self.frontends[frontend_id].provider,
-            bucket=self.bucket_for(frontend_id).model_dump(),
+            bucket=settings,
             control=ControlSettings(bucket_pool=self.bucket_pool))
-        return selected.bucket_config(self.frontend_config_path, bucket_id)
+        return selected.bucket_config(self.frontend_config_path, bucket_id, owner=owner)
 
 
 class ControlSettings(StrictModel):
@@ -291,7 +337,7 @@ class FrontendConfig(FrontendSettings):
             values[name] = target
         return storage.model_copy(update=values)
 
-    def bucket_config(self, path: Path, bucket_id: str) -> BucketConfig:
+    def bucket_config(self, path: Path, bucket_id: str, *, owner: Identity | None = None) -> BucketConfig:
         values = self.bucket.model_dump()
         own_root = frontend_common_root(self.bucket.common_root, self.frontend_id)
 
@@ -317,11 +363,16 @@ class FrontendConfig(FrontendSettings):
         values["logging_file"] = frontend_path(self.bucket.logging_file, "config")
         self.gateway_storage()  # Validate deployment paths; upload credentials stay in Gateway.
         pool = self.control.bucket_pool
-        if not valid_bucket_id(pool.name_prefix, self.frontend_id, bucket_id):
+        if self.bucket.behavior == "individual":
+            valid = (owner is not None and owner.frontend_id == self.frontend_id
+                     and bucket_id == individual_bucket_id(owner))
+        else:
+            valid = valid_bucket_id(pool.name_prefix, self.frontend_id, bucket_id)
+        if not valid:
             raise ValueError("runtime requires a scheduler-issued --bucket-id")
         values["state_root"] = self.bucket.state_root / self.frontend_id / bucket_id
         return BucketConfig(**values, bucket_id=bucket_id, frontend_id=self.frontend_id,
-                             frontend_config_file=path.resolve())
+                             owner=owner, frontend_config_file=path.resolve() if self.bucket.behavior == "pool" else None)
 
 
 class FrontendsConfig(StrictModel):
@@ -352,8 +403,8 @@ class FrontendsConfig(StrictModel):
         return config
 
     def bucket_config(self, path: Path, bucket_id: str,
-                       frontend_id: str) -> BucketConfig:
-        return self.frontend(frontend_id).bucket_config(path, bucket_id)
+                       frontend_id: str, *, owner: Identity | None = None) -> BucketConfig:
+        return self.frontend(frontend_id).bucket_config(path, bucket_id, owner=owner)
 
 
 def load_frontends(path: Path) -> FrontendsConfig:

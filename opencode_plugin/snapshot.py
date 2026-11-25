@@ -8,6 +8,7 @@ import shutil
 import stat
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -25,14 +26,25 @@ def open_workspace_file(workspace, source):
         os.close(parent)
 
 
+@contextmanager
+def snapshot_lock(scope):
+    if scope["behavior"] == "individual":
+        # Native shell does not participate in a lock. The copy below checks the
+        # open file's metadata for concurrent modification before publishing it.
+        yield
+        return
+    with Path(scope["lock_path"]).open("a") as session_lock:
+        fcntl.flock(session_lock, fcntl.LOCK_EX)
+        yield
+
+
 def snapshot(body):
     scope = body["scope"]
     root = Path(body["root"])
     root.mkdir(parents=True, exist_ok=True)
     directory = root / body["key"]
     workspace = Path(scope["workspace"]).resolve()
-    with Path(scope["lock_path"]).open("a") as session_lock:
-        fcntl.flock(session_lock, fcntl.LOCK_EX)
+    with snapshot_lock(scope):
         with (root / ".quota.lock").open("a") as quota_lock:
             fcntl.flock(quota_lock, fcntl.LOCK_EX)
             if time.time() >= scope["deadline_at"]:

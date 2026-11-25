@@ -188,6 +188,8 @@ def register_bucket(service, bucket_id="b", frontend_id="web"):
         {
             "bucket_id": bucket_id,
             "frontend_id": frontend_id,
+            "behavior": "pool",
+            "owner": None,
             "status": "running",
             "opencode": {"url": "http://" + bucket_id, "password": "test"},
             "password": "test",

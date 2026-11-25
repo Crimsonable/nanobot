@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -84,6 +85,46 @@ async def test_direct_native_reply_and_output_ack(system):
         "usage",
     }
     assert body["metadata"]["frontend_id"] == "web" and body["metadata"]["provider"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_gateway_keeps_request_pending_while_mode_switch_waits_for_old_output(system):
+    from channel_gateway.server import ControlClient
+
+    app, cu, _ = system
+    gw = app.state.service
+    await accept(system, "old")
+    original = gw.control
+    remote = ControlClient(GatewaySettings())
+    await remote.http.aclose()
+
+    async def response(request):
+        from fastapi import HTTPException
+
+        try:
+            row = await cu.submit("web", Inbound.model_validate(json.loads(request.content)))
+            return httpx.Response(200, json=row)
+        except HTTPException as exc:
+            return httpx.Response(exc.status_code, json={"detail": exc.detail})
+
+    remote.http = httpx.AsyncClient(base_url="http://control", transport=httpx.MockTransport(response))
+    gw.control = remote
+    cu.config.bucket_templates["web"].behavior = "individual"
+    try:
+        row = await accept(system, "new")
+        assert row["bucket_id"] == "" and "rejected" not in row
+        # Collect through the ordinary gateway path, using the existing local control transport.
+        gw.control = original
+        await answer(system, "old")
+        await gw.native.poll("old")
+        gw.control = remote
+        await gw.dispatch(gw.db.get("request", "new"))
+        row = gw.db.get("request", "new")
+        assert row["bucket_id"].startswith("opencode-user-") and "rejected" not in row
+        assert cu.db.get("request", "new")["native"]["session_id"] == cu.db.get("request", "old")["native"]["session_id"]
+    finally:
+        gw.control = original
+        await remote.close()
 
 
 @pytest.mark.asyncio

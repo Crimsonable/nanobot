@@ -5,7 +5,8 @@ import argparse
 import logging
 from pathlib import Path
 
-from agent_backend.config import load_frontends
+from agent_backend.config import bucket_name_prefix, individual_bucket_id, load_frontends
+from agent_backend.models import Identity
 from agent_backend.logging_config import access_log_config
 
 
@@ -20,8 +21,11 @@ def main(argv: list[str] | None = None) -> None:
     config = frontends.control_config()
     if args.check_config:
         for entry in frontends.frontends:
-            bucket_id = frontends.control.bucket_pool.name_prefix + "-000000000000"
-            frontends.bucket_config(args.config, bucket_id, entry.frontend_id)
+            owner = Identity(frontend_id=entry.frontend_id, user_id="config-check") if entry.bucket.behavior == "individual" else None
+            bucket_id = bucket_name_prefix(config.bucket_pool.name_prefix, entry.frontend_id) + "-000000000000"
+            if owner:
+                bucket_id = individual_bucket_id(owner)
+            frontends.bucket_config(args.config, bucket_id, entry.frontend_id, owner=owner)
         print("Configuration schema valid (credentials and runtime capabilities not probed).")
         return
 

@@ -8,6 +8,7 @@ import { applyPermissions, visibleSkill, workspaceInstructions } from "./dist/pe
 import plugin from "./dist/index.mjs"
 import { Schema } from "effect"
 import { Config } from "@opencode/schema/config"
+import { createHash } from "node:crypto"
 
 test("deployed model configuration uses only native V2 fields",()=>{
   const config=JSON.parse(fs.readFileSync(new URL("../config/opencode/web-test/config/opencode-server.json",import.meta.url),"utf8"))
@@ -37,7 +38,7 @@ test("plugin reads native input identity and mounted policy without a service RP
   t.after(() => {globalThis.fetch=savedFetch;process.env=savedEnv})
   const permissions=path.join(root,"permissions.yaml")
   fs.writeFileSync(permissions,JSON.stringify({defaults:context.execution.policy}))
-  process.env.MANAGED_BUCKET=JSON.stringify({frontend_id:"web",bucket_id:"b",permissions_file:permissions,
+  process.env.MANAGED_BUCKET=JSON.stringify({behavior:"pool",frontend_id:"web",bucket_id:"b",permissions_file:permissions,
     common_root:path.join(root,"common"),workspace_root:path.join(root,"users"),state_root:path.join(root,"state"),
     opencode:{port:4096,config_file:path.join(root,"model.json"),plugin_dir:path.join(root,"plugin"),context_root:path.join(root,"context")},
     sandbox:context.execution.sandbox,limits:{file_bytes:1000,spool_bytes:10000}})
@@ -136,4 +137,73 @@ test("user policy merges defaults, isolates frontends, and reloads edits",async 
   assert.equal(policy.filesystem.workspace,"read_write")
   fs.writeFileSync(file,'defaults: {sandbox: {enabled: false}}')
   assert.throws(()=>policyFor(file,"web","alice"),/isolation/)
+})
+
+test("individual uses native shell input unchanged and allows mounted config paths",async t=>{
+  const {root,workspace}=fixture(t), hooks={}, tools={}
+  const savedEnv={...process.env}, savedFetch=globalThis.fetch
+  t.after(()=>{process.env=savedEnv;globalThis.fetch=savedFetch})
+  const owner={frontend_id:"web",user_id:"alice"}
+  const identity_id=createHash("sha256").update(JSON.stringify(owner)).digest("hex")
+  const configFile=path.join(root,"common/web/config/model.json")
+  fs.mkdirSync(path.dirname(configFile),{recursive:true})
+  fs.writeFileSync(configFile,'{"model":"test"}')
+  const permissions=path.join(path.dirname(configFile),"user-permissions.json")
+  fs.writeFileSync(permissions,JSON.stringify({defaults:{session:{tools:{webfetch:false}},filesystem:{workspace:"read_only"}}}))
+  const config={behavior:"individual",frontend_id:"web",bucket_id:"opencode-user-"+identity_id.slice(0,32),owner,
+    user_workspace:workspace,common_root:path.join(root,"common"),workspace_root:path.join(root,"users"),state_root:path.join(root,"state"),
+    permissions_file:permissions,opencode:{port:4096,config_file:configFile},limits:{file_bytes:1000,spool_bytes:10000}}
+  process.env.MANAGED_BUCKET=JSON.stringify(config)
+  let sessionOwner={...owner,identity_id}, deadline=Date.now()/1000+60
+  globalThis.fetch=async()=>new Response(JSON.stringify({data:[{id:"input",type:"user",
+    metadata:{managed:{request_id:"req",deadline_at:deadline}}}],cursor:{}}))
+  const ctx={location:{directory:workspace},
+    session:{get:async()=>({id:"s",location:{directory:workspace},metadata:{managed:sessionOwner}}),
+      hook:async(name,fn)=>{const previous=hooks[name];hooks[name]=async event=>{await previous?.(event);await fn(event)}}},
+    permission:{hook:async(name,fn)=>{hooks["permission."+name]=fn}},
+    skill:{transform:async()=>{throw new Error("individual must not filter paths with pooled policy")}},
+    tool:{hook:async(name,fn)=>{hooks[name]=fn},transform:async fn=>fn({list:()=>[],remove:()=>{},add:tool=>{tools[tool.name]=tool}})}}
+  await plugin.setup(ctx)
+  for (const input of [{command:"printf '%s' '$HOME `whoami`'",workdir:workspace,timeout:7000,background:true},
+                       {command:"cat "+configFile}]) {
+    const event={sessionID:"s",tool:"shell",input}, before=structuredClone(event)
+    await hooks["execute.before"](event)
+    assert.deepEqual(event,before)
+    assert.equal(event.input,input)
+  }
+  for (const tool of ["read","write","edit"]) {
+    const event={sessionID:"s",tool,input:{path:configFile}}, before=structuredClone(event)
+    await hooks["execute.before"](event)
+    assert.deepEqual(event,before) // the mount, rather than a plugin path check, rejects writes
+  }
+  const permission={sessionID:"s",action:"external_directory",effect:"ask"}
+  await hooks["permission.evaluate"](permission)
+  assert.equal(permission.effect,"allow")
+  assert.ok(tools.publish_attachment)
+  await assert.rejects(hooks["execute.before"]({sessionID:"s",tool:"webfetch",input:{}}),/disabled/)
+  fs.writeFileSync(permissions,JSON.stringify({defaults:{session:{tools:{shell:false,webfetch:true}}}}))
+  await hooks["execute.before"]({sessionID:"s",tool:"webfetch",input:{}})
+  await assert.rejects(hooks["execute.before"]({sessionID:"s",tool:"shell",input:{command:"pwd"}}),/disabled/)
+  fs.writeFileSync(permissions,"{}")
+  sessionOwner={...sessionOwner,user_id:"bob"}
+  await assert.rejects(hooks["execute.before"]({sessionID:"s",tool:"shell",input:{command:"pwd"}}),/owner mismatch/)
+  sessionOwner={...owner,identity_id}
+  deadline=1
+  await assert.rejects(hooks["execute.before"]({sessionID:"s",tool:"shell",input:{command:"pwd"}}),/deadline/)
+})
+
+test("individual policy supports optional files, owner overrides and live JSON grants",async t=>{
+  const {policyFor}=await import("./dist/policy.mjs")
+  const {root}=fixture(t), file=path.join(root,"permissions.json"), mounts=[{name:"docs"},{name:"media"}]
+  assert.equal(policyFor(null,"web","alice","individual").filesystem.workspace,"read_write")
+  fs.writeFileSync(file,JSON.stringify({defaults:{filesystem:{mounts:{docs:"read_only",media:"read_only"}},session:{tools:{shell:false}}},users:[
+    {user_id:"alice",filesystem:{mounts:{docs:"read_write"}},session:{tools:{shell:true}}},
+    {frontend_id:"other",user_id:"alice",filesystem:{workspace:"none"}}]}))
+  const policy=policyFor(file,"web","alice","individual",mounts)
+  assert.equal(policy.session.tools.shell,true)
+  assert.deepEqual(policy.filesystem.mounts,{docs:"read_write",media:"read_only"})
+  assert.equal(policy.filesystem.workspace,"read_write")
+  assert.equal(policy.sandbox.enabled,false)
+  fs.writeFileSync(file,'{"defaults":{"sandbox":{"network":false}}}')
+  assert.throws(()=>policyFor(file,"web","alice","individual",mounts),/network=false/)
 })

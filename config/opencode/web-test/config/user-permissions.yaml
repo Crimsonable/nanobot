@@ -1,14 +1,16 @@
 # Defaults apply only to users of this frontend. Matching users override selected fields.
 defaults:
   sandbox:
-    enabled: true              # must remain true for frontend directory isolation
-    network: true              # allow network access from the bwrap sandbox
+    enabled: true              # pool requires true; individual does not use bwrap
+    network: true              # pool shell network; individual rejects false
   session:
-    enabled: true              # must remain true: session rules + native file-tool path checks
+    enabled: true              # pool requires true for session path checks
     default_tools: true        # tools enabled by default; directory scope still applies
     tools: {}                  # e.g. {webfetch: false, subagent: false, shell: true}
   filesystem:
     workspace: read_write      # read_write | read_only | none; always this user's directory
+    # individual reads this file to generate mounts when the bucket starts; tools switches are read on use.
+    # mounts: {shared-docs: read_only}  # names declared in bucket.mounts
 users: []
 # Example: alice may read her workspace and the frontend app.
 # users:

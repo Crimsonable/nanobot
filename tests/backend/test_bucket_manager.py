@@ -9,7 +9,7 @@ from agent_backend.config import load_frontends
 from container_up.bucket_manager import BucketManager
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
-BUCKET = "opencode-bucket-0123456789ab"
+BUCKET = "opencode-bucket-web-test-0123456789ab"
 
 
 @pytest.fixture
@@ -118,13 +118,17 @@ async def test_write_errors_propagate_with_bounded_conflict_retries(manager, ope
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("foreign_owner", ["bucket", "frontend"])
+@pytest.mark.parametrize("foreign_owner", ["bucket", "frontend", "behavior", "owner", "missing_behavior", "missing_owner"])
 async def test_retry_rechecks_deployment_ownership(manager, foreign_owner):
     changed = deployment(manager, "2")
     if foreign_owner == "bucket":
         changed["metadata"]["labels"]["bucket-id"] = "another-bucket"
-    else:
+    elif foreign_owner == "frontend":
         changed["metadata"]["annotations"]["opencode.io/frontend-id"] = "another-frontend"
+    elif foreign_owner.startswith("missing_"):
+        del changed["metadata"]["annotations"]["opencode.io/" + foreign_owner.removeprefix("missing_")]
+    else:
+        changed["metadata"]["annotations"]["opencode.io/" + foreign_owner] = "another-owner"
     pending, writes = script(
         manager,
         [
@@ -133,7 +137,7 @@ async def test_retry_rechecks_deployment_ownership(manager, foreign_owner):
             ("GET", BUCKET, 200, changed),
         ],
     )
-    with pytest.raises(RuntimeError, match="not owned|another frontend"):
+    with pytest.raises(RuntimeError, match="not owned|another frontend|ownership mismatch"):
         await manager.ensure(BUCKET, "web-test", password="test")
     assert not pending
     assert len(writes) == 1

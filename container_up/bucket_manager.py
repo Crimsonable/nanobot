@@ -11,8 +11,9 @@ import httpx
 
 from agent_backend.common import frontend_segment
 from agent_backend.config import BucketConfig, ControlConfig
-from agent_backend.models import digest
-from agent_backend.workspaces import workspace_volume_subpath
+from agent_backend.models import Identity, digest
+from agent_backend.workspaces import workspace_path, workspace_volume_subpath
+from container_up.mount_policy import individual_policy
 
 
 def environment(config: BucketConfig, password: str) -> dict[str, str]:
@@ -35,9 +36,45 @@ class BucketMissingError(RuntimeError):
 class BucketManager:
     _WRITE_ATTEMPTS = 5
 
-    def __init__(self, config: ControlConfig):
+    def __init__(self, config: ControlConfig, db=None):
         self.config = config
         self.pool = config.bucket_pool
+        self.db = db
+
+    def runtime(self, bucket_id: str, frontend_id: str) -> BucketConfig:
+        bucket = self.db.get("bucket", bucket_id) if self.db else None
+        if bucket:
+            if bucket["frontend_id"] != frontend_id:
+                raise PermissionError("bucket frontend ownership mismatch")
+            owner = Identity.model_validate(bucket["owner"]) if bucket["owner"] else None
+            return self.config.deployment_for(frontend_id, bucket_id,
+                behavior=bucket["behavior"], owner=owner)
+        return self.config.deployment_for(frontend_id, bucket_id)
+
+    @staticmethod
+    def ownership(runtime: BucketConfig) -> dict:
+        return {"opencode.io/frontend-id": runtime.frontend_id,
+                "opencode.io/behavior": runtime.behavior,
+                "opencode.io/owner": runtime.owner.identity_id if runtime.owner else ""}
+
+    def check_ownership(self, metadata, runtime):
+        actual = metadata.get("annotations", {})
+        expected = self.ownership(runtime)
+        if (metadata.get("labels", {}).get("bucket-id") != runtime.bucket_id
+                or actual.get("opencode.io/frontend-id") != runtime.frontend_id
+                or actual.get("opencode.io/behavior") != expected["opencode.io/behavior"]
+                or actual.get("opencode.io/owner") != expected["opencode.io/owner"]):
+            raise RuntimeError("Deployment ownership mismatch")
+
+    @staticmethod
+    def prepare_storage(runtime):
+        paths = [runtime.state_root]
+        if runtime.owner:
+            paths.append(workspace_path(runtime.workspace_root, runtime.owner))
+        for directory in paths:
+            if directory.resolve() != directory.absolute():
+                raise PermissionError("bucket storage cannot contain symbolic links")
+            directory.mkdir(parents=True, exist_ok=True)
 
     async def request(self, method: str, path: str, **kwargs):
         # Read the projected token on every call so Kubernetes token rotation works.
@@ -50,15 +87,15 @@ class BucketManager:
             response.raise_for_status()
         return response
 
-    def deployment(self, bucket_id: str, frontend_id: str, password: str) -> dict:
+    def deployment(self, bucket_id: str, frontend_id: str, password: str, *, runtime=None) -> dict:
         if frontend_id not in self.config.frontends:
             raise ValueError("bucket requires a registered frontend_id")
         frontend_id = frontend_segment(frontend_id)
-        pool, runtime = self.pool, self.config.deployment_for(frontend_id, bucket_id)
+        pool, runtime = self.pool, runtime or self.runtime(bucket_id, frontend_id)
         workspace_subpath = workspace_volume_subpath(runtime.workspace_root, frontend_id)
         labels = {"app": "opencode-bucket", "bucket-id": bucket_id}
         pod_labels = {**labels, "frontend-key": digest(frontend_id)[:16]}
-        annotations = {"opencode.io/frontend-id": frontend_id}
+        annotations = self.ownership(runtime)
         container = {
             "name": "opencode", "workingDir": runtime.opencode.context_root.as_posix(), "image": pool.image, "imagePullPolicy": pool.image_pull_policy,
             "command": [runtime.opencode.binary.as_posix()],
@@ -87,7 +124,7 @@ class BucketManager:
             "readinessProbe": {"httpGet": self.probe(runtime, password)},
             "livenessProbe": {"httpGet": self.probe(runtime, password)},
         }
-        return {"apiVersion": "apps/v1", "kind": "Deployment",
+        deployment = {"apiVersion": "apps/v1", "kind": "Deployment",
                 "metadata": {"name": bucket_id, "namespace": pool.namespace, "labels": pod_labels,
                              "annotations": annotations},
                 "spec": {"replicas": 1, "strategy": {"type": "Recreate"},
@@ -105,6 +142,46 @@ class BucketManager:
                                      {"name": "opencode", "hostPath": {"path": pool.opencode_host_path, "type": "Directory"}},
                                      {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}},
                                  ]}}}}
+        if runtime.behavior == "individual":
+            self.individual_mounts(deployment, runtime)
+        return deployment
+
+    def individual_mounts(self, deployment, runtime):
+        policy = individual_policy(runtime)
+        pod = deployment["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        container["securityContext"] = {"privileged": False, "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]}, "readOnlyRootFilesystem": True,
+            "seccompProfile": {"type": "RuntimeDefault"}}
+        workspace = workspace_path(runtime.workspace_root, runtime.owner).as_posix()
+        state = runtime.state_root.as_posix()
+        access = policy["filesystem"]["workspace"]
+        mounts = [m for m in container["volumeMounts"] if m["name"] not in {"data", "workspace", "source"}
+                  and m.get("subPath") != self.config.frontend_config_path.name]
+        mounts.append({"name": "data", "mountPath": state,
+                       "subPath": str(PurePosixPath(state).relative_to("/data"))})
+        if access == "none":
+            pod["volumes"].append({"name": "empty-workspace", "emptyDir": {}})
+            mounts.append({"name": "empty-workspace", "mountPath": workspace, "readOnly": True})
+        else:
+            mounts.append({"name": "workspace", "mountPath": workspace,
+                "subPath": str(PurePosixPath(workspace).relative_to("/mnt/env")), "readOnly": access == "read_only"})
+        plugin = runtime.opencode.plugin_dir.as_posix()
+        mounts.append({"name": "source", "mountPath": plugin,
+                       "subPath": str(PurePosixPath(plugin).relative_to("/mnt/source")), "readOnly": True})
+        for mount in runtime.mounts:
+            access = policy["filesystem"]["mounts"].get(mount.name, mount.access)
+            if access == "none":
+                continue
+            source = runtime.common_root / mount.sub_path
+            if source.resolve() != source.absolute():
+                raise PermissionError("shared mount cannot contain symbolic links")
+            # Separate volume aliases allow selected shared content to be writable while config stays read-only.
+            name = "shared-" + mount.name
+            pod["volumes"].append({"name": name, "persistentVolumeClaim": {"claimName": self.pool.common_pvc}})
+            mounts.append({"name": name, "mountPath": mount.mount_path, "subPath": mount.sub_path,
+                           "readOnly": access == "read_only"})
+        container["volumeMounts"] = mounts
 
     @staticmethod
     def probe(config, password):
@@ -121,12 +198,14 @@ class BucketManager:
         if len(pods) != 1:
             return None
         pod = pods[0]
-        if pod["metadata"].get("annotations", {}).get("opencode.io/frontend-id") != frontend_id:
-            raise PermissionError("pod frontend mismatch")
+        runtime = self.runtime(bucket_id, frontend_id)
+        self.check_ownership(pod["metadata"], runtime)
         ip = pod["status"]["podIP"]
         if ":" in ip:
             ip = "[" + ip + "]"
-        port = self.config.bucket_for(frontend_id).opencode.port
+        # A running Pod may still use the previous port after the frontend config changes.
+        container = next(c for c in pod["spec"]["containers"] if c["name"] == "opencode")
+        port = next(p["containerPort"] for p in container["ports"] if p["name"] == "opencode")
         return {"url": f"http://{ip}:{port}", "password": password,
                 "generation": pod["metadata"]["uid"]}
 
@@ -137,9 +216,7 @@ class BucketManager:
             return False
         response.raise_for_status()
         metadata = response.json()["metadata"]
-        if (metadata.get("labels", {}).get("bucket-id") != bucket_id
-                or metadata.get("annotations", {}).get("opencode.io/frontend-id") != frontend_id):
-            raise RuntimeError("Deployment ownership mismatch")
+        self.check_ownership(metadata, self.runtime(bucket_id, frontend_id))
         return not metadata.get("deletionTimestamp")
 
     async def wait_stopped(self, bucket_id: str) -> None:
@@ -153,13 +230,16 @@ class BucketManager:
                 await asyncio.sleep(0.5)
 
     async def ensure(self, bucket_id: str, frontend_id: str, password: str, *, allow_create: bool = True) -> None:
+        runtime = self.runtime(bucket_id, frontend_id)
+        if runtime.behavior == "individual":
+            self.prepare_storage(runtime)
         collection = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments"
         for attempt in range(self._WRITE_ATTEMPTS):
             response = await self.request("GET", collection + "/" + bucket_id)
             if response.status_code == 404:
                 if not allow_create:
                     raise BucketMissingError(bucket_id)
-                response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id, password))
+                response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id, password, runtime=runtime))
                 if response.status_code == 409:
                     response = await self.request("GET", collection + "/" + bucket_id)
             response.raise_for_status()
@@ -171,7 +251,8 @@ class BucketManager:
             owner = current.get("metadata", {}).get("annotations", {}).get("opencode.io/frontend-id")
             if owner != frontend_id:
                 raise RuntimeError("existing Deployment belongs to another frontend")
-            desired = self.deployment(bucket_id, frontend_id, password)
+            self.check_ownership(current["metadata"], runtime)
+            desired = self.deployment(bucket_id, frontend_id, password, runtime=runtime)
             desired["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
             response = await self.request("PUT", collection + "/" + bucket_id, json=desired)
             if not await self._retry_conflict(response, attempt):

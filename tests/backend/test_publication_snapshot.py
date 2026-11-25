@@ -22,6 +22,7 @@ def publication(tmp_path):
     (workspace / "report.txt").write_bytes(b"report")
     body = {
         "scope": {
+            "behavior": "pool",
             "workspace": str(workspace),
             "lock_path": str(tmp_path / "lock"),
             "deadline_at": time.time() + 60,
@@ -90,3 +91,34 @@ def test_interrupted_copy_is_cleaned_under_quota_lock(publication):
     (orphan / "0.data").write_bytes(b"x" * 100)
     assert helper.snapshot(body)[0]["size"] == 6
     assert not orphan.exists()
+
+
+def test_individual_snapshot_needs_no_cooperating_shell_lock(publication):
+    helper, body, _ = publication
+    body["scope"].pop("lock_path")
+    body["scope"]["behavior"] = "individual"
+    result = helper.snapshot(body)
+    assert Path(result[0]["path"]).read_bytes() == b"report"
+
+
+def test_individual_snapshot_rejects_source_changed_during_copy(publication, monkeypatch):
+    from types import SimpleNamespace
+
+    helper, body, _ = publication
+    body["scope"].pop("lock_path")
+    body["scope"]["behavior"] = "individual"
+    original, calls = helper.os.fstat, 0
+
+    def changed(fd):
+        nonlocal calls
+        calls += 1
+        value = original(fd)
+        if calls == 2:
+            return SimpleNamespace(st_size=value.st_size + 1, st_mtime_ns=value.st_mtime_ns,
+                                   st_ctime_ns=value.st_ctime_ns)
+        return value
+
+    monkeypatch.setattr(helper.os, "fstat", changed)
+    with pytest.raises(ValueError, match="source changed"):
+        helper.snapshot(body)
+    assert not (Path(body["root"]) / body["key"] / "manifest.json").exists()

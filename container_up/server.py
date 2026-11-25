@@ -16,7 +16,6 @@ from agent_backend.models import ExecutionStatus, Identity, Submit, digest, sess
 from agent_backend.session_history import SessionBusyError
 from container_up.bucket_manager import BucketMissingError
 from container_up.bucket_scheduler import BucketScheduler
-from container_up.migrations import upgrade_session_bindings
 from container_up.session_manager import SessionManager
 
 log = logging.getLogger(__name__)
@@ -26,7 +25,6 @@ class ControlService:
     def __init__(self, config: ControlConfig):
         self.config = config
         self.db = Journal(config.state_root / "control.sqlite")
-        upgrade_session_bindings(self.db)
         self.session_locks: dict[str, asyncio.Lock] = {}
         self.pool = BucketScheduler(config, self.db, self.interrupt_bucket_requests)
         self.sessions = SessionManager(config, self.db, self.pool)
@@ -93,6 +91,10 @@ class ControlService:
                             raise PermissionError("workspace cannot contain symbolic links")
                         workspace.mkdir(parents=True, exist_ok=True)
                         submit.session_id = await self.sessions.prepare(submit, bucket_id, workspace)
+                        if not self.pool.matches_mode(self.db.get("bucket", bucket_id), identity):
+                            # Finish a recorded transfer before selecting the current mode's target.
+                            preferred_bucket = None
+                            continue
                         submit.deadline_at = time.time() + self.config.limits.request_seconds
                         await self.pool.ready(bucket_id)
                         row = self.register(submit, binding, fingerprint)
@@ -104,6 +106,10 @@ class ControlService:
                 except BucketMissingError:
                     continue
                 except SessionBusyError as exc:
+                    source = self.db.get("bucket", exc.bucket_id)
+                    if not self.pool.matches_mode(source, identity):
+                        raise HTTPException(503, "session is draining before bucket migration",
+                                            headers={"Retry-After": "1"}) from exc
                     active = self.db.get("binding", key)
                     if active and active["bucket_id"] != exc.bucket_id:
                         raise HTTPException(409, "session has pending work in another bucket") from exc

@@ -96,7 +96,7 @@ def test_check_command_validates_every_frontend_and_exits(registry):
 
 def test_bucket_command_is_native_and_has_only_native_health_port():
     config = load_frontends(EXAMPLE).control_config()
-    workload = BucketManager(config).deployment("opencode-bucket-0123456789ab", "web-test", "test")
+    workload = BucketManager(config).deployment("opencode-bucket-web-test-0123456789ab", "web-test", "test")
     container = workload["spec"]["template"]["spec"]["containers"][0]
     assert container["command"] == ["/opt/opencode/opencode"]
     assert container["args"] == ["serve", "--hostname", "0.0.0.0", "--port", "4096"]

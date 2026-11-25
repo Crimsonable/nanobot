@@ -20,12 +20,4 @@ Service `container-up:8000` 指向 CU，`channel-gateway:8000` 指向 Gateway。
 
 Web 代理的 `GATEWAY_BASE_URL` 和隐患专家 MCP 的 `CONTAINER_UP_BASE_URL` 都指向 Gateway。后者保留调用端原有配置名。
 
-## 从旧执行适配服务升级
-
-暂停入站，完成或取消旧请求，并排空旧服务的可靠队列与跨桶迁移。停止旧 CU/Gateway 和所有桶，等待 Pod 退出，备份 state 卷。原生状态目录继续沿用 `/data/runtime/<frontend>/<bucket>/opencode-home`，保留用户 workspace。
-
-同步更新源码、插件、镜像及 frontends.json：把每条 frontend 的 runtime 改为 bucket，删除 event_forwarding、control_url、rpc_port、health_port，bucket.gateway_url 使用 HTTP Gateway 地址。旧 limits.output_bytes 删除；请求超时仅保留在 control.limits.request_seconds，bucket.limits 只保留 file_bytes/spool_bytes。镜像使用 `Dockerfile.opencode` 构建的 `agent-opencode:opencode-2.3.2-bwrap011`。
-
-CU 启动时只对已经排空的旧控制记录执行一次升级，给已有桶生成原生认证信息并标记为休眠。桶再次启动时 CU 更新 Deployment 为原生命令。已有原生会话的旧身份 metadata 会通过原生 API 转成 managed；历史正文、会话 ID 和工作区不变。旧桶内的 runtime.sqlite 已不参与运行，可在核对备份与历史后由运维清理。
-
-不要混跑新旧进程：没有旧 WebSocket/RPC 入口，也没有兼容转发服务。已使用独立 Gateway 数据库的部署不需要迁移渠道记录。更早的 CU 内置渠道版本仍可在停服排空后使用 `python -m channel_gateway.migrate --source ... --destination ...` 导入历史投递记录。
+桶记录和会话元数据仅使用当前结构。CU 不执行旧执行适配服务的数据升级；pool 与 individual 之间的切换使用正常的跨桶会话迁移。
