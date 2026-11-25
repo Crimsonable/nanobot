@@ -1,26 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from agent_backend.config import ControlConfig, GatewaySettings
 from agent_backend.ingress import Inbound
 from agent_backend.journal import Journal
-from agent_backend.models import Envelope, Identity, OpenCodeEventChunk, Result, digest, uid
-from agent_backend.wire import Peer
+from agent_backend.models import Identity, Result, digest, uid
 from channel_gateway.artifact_service import ArtifactService
 from channel_gateway.channel_service import ChannelService
 from channel_gateway.event_stream import RequestStreams
-from channel_gateway.legacy_events import translate
-from channel_gateway.native_reply import resolve_reply
+from channel_gateway.opencode import NativeGateway
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +45,9 @@ class ControlClient:
     async def bucket(self, bucket_id):
         return await self.call("GET", f"/internal/buckets/{quote(bucket_id, safe='')}")
 
+    async def collected(self, frontend, request_id, result):
+        return await self.call("POST", f"/internal/requests/{quote(frontend, safe='')}/{quote(request_id, safe='')}/collected", json=result)
+
     async def close(self):
         await self.http.aclose()
 
@@ -55,7 +55,7 @@ class ControlClient:
 class GatewayService:
     def __init__(self, config: ControlConfig, settings: GatewaySettings, channels=None, control=None):
         self.config, self.settings = config, settings
-        self.db = Journal(settings.state_root / "gateway.sqlite", config.limits.outbox_messages)
+        self.db = Journal(settings.state_root / "gateway.sqlite")
         self.streams = RequestStreams(self.db)
         self.channels = channels or ChannelService(config)
         self.artifacts = ArtifactService(config, self.db, self.channels)
@@ -63,8 +63,7 @@ class GatewayService:
         self.delivery_ready = asyncio.Event()
         self.completed: dict[str, asyncio.Event] = {}
         self.locks: dict[str, asyncio.Lock] = {}
-        self.sockets: dict[str, WebSocket] = {}
-        self.event_locks: dict[str, asyncio.Lock] = {}
+        self.native = NativeGateway(self)
 
     def require_frontend(self, frontend):
         if frontend not in self.config.frontends:
@@ -126,6 +125,7 @@ class GatewayService:
         self.db.put("request", row["request_id"], {**latest, "bucket_id": remote["bucket_id"],
                     "submit": remote["submit"]})
         await self.forward_cancel(row["request_id"])
+        self.native.watch(row["request_id"])
 
     async def forward_cancel(self, request_id):
         row = self.db.get("request", request_id)
@@ -137,7 +137,7 @@ class GatewayService:
     async def recover_submissions(self):
         while True:
             for row in self.db.records("request"):
-                if "rejected" not in row and not row.get("result"):
+                if "rejected" not in row and (not row.get("result") or not row.get("output_collected")):
                     try:
                         async with self.locks.setdefault(row["request_id"], asyncio.Lock()):
                             latest = self.db.get("request", row["request_id"])
@@ -145,87 +145,22 @@ class GatewayService:
                                 await self.dispatch(latest)
                             else:
                                 await self.forward_cancel(row["request_id"])
-                                await self.query(row["frontend_id"], row["request_id"])
+                                self.native.watch(row["request_id"])
                     except Exception:
                         log.warning("gateway submission pending request_id=%s", row["request_id"])
             await asyncio.sleep(1)
 
-    async def event_request(self, bucket_id, event, frontend_id):
-        row = self.db.get("request", event.request_id)
-        if not row or row["frontend_id"] != frontend_id:
-            raise PermissionError("unknown gateway request")
-        if not row["bucket_id"]:
-            remote = await self.control.request(frontend_id, event.request_id)
-            row = {**row, "bucket_id": remote["bucket_id"], "submit": remote["submit"]}
-            self.db.put("request", event.request_id, row)
-        if row["bucket_id"] != bucket_id:
-            raise PermissionError("request belongs to another bucket")
-        return row
-
-    async def on_event(self, bucket_id: str, event: Envelope, frontend_id: str):
-        if event.bucket_id != bucket_id:
-            raise PermissionError("bucket identity mismatch")
-        if event.type == "opencode.event.chunk":
-            await self.event_request(bucket_id, event, frontend_id)
-            chunk = OpenCodeEventChunk.model_validate(event.payload)
-            if chunk.index >= chunk.count or chunk.count > 1024:
-                raise ValueError("invalid event chunk")
-            key = digest([bucket_id, chunk.event_id])
-            if self.db.get("opencode_event", key):
-                return
-            state = self.db.get("event_chunks", key) or {"count": chunk.count, "request_id": event.request_id, "parts": {}}
-            if state["count"] != chunk.count or state["request_id"] != event.request_id:
-                raise ValueError("chunk identity mismatch")
-            index = str(chunk.index)
-            if index in state["parts"] and state["parts"][index] != chunk.data:
-                raise ValueError("conflicting chunk")
-            state["parts"][index] = chunk.data
-            self.db.put("event_chunks", key, state)
-            if len(state["parts"]) == chunk.count:
-                original = Envelope.model_validate_json(b"".join(base64.b64decode(state["parts"][str(i)], validate=True)
-                                                                  for i in range(chunk.count)))
-                if original.type != "opencode.event" or original.event_id != chunk.event_id or original.request_id != event.request_id:
-                    raise ValueError("reassembled event identity mismatch")
-                await self.on_event(bucket_id, original, frontend_id)
-                self.db.delete("event_chunks", key)
+    def finish(self, request_id: str, result: Result):
+        row = self.db.get("request", request_id)
+        if row.get("result"):
             return
-        row = await self.event_request(bucket_id, event, frontend_id)
         with self.db.transaction():
-            if event.type == "opencode.event":
-                payload = event.payload
-                identity = row["submit"]["identity"]
-                if any(payload.get(k) != v for k, v in {**identity, "chat_id": row["chat_id"]}.items()):
-                    raise PermissionError("event routing mismatch")
-                key = digest([bucket_id, event.event_id])
-                if not self.db.get("opencode_event", key):
-                    self.db.put("opencode_event", key, event.model_dump(mode="json"))
-                    if row["input"].get("stream") and not row.get("result"):
-                        projection_key = digest([event.request_id, payload.get("session_id")])
-                        state = self.db.get("legacy_event_state", projection_key) or {}
-                        state["directory"] = payload.get("directory", "")
-                        for legacy in translate(payload["event"], state):
-                            self.streams.append(event.request_id, "opencode.event", legacy)
-                        self.db.put("legacy_event_state", projection_key, state)
-            elif event.type == "runtime.result":
-                payload = dict(event.payload)
-                source = payload.pop("native_reply", None)
-                result = Result.model_validate(payload)
-                if result.request_id != event.request_id:
-                    raise ValueError("result identity mismatch")
-                if source and result.status != "cancelled":
-                    result = resolve_reply(self.db, bucket_id, source, result)
-                self.artifacts.validate_result(row, result.attachments)
-                value = result.model_dump(mode="json")
-                if row.get("result"):
-                    return  # Replay cannot alter a result after later native events arrived.
-                finished = {**row, "status": result.status, "result": value}
-                self.db.put("request", event.request_id, finished)
-                if row["input"].get("stream"):
-                    self.streams.append(event.request_id, "gateway.result", self.response(finished))
-                self.delivery_ready.set()
-                self.completed.setdefault(event.request_id, asyncio.Event()).set()
-            else:
-                raise ValueError("unsupported gateway event")
+            finished = {**row, "status": result.status, "result": result.model_dump(mode="json")}
+            self.db.put("request", request_id, finished)
+            if row["input"].get("stream"):
+                self.streams.append(request_id, "gateway.result", self.response(finished))
+        self.delivery_ready.set()
+        self.completed.setdefault(request_id, asyncio.Event()).set()
 
     async def query(self, frontend, request_id):
         self.require_frontend(frontend)
@@ -233,15 +168,24 @@ class GatewayService:
         if not row or row["frontend_id"] != frontend:
             raise HTTPException(404, "request not found")
         if not row.get("result") and row["bucket_id"]:
-            remote = await self.control.request(frontend, request_id)
-            if (remote.get("result") or {}).get("error") == "BUCKET_MISSING_EXECUTION_INTERRUPTED":
-                await self.on_event(row["bucket_id"], Envelope(type="runtime.result",
-                    bucket_id=row["bucket_id"], request_id=request_id, payload=remote["result"]), frontend)
-                return self.db.get("request", request_id)
-            # Execution may finish before its output is received; final response waits for output.
-            if remote["status"] not in {"completed", "failed", "cancelled"}:
-                row = {**row, "status": remote["status"]}
+            self.native.watch(request_id)
         return row
+
+    async def upload_request(self, frontend, request_id, bucket_id, root_session):
+        self.require_frontend(frontend)
+        row = self.db.get("request", request_id)
+        if not row or row["frontend_id"] != frontend:
+            raise HTTPException(404, "request not found")
+        if not root_session:
+            raise PermissionError("root session is required")
+        remote = await self.control.request(frontend, request_id)
+        if remote["bucket_id"] != bucket_id or (remote.get("native") or {}).get("session_id") != root_session:
+            raise PermissionError("attachment request/session ownership mismatch")
+        row = self.db.get("request", request_id)  # Cancellation may arrive during the CU query.
+        if (row.get("result") or remote.get("result") or row.get("cancel_requested")
+                or remote["submit"]["deadline_at"] <= time.time()):
+            raise HTTPException(409, "request is no longer accepting attachments")
+        return {**row, "submit": remote["submit"], "bucket_id": bucket_id}
 
     @staticmethod
     def response(row):
@@ -306,8 +250,7 @@ def create_app(config: ControlConfig, settings: GatewaySettings, channels=None, 
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            for socket in list(service.sockets.values()):
-                await socket.close()
+            await service.native.close()
             await service.channels.stop()
             await service.control.close()
             service.db.close()
@@ -338,11 +281,8 @@ def create_app(config: ControlConfig, settings: GatewaySettings, channels=None, 
         bucket_id = request.headers.get("x-bucket-id", "")
         if not bucket_id:
             raise PermissionError("bucket identity is required")
-        row = await service.event_request(bucket_id, Envelope(type="attachment.upload",
-            bucket_id=bucket_id, request_id=request_id), frontend_id)
-        if (row.get("result") or row.get("cancel_requested")
-                or row["submit"]["deadline_at"] <= time.time()):
-            raise HTTPException(409, "request is no longer accepting attachments")
+        root_session = request.headers.get("x-root-session-id", "")
+        row = await service.upload_request(frontend_id, request_id, bucket_id, root_session)
         provider = config.frontends[frontend_id].provider
         log.info("attachment_upload stage=gateway event=start frontend_id=%s request_id=%s attachment_id=%s provider=%s filename=%r content_type=%r file_limit_bytes=%d",
                  frontend_id, request_id, attachment_id, provider, filename, content_type, config.limits.file_bytes)
@@ -363,6 +303,8 @@ def create_app(config: ControlConfig, settings: GatewaySettings, channels=None, 
             log.exception("attachment_upload stage=gateway event=failed frontend_id=%s request_id=%s attachment_id=%s provider=%s file_bytes=%d",
                           frontend_id, request_id, attachment_id, provider, len(data))
             raise HTTPException(502, "channel attachment upload failed") from None
+        await service.upload_request(frontend_id, request_id, bucket_id, root_session)
+        service.artifacts.attach(row, result)
         log.info("attachment_upload stage=gateway event=completed frontend_id=%s request_id=%s attachment_id=%s provider=%s file_bytes=%d",
                  frontend_id, request_id, attachment_id, provider, len(data))
         return result.model_dump(mode="json")
@@ -430,34 +372,5 @@ def create_app(config: ControlConfig, settings: GatewaySettings, channels=None, 
         if payload is not None:
             await service.dispatch_channel(frontend_id, payload)
         return value
-
-    @app.websocket("/internal/events/ws")
-    async def events(socket: WebSocket):
-        from agent_backend.sockets import StarletteSocket
-        bucket_id = socket.headers.get("x-bucket-id", "")
-        try:
-            bucket = await service.control.bucket(bucket_id)
-            service.require_frontend(bucket["frontend_id"])
-        except (HTTPException, httpx.HTTPError):
-            await socket.close(code=1008)
-            return
-        await socket.accept()
-        if old := service.sockets.get(bucket_id):
-            await old.close(code=1012)
-        service.sockets[bucket_id] = socket
-
-        async def receive(event):
-            async with service.event_locks.setdefault(bucket_id, asyncio.Lock()):
-                if service.sockets.get(bucket_id) is not socket:
-                    raise PermissionError("superseded bucket connection")
-                await service.on_event(bucket_id, event, bucket["frontend_id"])
-
-        try:
-            await Peer(StarletteSocket(socket), service.db, bucket_id, receive, protocol="agent-gateway/1").run()
-        except (WebSocketDisconnect, ConnectionError, RuntimeError, ValueError, PermissionError, TimeoutError, httpx.HTTPError, HTTPException):
-            log.info("gateway bucket disconnected bucket_id=%s", bucket_id)
-        finally:
-            if service.sockets.get(bucket_id) is socket:
-                service.sockets.pop(bucket_id, None)
 
     return app

@@ -3,28 +3,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 
 from agent_backend.models import Identity
 
 
-class SessionBusy(RuntimeError):
+class SessionBusyError(RuntimeError):
     def __init__(self, bucket_id: str):
         super().__init__("session still has pending work")
         self.bucket_id = bucket_id
 
 
-def transfer_path(bucket_root: Path, source_bucket: str, session_key: str) -> Path:
-    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", source_bucket):
-        raise ValueError("invalid source bucket")
-    if not re.fullmatch(r"[a-f0-9]{64}", session_key):
-        raise ValueError("invalid session key")
-    return bucket_root.parent / source_bucket / "session-transfers" / (session_key + ".json")
-
-
 def check_owner(info: dict, identity: Identity, chat_id: str) -> None:
-    context = info.get("metadata", {}).get("bucket_runtime", {})
+    context = info.get("metadata", {}).get("managed", {})
     if any(context.get(key) != value for key, value in {
         **identity.model_dump(), "chat_id": chat_id, "identity_id": identity.identity_id,
     }.items()):
@@ -55,17 +46,11 @@ def read_history(path: Path, session_id: str, identity: Identity, chat_id: str) 
     return sessions
 
 
-def imported_history(data: dict, bucket_id: str, context: dict, permissions: list[dict]) -> dict:
-    info = data["info"]
-    metadata = {**info.get("metadata", {}), "bucket_runtime": {
-        **context, "schema_version": 1, "bucket_id": bucket_id, "requests": {},
-    }}
-    return {**data, "info": {**info, "metadata": metadata, "permissions": permissions}}
-
-
 def verify_history(expected: dict, actual: dict) -> None:
-    # Native import regenerates slug, location/project and bookkeeping timestamps.
+    # Native import regenerates slug, project and bookkeeping timestamps.
     fields = ("id", "parentID", "title", "agent", "model", "metadata", "permissions")
     if (any(expected["info"].get(key) != actual["info"].get(key) for key in fields)
+            or Path(expected["info"]["location"]["directory"]).resolve()
+            != Path(actual["info"]["location"]["directory"]).resolve()
             or expected["messages"] != actual["messages"]):
         raise RuntimeError("native import history readback mismatch")

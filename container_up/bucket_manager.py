@@ -1,19 +1,34 @@
-"""Kubernetes workload lifecycle; CU WebSocket carries bucket control traffic."""
+"""Kubernetes lifecycle for containers running the native OpenCode server."""
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import ssl
 from pathlib import PurePosixPath
 
 import httpx
 
 from agent_backend.common import frontend_segment
-from agent_backend.config import ControlConfig
+from agent_backend.config import BucketConfig, ControlConfig
 from agent_backend.models import digest
 from agent_backend.workspaces import workspace_volume_subpath
 
 
-class BucketMissing(RuntimeError):
+def environment(config: BucketConfig, password: str) -> dict[str, str]:
+    home = config.state_root / "opencode-home"
+    return {
+        "HOME": home.as_posix(), "XDG_CONFIG_HOME": (home / "config").as_posix(),
+        "XDG_DATA_HOME": (home / "data").as_posix(), "XDG_CACHE_HOME": (home / "cache").as_posix(),
+        "XDG_STATE_HOME": (home / "state").as_posix(), "OPENCODE_PASSWORD": password,
+        "OPENCODE_CONFIG": config.opencode.config_file.as_posix(),
+        "OPENCODE_CONFIG_PROJECT_DISABLE": "true",
+        "OPENCODE_CONFIG_CONTENT": json.dumps({"plugins": ["file://" + config.opencode.plugin_dir.as_posix()]}),
+        "MANAGED_BUCKET": config.model_dump_json(),
+    }
+
+
+class BucketMissingError(RuntimeError):
     pass
 
 
@@ -35,20 +50,21 @@ class BucketManager:
             response.raise_for_status()
         return response
 
-    def deployment(self, bucket_id: str, frontend_id: str) -> dict:
+    def deployment(self, bucket_id: str, frontend_id: str, password: str) -> dict:
         if frontend_id not in self.config.frontends:
             raise ValueError("bucket requires a registered frontend_id")
         frontend_id = frontend_segment(frontend_id)
-        pool, runtime = self.pool, self.config.runtime_for(frontend_id)
+        pool, runtime = self.pool, self.config.deployment_for(frontend_id, bucket_id)
         workspace_subpath = workspace_volume_subpath(runtime.workspace_root, frontend_id)
         labels = {"app": "opencode-bucket", "bucket-id": bucket_id}
         pod_labels = {**labels, "frontend-key": digest(frontend_id)[:16]}
         annotations = {"opencode.io/frontend-id": frontend_id}
         container = {
-            "name": "runtime", "workingDir": "/mnt/source", "image": pool.image, "imagePullPolicy": pool.image_pull_policy,
-            "args": ["python", "-m", "bucket_runtime", "--config",
-                     self.config.frontend_config_path.as_posix(), "--frontend-id", frontend_id,
-                     "--bucket-id", bucket_id],
+            "name": "opencode", "workingDir": runtime.opencode.context_root.as_posix(), "image": pool.image, "imagePullPolicy": pool.image_pull_policy,
+            "command": [runtime.opencode.binary.as_posix()],
+            "args": ["serve", "--hostname", "0.0.0.0", "--port", str(runtime.opencode.port)],
+            "env": [{"name": key, "value": value} for key, value in environment(runtime, password).items()],
+            "ports": [{"containerPort": runtime.opencode.port, "name": "opencode"}],
             "securityContext": {"privileged": True, "allowPrivilegeEscalation": True,
                                 "readOnlyRootFilesystem": False},
             "resources": {"requests": {"cpu": "1", "memory": "1Gi"},
@@ -66,10 +82,10 @@ class BucketManager:
                 {"name": "common", "mountPath": self.config.frontend_config_path.as_posix(),
                  "subPath": self.config.frontend_config_path.name, "readOnly": True},
                 {"name": "tmp", "mountPath": "/tmp"}],
-            "startupProbe": {"httpGet": {"path": "/health/ready", "port": runtime.health_port},
+            "startupProbe": {"httpGet": self.probe(runtime, password),
                              "failureThreshold": max(30, pool.ready_timeout_seconds // 5), "periodSeconds": 5},
-            "readinessProbe": {"httpGet": {"path": "/health/ready", "port": runtime.health_port}},
-            "livenessProbe": {"httpGet": {"path": "/health/live", "port": runtime.health_port}},
+            "readinessProbe": {"httpGet": self.probe(runtime, password)},
+            "livenessProbe": {"httpGet": self.probe(runtime, password)},
         }
         return {"apiVersion": "apps/v1", "kind": "Deployment",
                 "metadata": {"name": bucket_id, "namespace": pool.namespace, "labels": pod_labels,
@@ -89,6 +105,30 @@ class BucketManager:
                                      {"name": "opencode", "hostPath": {"path": pool.opencode_host_path, "type": "Directory"}},
                                      {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}},
                                  ]}}}}
+
+    @staticmethod
+    def probe(config, password):
+        token = base64.b64encode(("opencode:" + password).encode()).decode()
+        return {"path": "/api/info", "port": config.opencode.port,
+                "httpHeaders": [{"name": "Authorization", "value": "Basic " + token}]}
+
+    async def endpoint(self, bucket_id: str, frontend_id: str, password: str) -> dict | None:
+        response = await self.request("GET", f"/api/v1/namespaces/{self.pool.namespace}/pods",
+            params={"labelSelector": f"app=opencode-bucket,bucket-id={bucket_id}"})
+        response.raise_for_status()
+        pods = [p for p in response.json()["items"] if not p["metadata"].get("deletionTimestamp")
+                and p.get("status", {}).get("phase") == "Running" and p["status"].get("podIP")]
+        if len(pods) != 1:
+            return None
+        pod = pods[0]
+        if pod["metadata"].get("annotations", {}).get("opencode.io/frontend-id") != frontend_id:
+            raise PermissionError("pod frontend mismatch")
+        ip = pod["status"]["podIP"]
+        if ":" in ip:
+            ip = "[" + ip + "]"
+        port = self.config.bucket_for(frontend_id).opencode.port
+        return {"url": f"http://{ip}:{port}", "password": password,
+                "generation": pod["metadata"]["uid"]}
 
     async def exists(self, bucket_id: str, frontend_id: str) -> bool:
         path = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments/{bucket_id}"
@@ -112,26 +152,26 @@ class BucketManager:
                     return
                 await asyncio.sleep(0.5)
 
-    async def ensure(self, bucket_id: str, frontend_id: str, *, allow_create: bool = True) -> None:
+    async def ensure(self, bucket_id: str, frontend_id: str, password: str, *, allow_create: bool = True) -> None:
         collection = f"/apis/apps/v1/namespaces/{self.pool.namespace}/deployments"
         for attempt in range(self._WRITE_ATTEMPTS):
             response = await self.request("GET", collection + "/" + bucket_id)
             if response.status_code == 404:
                 if not allow_create:
-                    raise BucketMissing(bucket_id)
-                response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id))
+                    raise BucketMissingError(bucket_id)
+                response = await self.request("POST", collection, json=self.deployment(bucket_id, frontend_id, password))
                 if response.status_code == 409:
                     response = await self.request("GET", collection + "/" + bucket_id)
             response.raise_for_status()
             current = response.json()
             if current.get("metadata", {}).get("deletionTimestamp"):
-                raise BucketMissing(bucket_id)
+                raise BucketMissingError(bucket_id)
             if current.get("metadata", {}).get("labels", {}).get("bucket-id") != bucket_id:
                 raise RuntimeError("existing Deployment is not owned by this bucket")
             owner = current.get("metadata", {}).get("annotations", {}).get("opencode.io/frontend-id")
             if owner != frontend_id:
                 raise RuntimeError("existing Deployment belongs to another frontend")
-            desired = self.deployment(bucket_id, frontend_id)
+            desired = self.deployment(bucket_id, frontend_id, password)
             desired["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
             response = await self.request("PUT", collection + "/" + bucket_id, json=desired)
             if not await self._retry_conflict(response, attempt):
@@ -140,7 +180,7 @@ class BucketManager:
             await self.scale(bucket_id, 1)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
-                raise BucketMissing(bucket_id) from exc
+                raise BucketMissingError(bucket_id) from exc
             raise
 
     async def _retry_conflict(self, response: httpx.Response, attempt: int) -> bool:

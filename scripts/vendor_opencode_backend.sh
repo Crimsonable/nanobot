@@ -19,4 +19,4 @@ python3 -m pip download --require-hashes --only-binary=:all: -r requirements-too
   npm run build
 )
 echo 'Dependencies ready for base images. Install vendor/opencode into the shared server opencode directory.'
-echo 'Copy source including opencode_plugin/package.json and opencode_plugin/dist into the server source directory.'
+echo 'Copy source including opencode_plugin/package.json, opencode_plugin/dist and opencode_plugin/snapshot.py into the server source directory.'

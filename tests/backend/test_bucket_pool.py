@@ -1,433 +1,312 @@
 import asyncio
 import time
-from pathlib import Path
-from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from support import configure_pool, register_bucket
 
-from agent_backend.config import load_frontends
-from agent_backend.models import Envelope, Identity
-from agent_backend.workspaces import workspace_path
-from container_up.bucket_manager import BucketManager
+from agent_backend.config import BucketSettings, ControlConfig
 from agent_backend.ingress import Inbound
+from agent_backend.journal import Journal
+from agent_backend.models import ExecutionStatus, Submit
 from container_up.server import ControlService
-
-EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
-
-
-class FakeManager:
-    def __init__(self, service):
-        self.service = service
-        self.created = []
-        self.scaled = []
-        self.fail_start = False
-        self.fail_stop = False
-        self.missing = set()
-
-    async def exists(self, bucket_id, frontend_id):
-        return bucket_id not in self.missing
-
-    async def wait_stopped(self, bucket_id):
-        pass
-
-    async def ensure(self, bucket_id, frontend_id=None, *, allow_create=True):
-        self.created.append(bucket_id)
-        await asyncio.sleep(0.01)
-        if self.fail_start:
-            raise RuntimeError("Kubernetes unavailable")
-        from unittest.mock import AsyncMock
-        self.service.pool.peers[bucket_id] = SimpleNamespace(closed=False, session_call=AsyncMock())
-
-    async def scale(self, bucket_id, replicas):
-        if self.fail_stop:
-            raise RuntimeError("scale failed")
-        self.scaled.append((bucket_id, replicas))
-        self.service.pool.peers.pop(bucket_id, None)
+from container_up.session_manager import SessionManager
 
 
 @pytest.fixture
 def service(tmp_path):
-    config = load_frontends(EXAMPLE).frontend("web-test").control_config()
-    config.state_root = tmp_path / "control"
-    config.runtime_templates["web-test"].workspace_root = tmp_path / "workspaces"
-    config.bucket_pool.max_users_per_bucket = 2
-    config.frontend_idle_ttl_seconds["web-test"] = 1
-    service = ControlService(config)
-    service.pool.manager = FakeManager(service)
-    yield service
-    service.db.close()
+    config = ControlConfig(
+        state_root=tmp_path / "cu",
+        frontends={f: {"provider": "web"} for f in ["web", "other"]},
+        bucket_templates={
+            f: BucketSettings(workspace_root=tmp_path / "users") for f in ["web", "other"]
+        },
+        frontend_idle_ttl_seconds={"web": 1, "other": 0},
+        bucket_pool={"max_sessions_per_bucket": 2},
+    )
+    value = ControlService(config)
+    configure_pool(value)
+    yield value
+    value.db.close()
 
 
-async def submit(service, user, request):
-    return await service.submit("web-test", Inbound(chat_id="chat", user_id=user, content="hello", request_id=request))
+async def submit(service, user, request, chat="chat", frontend="web"):
+    return await service.submit(
+        frontend, Inbound(user_id=user, chat_id=chat, content="hello", request_id=request)
+    )
 
 
-async def complete(service, row):
-    for event in service.db.pending(row["bucket_id"]):
-        service.db.ack(row["bucket_id"], event.seq, event.event_id)
-    await service.on_event(row["bucket_id"], Envelope(type="request.completed", bucket_id=row["bucket_id"],
-        request_id=row["request_id"], payload={"request_id": row["request_id"], "status": "completed"}))
+def collected(service, row):
+    service.complete(ExecutionStatus(request_id=row["request_id"], status="completed"))
+    row = service.db.get("request", row["request_id"])
+    service.db.put("request", row["request_id"], {**row, "output_collected": True})
+    service.pool.release(Submit.model_validate(row["submit"]).session_key)
 
 
 def expire(service):
     for bucket in service.db.records("bucket"):
-        service.db.put("bucket", bucket["bucket_id"], {**bucket, "last_active_at": time.time() - 10})
+        service.db.put(
+            "bucket", bucket["bucket_id"], {**bucket, "last_active_at": time.time() - 10}
+        )
+
+
+@pytest.fixture
+async def previous_session(service):
+    register_bucket(service, "a")
+    row = await submit(service, "alice", "previous")
+    native = await service.pool.client("a")
+    native.answer(row)
+    collected(service, row)
+    assert not service.pool.bindings("a")
+    return row, native
 
 
 @pytest.mark.asyncio
-async def test_zero_initial_buckets_capacity_and_concurrent_reservations(service):
-    assert service.db.records("bucket") == []
-    rows = await asyncio.gather(*(submit(service, f"user-{i}", f"r-{i}") for i in range(5)))
+@pytest.mark.parametrize("restart", [False, True])
+async def test_original_bucket_precedes_less_loaded_bucket(service, previous_session, restart):
+    previous, source = previous_session
+    await submit(service, "bob", "busy")
+    register_bucket(service, "b")
+    if restart:
+        service.db.close()
+        service.db = Journal(service.config.state_root / "control.sqlite")
+        service.pool.db = service.db
+        service.sessions = SessionManager(service.config, service.db, service.pool)
+    source.export_session = AsyncMock(side_effect=AssertionError("unnecessary migration"))
+    again = await submit(service, "alice", "again")
+    assert again["bucket_id"] == "a"
+    assert again["native"]["session_id"] == previous["native"]["session_id"]
+    assert len(service.pool.bindings("a")) == 2
+    assert not service.pool.bindings("b")
+    assert not source.deleted
+    assert not service.db.records("migration")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["creating", "idle", "draining"])
+async def test_original_bucket_can_finish_startup_or_shutdown_and_resume(
+    service, previous_session, status
+):
+    previous, source = previous_session
+    register_bucket(service, "b")
+    service.db.put("bucket", "a", {**service.db.get("bucket", "a"), "status": status})
+    source.export_session = AsyncMock(side_effect=AssertionError("unnecessary migration"))
+    entered = asyncio.Event()
+    original_ready = service.pool.ready
+
+    async def ready(bucket_id, **kwargs):
+        entered.set()
+        return await original_ready(bucket_id, **kwargs)
+
+    service.pool.ready = ready
+    task = asyncio.create_task(submit(service, "alice", "again"))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        key = Submit.model_validate(previous["submit"]).session_key
+        assert service.db.get("binding", key)["bucket_id"] == "a"
+        if status == "draining":
+            assert not task.done()
+            service.db.put("bucket", "a", {**service.db.get("bucket", "a"), "status": "idle"})
+            service.pool.stopped["a"].set()
+        again = await asyncio.wait_for(task, 2)
+        assert again["bucket_id"] == "a"
+        assert again["native"]["session_id"] == previous["native"]["session_id"]
+        assert service.db.get("bucket", "a")["status"] == "running"
+        assert service.pool.manager.created == ["a"]
+        assert not source.deleted
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completed", [False, True])
+async def test_existing_binding_stays_in_full_bucket_until_output_collected(service, completed):
+    register_bucket(service, "a")
+    previous = await submit(service, "alice", "previous")
+    await submit(service, "bob", "busy")
+    register_bucket(service, "b")
+    if completed:
+        service.complete(ExecutionStatus(request_id="previous", status="completed"))
+    again = await submit(service, "alice", "again")
+    assert again["bucket_id"] == "a"
+    assert again["native"]["session_id"] == previous["native"]["session_id"]
+    assert len(service.pool.bindings("a")) == 2
+    assert not service.pool.bindings("b")
+    collected(service, previous)
+    assert len(service.pool.bindings("a")) == 2
+    collected(service, again)
+    assert len(service.pool.bindings("a")) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["user", "chat", "frontend"])
+async def test_original_bucket_affinity_uses_full_business_session_key(
+    service, previous_session, field
+):
+    previous, source = previous_session
+    await submit(service, "bob", "busy")
+    register_bucket(service, "b", frontend_id="other" if field == "frontend" else "web")
+    values = {"user": "alice", "chat": "chat", "frontend": "web"}
+    values[field] = "other"
+    new = await submit(service, request="new", **values)
+    assert new["bucket_id"] == "b"
+    assert new["native"]["session_id"] != previous["native"]["session_id"]
+    assert previous["native"]["session_id"] in source.sessions
+    assert not source.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_missing", [False, True])
+async def test_missing_original_bucket_does_not_loop_on_affinity(
+    service, previous_session, already_missing
+):
+    previous, source = previous_session
+    register_bucket(service, "b")
+    service.pool.manager.missing.add("a")
+    if already_missing:
+        service.db.put(
+            "bucket", "a", {**service.db.get("bucket", "a"), "status": "missing", "opencode": None}
+        )
+    again = await asyncio.wait_for(submit(service, "alice", "again"), 2)
+    assert again["bucket_id"] == "b"
+    assert again["native"]["session_id"] == previous["native"]["session_id"]
+    assert source.deleted == [previous["native"]["session_id"]]
+    assert not service.db.records("migration")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_returns_cannot_both_claim_last_original_slot(service, previous_session):
+    previous, source = previous_session
+    other = await submit(service, "bob", "other")
+    source.answer(other)
+    collected(service, other)
+    service.config.bucket_pool.max_sessions_per_bucket = 1
+    register_bucket(service, "b")
+    rows = await asyncio.gather(
+        submit(service, "alice", "alice-next"), submit(service, "bob", "bob-next")
+    )
+    assert {row["bucket_id"] for row in rows} == {"a", "b"}
+    assert len(service.pool.bindings("a")) == len(service.pool.bindings("b")) == 1
+    for before, after in zip([previous, other], rows, strict=True):
+        assert before["native"]["session_id"] == after["native"]["session_id"]
+        native = await service.pool.client(after["bucket_id"])
+        history = native.history[after["native"]["session_id"]]
+        assert history[0]["id"] == before["native"]["message_id"]
+        assert history[-1]["id"] == after["native"]["message_id"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_capacity_and_same_user_independent_chats(service):
+    rows = await asyncio.gather(
+        *(submit(service, "alice", f"r{i}", chat=f"chat{i}") for i in range(5))
+    )
     assert len({r["bucket_id"] for r in rows}) == 3
+    assert len({r["native"]["session_id"] for r in rows}) == 5
+    assert len({r["native"]["directory"] for r in rows}) == 1
+    again = await submit(service, "alice", "again", chat="chat0")
+    assert again["native"]["session_id"] == rows[0]["native"]["session_id"]
     assert len(service.pool.manager.created) == 3
-    assert all(len(service.pool.bindings(b["bucket_id"])) <= 2 for b in service.db.records("bucket"))
-    same = await submit(service, "user-0", "another")
-    assert same["bucket_id"] == rows[0]["bucket_id"]
-    assert len(service.db.records("binding")) == 5
 
 
 @pytest.mark.asyncio
-async def test_completed_users_release_capacity_before_whole_bucket_retires(service):
-    first, second = await asyncio.gather(submit(service, "a", "a"), submit(service, "b", "b"))
-    await complete(service, first)
+async def test_collected_output_releases_capacity_and_native_idle_controls_retirement(service):
+    row = await submit(service, "alice", "r")
     expire(service)
+    service.complete(ExecutionStatus(request_id="r", status="completed"))
     await service.pool.sweep()
-    assert len(service.pool.bindings(first["bucket_id"])) == 1
-    assert not service.pool.manager.scaled  # b is still executing; no per-user eviction
-    await complete(service, second)
+    assert not service.pool.manager.scaled
+    collected(service, row)
+    expire(service)
+    native = await service.pool.client(row["bucket_id"])
+    native.jobs = [{"id": "background"}]
+    await service.pool.sweep()
+    assert not service.pool.manager.scaled
+    native.jobs = []
+    await service.pool.sweep()
+    assert service.pool.manager.scaled == [(row["bucket_id"], 0)]
+    assert (await submit(service, "alice", "r"))["result"]["status"] == "completed"
+    assert len(service.pool.manager.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_frontend_pool_ownership_and_zero_ttl(service):
+    first = await submit(service, "alice", "first")
+    second = await submit(service, "alice", "second", frontend="other")
+    assert first["bucket_id"] != second["bucket_id"]
+    for row in [first, second]:
+        collected(service, row)
     expire(service)
     await service.pool.sweep()
     assert service.pool.manager.scaled == [(first["bucket_id"], 0)]
-    assert service.db.records("binding") == []
-    before = workspace_path(service.config.runtime_for("web-test").workspace_root,
-                            Identity(frontend_id="web-test", user_id="a"))
-    new = await submit(service, "a", "a2")
-    assert new["bucket_id"] != first["bucket_id"]
-    assert "previous_turns" not in new["submit"]
-    assert "session_epoch" not in new["submit"]
-    assert service.db.get("binding", Identity(frontend_id="web-test", user_id="a").identity_id)["workspace_path"] == str(before)
 
 
 @pytest.mark.asyncio
-async def test_gateway_handoff_must_finish_before_scale_down(service):
-    row = await submit(service, "a", "r")
-    await complete(service, row)
-    peer = service.pool.peers[row["bucket_id"]]
-    peer.session_call.side_effect = RuntimeError("gateway events still pending")
-    expire(service)
-    await service.pool.sweep()
-    assert service.db.get("bucket", row["bucket_id"])["status"] == "draining"
-    assert not service.pool.manager.scaled
-    peer.session_call.side_effect = None
-    await service.pool.sweep()
-    assert service.pool.manager.scaled == [(row["bucket_id"], 0)]
-
-
-@pytest.mark.asyncio
-async def test_gateway_backpressure_excludes_bucket_from_new_placement(service):
-    first = await submit(service, "a", "r")
-    await complete(service, first)
-    await service.on_event(first["bucket_id"], Envelope(type="bucket.status", bucket_id=first["bucket_id"],
-                                                       payload={"accepting": False}))
-    second = await submit(service, "b", "r2")
-    assert second["bucket_id"] != first["bucket_id"]
-
-
-@pytest.mark.asyncio
-async def test_idle_bucket_is_not_woken_for_a_returning_user(service):
-    buckets = {}
-    for user, chat, content in [("alice", "group-1", "Keep this"), ("alice", "group-2", "Other chat"),
-                                ("bob", "group-1", "Other user")]:
-        row = await service.submit("web-test", Inbound(user_id=user, chat_id=chat, content=content))
-        buckets[user] = row["bucket_id"]
-        await complete(service, row)
-    expire(service)
-    await service.pool.sweep()
-    restored = await service.submit("web-test", Inbound(user_id="alice", chat_id="group-1", content="Continue"))
-    assert restored["bucket_id"] != buckets["alice"]
-    assert "previous_turns" not in restored["submit"]
-
-
-@pytest.mark.asyncio
-async def test_failed_creation_releases_user_reservation(service):
-    service.pool.manager.fail_start = True
-    with pytest.raises(RuntimeError, match="unavailable"):
-        await submit(service, "a", "r")
-    assert not service.db.records("request")
-    assert not service.db.records("binding")
-    service.pool.manager.fail_start = False
-    await submit(service, "a", "r")
-    assert len(service.db.records("bucket")) == 1
-
-
-@pytest.mark.asyncio
-async def test_unacked_commands_and_failed_scale_prevent_release(service):
-    row = await submit(service, "a", "r")
-    await service.on_event(row["bucket_id"], Envelope(type="request.completed", bucket_id=row["bucket_id"],
-        request_id="r", payload={"request_id": "r", "status": "completed"}))
-    expire(service)
-    await service.pool.sweep()
-    assert not service.pool.manager.scaled
-    for event in service.db.pending(row["bucket_id"]):
-        service.db.ack(row["bucket_id"], event.seq, event.event_id)
-    service.pool.manager.fail_stop = True
-    with pytest.raises(RuntimeError, match="scale failed"):
-        await service.pool.sweep()
-    assert not service.pool.bindings(row["bucket_id"])
-    assert service.db.get("bucket", row["bucket_id"])["status"] == "draining"
-    service.pool.manager.fail_stop = False
-    await service.pool.sweep()
-    assert not service.pool.bindings(row["bucket_id"])
-
-
-@pytest.mark.asyncio
-async def test_restart_keeps_mapping_and_recovers_same_bucket(service):
-    first = await submit(service, "a", "r")
-    service.pool.peers.clear()
-    # Simulate the next CU process opening the persisted database.
-    service.db.close()
-    restored = ControlService(service.config)
-    restored.pool.manager = FakeManager(restored)
-    try:
-        second = await submit(restored, "a", "r2")
-        assert second["bucket_id"] == first["bucket_id"]
-        assert restored.pool.manager.created == [first["bucket_id"]]
-        assert len(restored.db.pending(first["bucket_id"])) == 2
-    finally:
-        # Let fixture teardown close the replacement handle once.
-        service.db = restored.db
-
-
-def test_dynamic_config_mounts_and_bucket_auth(tmp_path):
-    config = load_frontends(EXAMPLE).frontend("web-test")
-    bucket_id = config.control.bucket_pool.name_prefix + "-0123456789ab"
-    runtime = config.runtime_config(EXAMPLE, bucket_id)
-    assert runtime.state_root == config.runtime.state_root / config.frontend_id / bucket_id
-    assert runtime.workspace_root == config.runtime.workspace_root
-    assert not hasattr(runtime, "credential_file")
-    manifest = BucketManager(config.control_config()).deployment(bucket_id, "web-test")
-    pod = manifest["spec"]["template"]["spec"]
-    assert len(pod["containers"]) == 1
-    assert pod["containers"][0]["args"][-1] == bucket_id
-    assert next(v for v in pod["volumes"] if v["name"] == "workspace")["persistentVolumeClaim"]["claimName"] == "opencode-data-pvc"
-    assert pod["automountServiceAccountToken"] is False
-    assert pod["nodeSelector"] == config.control.bucket_pool.node_selector
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_bucket_upgrade_and_runtime_cli_accept_scheduler_names(service, monkeypatch, legacy):
-    from unittest.mock import AsyncMock
-    from bucket_runtime.__main__ import main
-    from scripts.render_bucket_updates import render
-
-    registry = load_frontends(EXAMPLE)
-    frontend = "web-test"
-    identity = Identity(frontend_id=frontend, user_id="alice")
-    bucket_id = ("opencode-bucket-0123456789ab" if legacy else service.pool.reserve(identity)["bucket_id"])
-    manifest = BucketManager(registry.control_config()).deployment(bucket_id, frontend)
-    updated, = render(registry, {"items": [manifest]})["items"]
-    args = updated["spec"]["template"]["spec"]["containers"][0]["args"]
-    cli_args = args[args.index("--config"):]
-    cli_args[cli_args.index("--config") + 1] = str(EXAMPLE)
-    serve = AsyncMock()
-    monkeypatch.setattr("bucket_runtime.server.serve", serve)
-    main(cli_args)
-    serve.assert_awaited_once()
-    runtime, = serve.await_args.args
-    assert (runtime.bucket_id, runtime.frontend_id) == (bucket_id, frontend)
-    assert runtime.state_root.parts[-2:] == (frontend, bucket_id)
-
-
-def test_original_workspace_layout_is_bucket_independent(tmp_path):
-    identity = Identity(frontend_id="web-test", user_id="alice")
-    assert workspace_path(tmp_path, identity) == tmp_path / "web-test" / "alice"
-
-
-@pytest.mark.asyncio
-async def test_sanitized_workspace_collision_rejected(service):
-    await submit(service, "a/b", "r1")
+async def test_workspace_sanitizer_collision_is_rejected(service):
+    await submit(service, "a/b", "first")
     with pytest.raises(ValueError, match="collides"):
-        await submit(service, "a-b", "r2")
+        await submit(service, "a-b", "second")
 
 
 @pytest.mark.asyncio
-async def test_duplicate_after_retirement_does_not_start_bucket(service):
-    row = await submit(service, "a", "r")
-    await complete(service, row)
-    expire(service)
-    await service.pool.sweep()
-    created = list(service.pool.manager.created)
-    repeated = await submit(service, "a", "r")
-    assert repeated["result"]["status"] == "completed"
-    assert service.pool.manager.created == created
+async def test_failed_creation_releases_reservation(service):
+    service.pool.manager.fail_start = True
+    with pytest.raises(RuntimeError, match="Kubernetes"):
+        await submit(service, "alice", "r")
+    assert not service.db.records("binding")
+    assert not any(service.pool.pins.values())
 
 
 @pytest.mark.asyncio
-async def test_reservation_prevents_idle_sweep_and_zero_disables_ttl(service):
-    identity = Identity(frontend_id="web-test", user_id="a")
-    async with service.pool.assignment(identity):
-        expire(service)
-        await service.pool.sweep()
-        assert not service.pool.manager.scaled
-    service.config.frontend_idle_ttl_seconds["web-test"] = 0
-    expire(service)
-    await service.pool.sweep()
-    assert not service.pool.manager.scaled
+async def test_missing_bucket_waits_for_old_writer_before_terminal(service):
+    row = await submit(service, "alice", "r")
+    entered = asyncio.Event()
+    leave = asyncio.Event()
+
+    async def stopped(bucket):
+        entered.set()
+        await leave.wait()
+
+    service.pool.manager.wait_stopped = stopped
+    task = asyncio.create_task(service.pool.missing(row["bucket_id"]))
+    await entered.wait()
+    assert not service.db.get("request", "r").get("result")
+    leave.set()
+    await task
+    assert (
+        service.db.get("request", "r")["result"]["error"] == "BUCKET_MISSING_EXECUTION_INTERRUPTED"
+    )
 
 
 @pytest.mark.asyncio
-async def test_request_during_retirement_uses_another_bucket(service):
-    row = await submit(service, "a", "r")
-    await complete(service, row)
-    expire(service)
-    scaling = asyncio.Event()
-    stopped = asyncio.Event()
-    original = service.pool.manager.scale
+async def test_slow_creation_does_not_block_another_chat(service):
+    manager = service.pool.manager
+    original = manager.ensure
+    entered = asyncio.Event()
+    leave = asyncio.Event()
 
-    async def slow_scale(bucket_id, replicas):
-        scaling.set()
-        await stopped.wait()
-        await original(bucket_id, replicas)
+    async def ensure(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            await leave.wait()
+        await original(*args, **kwargs)
 
-    service.pool.manager.scale = slow_scale
-    task = asyncio.create_task(service.pool.sweep())
-    try:
-        await asyncio.wait_for(scaling.wait(), 2)
-        waiting = asyncio.create_task(submit(service, "a", "r2"))
-        new = await asyncio.wait_for(waiting, 2)
-        assert new["bucket_id"] != row["bucket_id"]
-    finally:
-        stopped.set()
-        await task
-    new = await asyncio.wait_for(waiting, 2)
-    binding = service.db.get("binding", Identity(frontend_id="web-test", user_id="a").identity_id)
-    assert binding["bucket_id"] == new["bucket_id"] != row["bucket_id"]
+    manager.ensure = ensure
+    service.config.bucket_pool.max_sessions_per_bucket = 1
+    first = asyncio.create_task(submit(service, "alice", "one", chat="slow"))
+    await entered.wait()
+    second = await asyncio.wait_for(submit(service, "alice", "two", chat="fast"), 2)
+    leave.set()
+    one = await first
+    assert one["bucket_id"] != second["bucket_id"]
 
 
 @pytest.mark.asyncio
-async def test_returning_user_uses_free_capacity_not_previous_bucket(service):
-    service.config.bucket_pool.max_users_per_bucket = 1
-    first = await submit(service, "alice", "a1")
-    other = await submit(service, "bob", "b1")
-    await complete(service, first)
-    occupying = await submit(service, "charlie", "c1")
-    assert occupying["bucket_id"] == first["bucket_id"]
-    await complete(service, other)
-    returning = await submit(service, "alice", "a2")
-    assert returning["bucket_id"] == other["bucket_id"]
-
-
-@pytest.mark.asyncio
-async def test_kubernetes_api_create_update_scale_and_wait_for_pod_exit():
-    config = load_frontends(EXAMPLE).frontend("web-test").control_config()
-    manager = BucketManager(config)
-    bucket_id = config.bucket_pool.name_prefix + "-0123456789ab"
-    calls = []
-    present = False
-    replicas = 0
-
-    async def request(method, path, **kwargs):
-        nonlocal present, replicas
-        calls.append((method, path, kwargs))
-        status, body = 200, {}
-        if path.endswith("/pods"):
-            body = {"items": []}
-        elif path.endswith("/scale"):
-            if method == "PUT":
-                replicas = kwargs["json"]["spec"]["replicas"]
-            body = {"metadata": {"resourceVersion": "1"}, "spec": {"replicas": replicas}}
-        elif method == "GET" and not present:
-            status = 404
-        else:
-            present = True
-            body = manager.deployment(bucket_id, "web-test")
-            body["metadata"]["resourceVersion"] = "1"
-            body["status"] = {"replicas": replicas}
-        return httpx.Response(status, json=body, request=httpx.Request(method, "https://kubernetes" + path))
-
-    manager.request = request
-    await manager.ensure(bucket_id, "web-test")
-    assert replicas == 1
-    assert any(method == "POST" and path.endswith("/deployments") for method, path, _ in calls)
-    await manager.scale(bucket_id, 0)
-    assert replicas == 0
-    assert calls[-1][1].endswith("/pods")
-    assert calls[-1][2]["params"]["labelSelector"].endswith(bucket_id)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("spare", [False, True])
-async def test_missing_deployment_with_live_peer_moves_bound_user(service, spare):
-    service.config.bucket_pool.max_users_per_bucket = 1
-    first = await submit(service, "alice", "a1")
-    other = await submit(service, "bob", "b1") if spare else None
-    if other:
-        await complete(service, other)
-    old = first["bucket_id"]
-    service.pool.manager.missing.add(old)
-    # The socket still looks live, so only the Kubernetes check detects the loss.
-    assert service.pool.connected(old)
-    next_row = await submit(service, "alice", "a2")
-    assert next_row["bucket_id"] != old
-    if other:
-        assert next_row["bucket_id"] == other["bucket_id"]
-    assert service.db.get("bucket", old)["status"] == "missing"
-    assert service.db.get("request", "a1")["result"]["error"] == "BUCKET_MISSING_EXECUTION_INTERRUPTED"
-    assert not service.db.pending(old)
-    assert not service.pool.connected(old)
-    assert service.pool.manager.created.count(old) == 1
-    assert next_row["bucket_id"].startswith("opencode-bucket-web-test-")
-
-
-@pytest.mark.asyncio
-async def test_kubernetes_error_does_not_mark_bucket_missing_or_reassign(service):
-    first = await submit(service, "alice", "a1")
-    from unittest.mock import AsyncMock
-    service.pool.manager.exists = AsyncMock(side_effect=httpx.HTTPStatusError("forbidden",
-        request=httpx.Request("GET", "https://kubernetes"), response=httpx.Response(403)))
-    with pytest.raises(httpx.HTTPStatusError):
-        await submit(service, "alice", "a2")
-    assert service.db.get("bucket", first["bucket_id"])["status"] == "running"
-    assert not service.db.get("request", "a1").get("result")
-    assert service.db.get("request", "a2") is None
-
-
-@pytest.mark.asyncio
-async def test_missing_bucket_waits_for_old_pods_before_releasing_work(service):
-    first = await submit(service, "alice", "a1")
-    service.pool.manager.missing.add(first["bucket_id"])
-    waiting, stopped = asyncio.Event(), asyncio.Event()
-
-    async def wait_stopped(bucket_id):
-        waiting.set()
-        await stopped.wait()
-
-    service.pool.manager.wait_stopped = wait_stopped
-    task = asyncio.create_task(submit(service, "alice", "a2"))
-    try:
-        await asyncio.wait_for(waiting.wait(), 2)
-        assert not task.done()
-        assert not service.db.get("request", "a1").get("result")
-        assert service.db.get("request", "a2") is None
-    finally:
-        stopped.set()
-        await asyncio.wait_for(task, 2)
-
-
-@pytest.mark.asyncio
-async def test_target_deleted_during_history_preparation_is_reselected_before_enqueue(service):
-    prepared = []
-
-    async def prepare(submit, bucket_id):
-        prepared.append(bucket_id)
-        if len(prepared) == 1:
-            service.pool.manager.missing.add(bucket_id)
-        return None
-
-    service.sessions.prepare = prepare
-    row = await submit(service, "alice", "a1")
-    assert len(prepared) == 2
-    assert row["bucket_id"] == prepared[1] != prepared[0]
-    assert not service.db.pending(prepared[0])
-    assert len(service.db.pending(prepared[1])) == 1
+async def test_kubernetes_error_does_not_interrupt_execution(service):
+    row = await submit(service, "alice", "r")
+    service.pool.manager.exists = AsyncMock(side_effect=httpx.ConnectError("api down"))
+    with pytest.raises(httpx.ConnectError):
+        await service.pool.ready(row["bucket_id"])
+    assert not service.db.get("request", "r").get("result")
+    assert service.db.get("bucket", row["bucket_id"])["status"] == "running"

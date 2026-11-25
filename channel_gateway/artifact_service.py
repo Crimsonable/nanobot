@@ -67,6 +67,16 @@ class ArtifactService:
                 "input": attachment.model_dump(mode="json"), "attachment": result.model_dump(mode="json")})
             return result
 
+    def attach(self, row, attachment):
+        self.validate_result(row, [attachment])
+        key = self.key(row["frontend_id"], row["request_id"], attachment.attachment_id)
+        self.journal.put("published", key, {"request_id": row["request_id"],
+                                           "attachment": attachment.model_dump(mode="json")})
+
+    def attachments(self, request_id):
+        return [Attachment.model_validate(row["attachment"]) for row in self.journal.records("published")
+                if row["request_id"] == request_id]
+
     @staticmethod
     def validate_reference(provider, frontend_id, attachment):
         if provider == "web":

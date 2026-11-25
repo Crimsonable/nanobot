@@ -10,35 +10,41 @@ EXAMPLE = Path(__file__).resolve().parents[2] / "config/opencode/frontends.json"
 
 
 def test_minimal_frontend_uses_deployment_defaults_without_bucket_credentials():
-    config = FrontendConfig.model_validate({"frontend_id": "web-test", "provider": "web",
-        "send_msg_url": "http://frontend/outbound",
-        "runtime": {}})
+    config = FrontendConfig.model_validate(
+        {
+            "frontend_id": "web-test",
+            "provider": "web",
+            "send_msg_url": "http://frontend/outbound",
+            "bucket": {},
+        }
+    )
     assert config.control.port == 8001
     assert config.control.bucket_pool.namespace == "opencode-sv"
     assert config.control.bucket_pool.data_pvc == "opencode-data-pvc"
-    assert config.runtime.opencode.port == 4096
-    assert config.runtime.workspace_root == Path("/mnt/env/workspaces")
-    assert config.runtime.permissions_file == Path("/mnt/common/{frontend_id}/config/user-permissions.yaml")
+    assert config.bucket.opencode.port == 4096
+    assert config.bucket.workspace_root == Path("/mnt/env/workspaces")
+    assert config.bucket.permissions_file == Path(
+        "/mnt/common/{frontend_id}/config/user-permissions.yaml"
+    )
     assert config.model_dump()["frontend_id"] == "web-test"
     assert "id" not in config.model_dump()
-    runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
+    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-0123456789ab")
     assert runtime.frontend_id == "web-test"
     assert not hasattr(runtime, "credential_file")
-    assert runtime.limits.active == 4
+    assert not hasattr(runtime, "rpc_port")
 
 
 def test_default_values_can_still_be_overridden():
     raw = load_frontends(EXAMPLE).frontend("web-test").model_dump(mode="json")
     raw["control"].update(port=8100)
-    raw["control"]["bucket_pool"].update(max_users_per_bucket=8, namespace="test")
-    raw["runtime"].update(rpc_port=4107, health_port=8109, limits={"active": 2},
-                          opencode={"port": 4106})
+    raw["control"]["bucket_pool"].update(max_sessions_per_bucket=8, namespace="test")
+    raw["bucket"].update(limits={"file_bytes": 3000}, opencode={"port": 4106})
     config = FrontendConfig.model_validate(raw)
     assert config.control.port == 8100
-    assert config.control.bucket_pool.max_users_per_bucket == 8
-    runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
-    assert (runtime.rpc_port, runtime.health_port, runtime.opencode.port) == (4107, 8109, 4106)
-    assert runtime.limits.active == 2
+    assert config.control.bucket_pool.max_sessions_per_bucket == 8
+    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-0123456789ab")
+    assert runtime.opencode.port == 4106
+    assert runtime.limits.file_bytes == 3000
 
 
 def selected_config():
@@ -49,7 +55,7 @@ def selected_config():
 def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
     config = selected_config()
     cu = config.control_config()
-    runtime = config.runtime_config(EXAMPLE, "opencode-bucket-0123456789ab")
+    runtime = config.bucket_config(EXAMPLE, "opencode-bucket-0123456789ab")
     assert list(cu.frontends) == ["web-test"]
     frontend = cu.frontends["web-test"]
     assert frontend.channel_config["send_msg_url"] == config.send_msg_url
@@ -69,25 +75,28 @@ def test_shared_frontend_preserves_callback_and_storage(tmp_path, monkeypatch):
     monkeypatch.setattr("boto3.client", client)
     ArtifactService(cu, None, None).client(frontend.attachment_storage)
     assert captured["aws_access_key_id"] == config.attachment_storage.access_key.get_secret_value()
-    assert captured["aws_secret_access_key"] == config.attachment_storage.secret_key.get_secret_value()
+    assert (
+        captured["aws_secret_access_key"] == config.attachment_storage.secret_key.get_secret_value()
+    )
     assert captured["aws_secret_access_key"] not in repr(runtime)
 
 
-@pytest.mark.parametrize("invalid", ["unregistered", "opencode-bucket-other-0123456789ab",
-                                     "opencode-bucket-web-test-0123456789ag"])
+@pytest.mark.parametrize(
+    "invalid",
+    ["unregistered", "opencode-bucket-other-0123456789ab", "opencode-bucket-web-test-0123456789ag"],
+)
 def test_kubernetes_bucket_selection(invalid):
     config = selected_config()
     with pytest.raises(ValueError, match="scheduler-issued"):
-        config.runtime_config(EXAMPLE, invalid)
-
+        config.bucket_config(EXAMPLE, invalid)
 
 
 def test_no_duplicate_runtime_storage_and_profile_validation():
     raw = load_frontends(EXAMPLE).frontend("web-test").model_dump(mode="json")
-    raw["runtime"]["storage"] = raw["attachment_storage"]
+    raw["bucket"]["storage"] = raw["attachment_storage"]
     with pytest.raises(ValidationError):
         FrontendConfig.model_validate(raw)
-    raw["runtime"].pop("storage")
+    raw["bucket"].pop("storage")
     raw["profile_id"] = "unknown"
     with pytest.raises(ValidationError, match="Extra inputs"):
         FrontendConfig.model_validate(raw)
@@ -96,24 +105,37 @@ def test_no_duplicate_runtime_storage_and_profile_validation():
 def test_storage_file_credentials_still_supported(tmp_path):
     key = tmp_path / "key"
     key.write_text("file-credential\n")
-    storage = StorageConfig(endpoint="http://minio:9000", bucket="attachments",
-                            access_key_file=key, secret_key_file=key)
+    storage = StorageConfig(
+        endpoint="http://minio:9000", bucket="attachments", access_key_file=key, secret_key_file=key
+    )
     assert storage.credential("access_key") == "file-credential"
     with pytest.raises(ValidationError, match="exactly one"):
-        StorageConfig(endpoint="http://minio:9000", bucket="attachments",
-                      access_key="inline", access_key_file=key, secret_key_file=key)
+        StorageConfig(
+            endpoint="http://minio:9000",
+            bucket="attachments",
+            access_key="inline",
+            access_key_file=key,
+            secret_key_file=key,
+        )
 
 
 def test_kubernetes_mounts_same_frontend_and_uses_pod_identity():
     import yaml
 
-    manifests = list(yaml.safe_load_all((EXAMPLE.parents[2] / "k8s/opencode/backend.yaml").read_text()))
+    manifests = list(
+        yaml.safe_load_all((EXAMPLE.parents[2] / "k8s/opencode/backend.yaml").read_text())
+    )
     workloads = [m for m in manifests if m["kind"] in {"Deployment", "StatefulSet"}]
     for workload in workloads:
         pod = workload["spec"]["template"]["spec"]
         container = pod["containers"][0]
         assert "/mnt/common/frontends.json" in container["args"]
         assert not any(v["name"] == "frontend" for v in pod["volumes"])
-        assert next(v for v in pod["volumes"] if v["name"] == "common")["persistentVolumeClaim"]["claimName"] == "opencode-common-pvc"
+        assert (
+            next(v for v in pod["volumes"] if v["name"] == "common")["persistentVolumeClaim"][
+                "claimName"
+            ]
+            == "opencode-common-pvc"
+        )
         if workload["kind"] == "StatefulSet":
             assert container["args"][-2:] == ["--bucket-id", "$(POD_NAME)"]

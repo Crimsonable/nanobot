@@ -19,7 +19,7 @@ def manager(monkeypatch):
 
 
 def deployment(manager, version):
-    body = manager.deployment(BUCKET, "web-test")
+    body = manager.deployment(BUCKET, "web-test", password="test")
     body["metadata"]["resourceVersion"] = version
     return body
 
@@ -37,8 +37,9 @@ def script(manager, steps):
         assert (method, path.endswith(suffix)) == (expected_method, True)
         if method == "PUT":
             writes.append(kwargs["json"])
-        return httpx.Response(status, json=body,
-                              request=httpx.Request(method, "https://kubernetes" + path))
+        return httpx.Response(
+            status, json=body, request=httpx.Request(method, "https://kubernetes" + path)
+        )
 
     manager.request = request
     return pending, writes
@@ -47,20 +48,28 @@ def script(manager, steps):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("create_conflict", [False, True])
 async def test_cold_start_recovers_deployment_and_scale_conflicts(manager, create_conflict):
-    steps = [("GET", BUCKET, 404, {}),
-             ("POST", "/deployments", 409 if create_conflict else 201,
-              {} if create_conflict else deployment(manager, "1"))]
+    steps = [
+        ("GET", BUCKET, 404, {}),
+        (
+            "POST",
+            "/deployments",
+            409 if create_conflict else 201,
+            {} if create_conflict else deployment(manager, "1"),
+        ),
+    ]
     if create_conflict:
         steps.append(("GET", BUCKET, 200, deployment(manager, "1")))
-    steps += [("PUT", BUCKET, 409, {}),
-              ("GET", BUCKET, 200, deployment(manager, "2")),
-              ("PUT", BUCKET, 200, {}),
-              ("GET", "/scale", 200, scale("3")),
-              ("PUT", "/scale", 409, {}),
-              ("GET", "/scale", 200, scale("4")),
-              ("PUT", "/scale", 200, {})]
+    steps += [
+        ("PUT", BUCKET, 409, {}),
+        ("GET", BUCKET, 200, deployment(manager, "2")),
+        ("PUT", BUCKET, 200, {}),
+        ("GET", "/scale", 200, scale("3")),
+        ("PUT", "/scale", 409, {}),
+        ("GET", "/scale", 200, scale("4")),
+        ("PUT", "/scale", 200, {}),
+    ]
     pending, writes = script(manager, steps)
-    await manager.ensure(BUCKET, "web-test")
+    await manager.ensure(BUCKET, "web-test", password="test")
     assert not pending
     assert [w["metadata"]["resourceVersion"] for w in writes] == ["1", "2", "3", "4"]
     assert all(w["spec"]["replicas"] == 1 for w in writes)
@@ -68,14 +77,19 @@ async def test_cold_start_recovers_deployment_and_scale_conflicts(manager, creat
 
 @pytest.mark.asyncio
 async def test_scale_down_conflict_still_waits_for_pod_exit(manager):
-    pending, writes = script(manager, [
-        ("GET", "/scale", 200, scale("1")), ("PUT", "/scale", 409, {}),
-        ("GET", "/scale", 200, scale("2")), ("PUT", "/scale", 200, {}),
-        ("GET", BUCKET, 200, {"status": {"replicas": 0}}),
-        ("GET", "/pods", 200, {"items": [{"metadata": {"name": "terminating"}}]}),
-        ("GET", BUCKET, 200, {"status": {"replicas": 0}}),
-        ("GET", "/pods", 200, {"items": []}),
-    ])
+    pending, writes = script(
+        manager,
+        [
+            ("GET", "/scale", 200, scale("1")),
+            ("PUT", "/scale", 409, {}),
+            ("GET", "/scale", 200, scale("2")),
+            ("PUT", "/scale", 200, {}),
+            ("GET", BUCKET, 200, {"status": {"replicas": 0}}),
+            ("GET", "/pods", 200, {"items": [{"metadata": {"name": "terminating"}}]}),
+            ("GET", BUCKET, 200, {"status": {"replicas": 0}}),
+            ("GET", "/pods", 200, {"items": []}),
+        ],
+    )
     await manager.scale(BUCKET, 0)
     assert not pending
     assert [w["metadata"]["resourceVersion"] for w in writes] == ["1", "2"]
@@ -95,7 +109,7 @@ async def test_write_errors_propagate_with_bounded_conflict_retries(manager, ope
     pending, writes = script(manager, steps)
     with pytest.raises(httpx.HTTPStatusError) as error:
         if operation == "ensure":
-            await manager.ensure(BUCKET, "web-test")
+            await manager.ensure(BUCKET, "web-test", password="test")
         else:
             await manager.scale(BUCKET, 1)
     assert error.value.response.status_code == status
@@ -111,12 +125,16 @@ async def test_retry_rechecks_deployment_ownership(manager, foreign_owner):
         changed["metadata"]["labels"]["bucket-id"] = "another-bucket"
     else:
         changed["metadata"]["annotations"]["opencode.io/frontend-id"] = "another-frontend"
-    pending, writes = script(manager, [
-        ("GET", BUCKET, 200, deployment(manager, "1")), ("PUT", BUCKET, 409, {}),
-        ("GET", BUCKET, 200, changed),
-    ])
+    pending, writes = script(
+        manager,
+        [
+            ("GET", BUCKET, 200, deployment(manager, "1")),
+            ("PUT", BUCKET, 409, {}),
+            ("GET", BUCKET, 200, changed),
+        ],
+    )
     with pytest.raises(RuntimeError, match="not owned|another frontend"):
-        await manager.ensure(BUCKET, "web-test")
+        await manager.ensure(BUCKET, "web-test", password="test")
     assert not pending
     assert len(writes) == 1
 
@@ -124,10 +142,14 @@ async def test_retry_rechecks_deployment_ownership(manager, foreign_owner):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replicas", [0, 1])
 async def test_missing_scale_after_conflict(manager, replicas):
-    pending, _ = script(manager, [
-        ("GET", "/scale", 200, scale("1")), ("PUT", "/scale", 409, {}),
-        ("GET", "/scale", 404, {}),
-    ])
+    pending, _ = script(
+        manager,
+        [
+            ("GET", "/scale", 200, scale("1")),
+            ("PUT", "/scale", 409, {}),
+            ("GET", "/scale", 404, {}),
+        ],
+    )
     if replicas == 0:
         await manager.scale(BUCKET, replicas)
     else:
@@ -139,10 +161,11 @@ async def test_missing_scale_after_conflict(manager, replicas):
 
 @pytest.mark.asyncio
 async def test_missing_existing_deployment_is_not_recreated(manager):
-    from container_up.bucket_manager import BucketMissing
+    from container_up.bucket_manager import BucketMissingError
+
     pending, _ = script(manager, [("GET", BUCKET, 404, {})])
-    with pytest.raises(BucketMissing):
-        await manager.ensure(BUCKET, "web-test", allow_create=False)
+    with pytest.raises(BucketMissingError):
+        await manager.ensure(BUCKET, "web-test", allow_create=False, password="test")
     assert not pending
 
 

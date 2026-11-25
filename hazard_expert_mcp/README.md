@@ -200,7 +200,7 @@ Content-Type: application/json
 
 - `CONTAINER_UP_TIMEOUT_SECONDS` 默认 720 秒，覆盖上游默认 600 秒同步等待及实例冷启动。MCP 客户端、反向代理的请求/读取超时也需要相应调大。
 - 上游请求不自动重试。超时、断网或 MCP 客户端断开并不保证后端任务被取消；避免自动重复提交造成重复执行。
-- Gateway 保存请求、最终结果及渠道投递状态，BU 通过独立事件 WebSocket 回传；CU 只处理调度及控制状态。Gateway 与 CU 共用一个单副本 Pod、各自单 worker 和独立 SQLite，不能让多个写入进程共用同一数据库。
+- Gateway 保存请求、最终结果及渠道投递状态，直接读取 OpenCode 原生 SSE 与持久化消息；CU 只处理调度及控制状态。Gateway 与 CU 共用一个单副本 Pod、各自单 worker 和独立 SQLite，不能让多个写入进程共用同一数据库。
 - `/healthz` 只检查 MCP 进程存活，不保证 channel-gateway 或 MinIO 可用。
 
 ## 本地验证

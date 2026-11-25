@@ -3,22 +3,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
-from functools import partial
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 
 from agent_backend.config import ControlConfig
 from agent_backend.ingress import Inbound
 from agent_backend.journal import Journal
-from agent_backend.models import Envelope, Identity, Submit, digest, uid
-from agent_backend.session_history import SessionBusy
-from agent_backend.sockets import StarletteSocket
-from agent_backend.wire import Peer
-from container_up.bucket_manager import BucketMissing
+from agent_backend.models import ExecutionStatus, Identity, Submit, digest, session_key, uid
+from agent_backend.session_history import SessionBusyError
+from container_up.bucket_manager import BucketMissingError
 from container_up.bucket_scheduler import BucketScheduler
-from container_up.session_manager import SessionManager, SourceCall
+from container_up.migrations import upgrade_session_bindings
+from container_up.session_manager import SessionManager
 
 log = logging.getLogger(__name__)
 
@@ -26,10 +25,11 @@ log = logging.getLogger(__name__)
 class ControlService:
     def __init__(self, config: ControlConfig):
         self.config = config
-        self.db = Journal(config.state_root / "control.sqlite", config.limits.outbox_messages)
-        self.user_locks: dict[str, asyncio.Lock] = {}
+        self.db = Journal(config.state_root / "control.sqlite")
+        upgrade_session_bindings(self.db)
+        self.session_locks: dict[str, asyncio.Lock] = {}
         self.pool = BucketScheduler(config, self.db, self.interrupt_bucket_requests)
-        self.sessions = SessionManager(config, self.db, self.open_session_source)
+        self.sessions = SessionManager(config, self.db, self.pool)
         self.pending: set[asyncio.Task] = set()
 
     def _shield(self, work):
@@ -46,16 +46,11 @@ class ControlService:
         return asyncio.shield(task)
 
 
-    @contextmanager
-    def open_session_source(self, bucket_id: str) -> Iterator[SourceCall]:
-        with self.pool.hold(bucket_id):
-            yield partial(self.pool.call_session, bucket_id)
-
     def interrupt_bucket_requests(self, bucket_id: str) -> None:
         with self.db.transaction():
-            for identity_id in self.sessions.interrupt_requests(bucket_id):
+            for key in self.sessions.interrupt_requests(bucket_id):
                 self.pool.touch(bucket_id)
-                self.pool.release(identity_id)
+                self.pool.release(key)
 
     def require_frontend(self, frontend_id: str) -> None:
         if frontend_id not in self.config.frontends:
@@ -76,9 +71,11 @@ class ControlService:
         request_id = inbound.request_id or uid("req_")
         fingerprint = digest({"identity": identity.model_dump(), "input": inbound.model_dump(
             exclude={"request_id"})})
-        async with self.user_locks.setdefault(identity.identity_id, asyncio.Lock()):
+        key = session_key(identity, inbound.chat_id)
+        async with self.session_locks.setdefault(key, asyncio.Lock()):
             if existing := self._existing_request(request_id, fingerprint):
-                return existing
+                await self.admit(existing)
+                return self.db.get("request", request_id)
             submit = Submit(request_id=request_id, chat_id=inbound.chat_id, identity=identity,
                             content=inbound.content, attachments=inbound.attachment_references(),
                             metadata=inbound.metadata, stream=inbound.stream,
@@ -86,49 +83,111 @@ class ControlService:
             preferred_bucket = None
             while True:
                 try:
-                    async with self.pool.assignment(identity, preferred_bucket) as binding:
+                    async with self.pool.assignment(identity, inbound.chat_id, preferred_bucket) as binding:
                         # Another identity may have claimed the ID during bucket startup.
                         if existing := self._existing_request(request_id, fingerprint):
                             return existing
                         bucket_id = binding["bucket_id"]
-                        submit.session_id = await self.sessions.prepare(submit, bucket_id)
+                        workspace = Path(binding["workspace_path"])
+                        if workspace.resolve() != workspace.absolute():
+                            raise PermissionError("workspace cannot contain symbolic links")
+                        workspace.mkdir(parents=True, exist_ok=True)
+                        submit.session_id = await self.sessions.prepare(submit, bucket_id, workspace)
                         submit.deadline_at = time.time() + self.config.limits.request_seconds
                         await self.pool.ready(bucket_id)
-                        return self._enqueue(submit, binding, fingerprint)
-                except BucketMissing:
+                        row = self.register(submit, binding, fingerprint)
+                        try:
+                            await self.admit(row)
+                        except httpx.HTTPError:
+                            log.warning("native admission pending request_id=%s", request_id)
+                        return self.db.get("request", request_id)
+                except BucketMissingError:
                     continue
-                except SessionBusy as exc:
-                    active = self.db.get("binding", identity.identity_id)
+                except SessionBusyError as exc:
+                    active = self.db.get("binding", key)
                     if active and active["bucket_id"] != exc.bucket_id:
                         raise HTTPException(409, "session has pending work in another bucket") from exc
                     preferred_bucket = exc.bucket_id
 
-    def _enqueue(self, submit: Submit, binding: dict, fingerprint: str) -> dict:
+    def register(self, submit: Submit, binding: dict, fingerprint: str) -> dict:
         request_id = submit.request_id
         record = {"request_id": request_id, "hash": fingerprint, "bucket_id": binding["bucket_id"],
                   "chat_id": submit.chat_id,
-                  "submit": submit.model_dump(mode="json"), "status": "queued"}
+                  "submit": submit.model_dump(mode="json"), "status": "queued",
+                  "native": {"session_id": submit.session_id, "message_id": uid("msg_"),
+                             "directory": binding["workspace_path"]}}
         with self.db.transaction():
             if self.db.get("request", request_id):
                 raise HTTPException(409, "concurrent duplicate request; query the existing request")
-            if self.db.get("binding", submit.identity.identity_id) != binding:
+            if self.db.get("binding", submit.session_key) != binding:
                 raise RuntimeError("bucket binding changed during request submission")
             self.db.put("request", request_id, record)
-            self.db.enqueue(record["bucket_id"], Envelope(type="request.submit",
-                bucket_id=record["bucket_id"], request_id=request_id, payload=record["submit"]))
         log.info("request queued bucket_id=%s request_id=%s identity_id=%s", record["bucket_id"], request_id, submit.identity.identity_id)
         return record
 
-    async def on_event(self, bucket_id: str, event: Envelope) -> None:
-        if event.bucket_id != bucket_id:
-            raise PermissionError("bucket event ownership mismatch")
-        if event.type == "bucket.status":
-            self.pool.set_accepting(bucket_id, event.payload.get("accepting"))
+    async def admit(self, row):
+        row = self.db.get("request", row["request_id"])
+        if row.get("result") or row.get("admitted"):
             return
-        with self.db.transaction():
-            if identity_id := self.sessions.apply_request_event(event):
-                self.pool.touch(bucket_id)
-                self.pool.release(identity_id)
+        if row.get("cancel_requested") or row["submit"]["deadline_at"] <= time.time():
+            await self.cancel(row["request_id"], expired=not row.get("cancel_requested"))
+            return
+        submit = Submit.model_validate(row["submit"])
+        if submit.content.strip().lower() == "/cancel":
+            for other in self.db.records("request"):
+                if other["request_id"] != row["request_id"] and not other.get("result") and Submit.model_validate(other["submit"]).session_key == submit.session_key:
+                    await self.cancel(other["request_id"])
+            self.complete(ExecutionStatus(request_id=row["request_id"], status="completed"))
+            return
+        client = await self.pool.client(row["bucket_id"])
+        text = submit.content
+        if submit.attachments:
+            text += "\n\nAttachments:\n" + "\n".join(
+                f"{a.filename} ({a.content_type}): {a.url or a.path}" +
+                (" (requires authorized access)" if a.requires_auth else "") for a in submit.attachments)
+        await client.submit(row["native"], text, {"request_id": submit.request_id,
+            "deadline_at": submit.deadline_at})
+        self.db.put("request", row["request_id"], {**self.db.get("request", row["request_id"]),
+                    "admitted": True, "status": "accepted"})
+
+    def complete(self, result: ExecutionStatus):
+        row = self.db.get("request", result.request_id)
+        if row.get("result"):
+            return
+        key = self.sessions.finish(row, result)
+        self.pool.touch(row["bucket_id"])
+        self.pool.release(key)
+
+    async def cancel(self, request_id, *, expired=False):
+        row = self.db.get("request", request_id)
+        if row.get("result"):
+            return
+        expired = row.get("cancel_expired", expired)
+        self.db.put("request", request_id, {**row, "cancel_requested": True, "cancel_expired": expired})
+        client = await self.pool.client(row["bucket_id"])
+        await client.cancel_input(row["native"])
+        self.complete(ExecutionStatus(request_id=request_id, status="failed" if expired else "cancelled",
+                                     error="REQUEST_TIMEOUT" if expired else None))
+
+    async def recover(self):
+        async def recover_request(row):
+            try:
+                key = Submit.model_validate(row["submit"]).session_key
+                async with self.session_locks.setdefault(key, asyncio.Lock()):
+                    row = self.db.get("request", row["request_id"])
+                    if row.get("result"):
+                        return
+                    if row.get("cancel_requested") or row["submit"]["deadline_at"] <= time.time():
+                        await self.cancel(row["request_id"], expired=not row.get("cancel_requested"))
+                    elif not row.get("admitted"):
+                        await self.admit(row)
+            except Exception:
+                log.warning("native request recovery pending request_id=%s", row["request_id"], exc_info=True)
+
+        while True:
+            await asyncio.gather(*(recover_request(row) for row in self.db.records("request")
+                                   if not row.get("result")))
+            await asyncio.sleep(1)
 
 
 def create_app(config: ControlConfig) -> FastAPI:
@@ -138,15 +197,15 @@ def create_app(config: ControlConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         reconciliation = asyncio.create_task(pool.run())
+        recovery = asyncio.create_task(service.recover())
         try:
             yield
         finally:
-            tasks = [reconciliation, *service.pending]
+            tasks = [reconciliation, recovery, *service.pending]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            for socket in list(pool.sockets.values()):
-                await socket.close()
+            await pool.close()
             service.db.close()
 
     app = FastAPI(title="Agent bucket control", lifespan=lifespan)
@@ -168,26 +227,7 @@ def create_app(config: ControlConfig) -> FastAPI:
 
     @app.get("/health/ready")
     async def ready():
-        return {"status": "ready", "connected_buckets": sorted(pool.peers)}
-
-    @app.websocket("/internal/buckets/ws")
-    async def bucket_socket(socket: WebSocket):
-        bucket_id = socket.headers.get("x-bucket-id", "")
-        if not pool.active_bucket(bucket_id):
-            await socket.close(code=1008)
-            return
-        await socket.accept()
-        async def on_event(event: Envelope):
-            if pool.peers.get(bucket_id) is not peer:
-                raise PermissionError("superseded bucket connection")
-            await service.on_event(bucket_id, event)
-
-        peer = Peer(StarletteSocket(socket), service.db, bucket_id, on_event)
-        async with pool.connection(bucket_id, peer, socket):
-            try:
-                await peer.run()
-            except (WebSocketDisconnect, ConnectionError, RuntimeError, ValueError, TimeoutError):
-                log.info("bucket connection ended bucket_id=%s", bucket_id)
+        return {"status": "ready", "connected_buckets": [b["bucket_id"] for b in service.db.records("bucket") if pool.connected(b["bucket_id"])]}
 
     @app.post("/internal/submit/{frontend_id}")
     async def submit(frontend_id: str, body: Inbound):
@@ -199,15 +239,26 @@ def create_app(config: ControlConfig) -> FastAPI:
         row = service.db.get("request", request_id)
         if not row or row["submit"]["identity"]["frontend_id"] != frontend_id:
             raise HTTPException(404, "request not found")
-        return row
+        return service.db.get("request", request_id)
 
     @app.post("/internal/requests/{frontend_id}/{request_id}/cancel")
     async def cancel(frontend_id: str, request_id: str):
         row = await query(frontend_id, request_id)
-        if not row.get("result"):
-            service.db.enqueue(row["bucket_id"], Envelope(type="request.cancel", bucket_id=row["bucket_id"],
-                                                         request_id=request_id))
-        return row
+        key = Submit.model_validate(row["submit"]).session_key
+        async with service.session_locks.setdefault(key, asyncio.Lock()):
+            await service.cancel(request_id)
+        return service.db.get("request", request_id)
+
+    @app.post("/internal/requests/{frontend_id}/{request_id}/collected")
+    async def collected(frontend_id: str, request_id: str, result: ExecutionStatus):
+        await query(frontend_id, request_id)
+        if result.request_id != request_id:
+            raise ValueError("result identity mismatch")
+        service.complete(result)
+        row = service.db.get("request", request_id)
+        service.db.put("request", request_id, {**row, "output_collected": True})
+        pool.release(Submit.model_validate(row["submit"]).session_key)
+        return {"status": "ok"}
 
     @app.get("/internal/buckets/{bucket_id}")
     async def bucket(bucket_id: str):

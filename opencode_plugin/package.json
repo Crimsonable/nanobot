@@ -1,11 +1,11 @@
 {
-  "name": "bucket-runtime-opencode-plugin",
+  "name": "managed-opencode-plugin",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild index.ts permissions.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs",
+    "build": "node build.mjs",
     "test": "node --test test.mjs",
-    "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2023 --skipLibCheck index.ts permissions.ts"
+    "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2023 --skipLibCheck index.ts permissions.ts policy.ts publication.ts"
   },
   "devDependencies": {
     "@opencode/plugin": "2.3.2",
@@ -17,5 +17,8 @@
   },
   "exports": {
     "./server": "./dist/index.mjs"
+  },
+  "dependencies": {
+    "yaml": "2.8.2"
   }
 }

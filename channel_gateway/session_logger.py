@@ -1,4 +1,4 @@
-"""Compact runtime-owned session output; never dump native event metadata."""
+"""Compact gateway-owned session output; never dump native event metadata."""
 import json
 import re
 
@@ -26,8 +26,7 @@ class SessionLogger:
         cfg = self.settings
         if not cfg.enabled:
             return None
-        native = event.event
-        kind, data = native["type"], native["data"]
+        kind, data = event["type"], event["data"]
         content = ""
         if kind == "session.text.ended" and cfg.text:
             content = data["text"]

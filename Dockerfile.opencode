@@ -6,11 +6,9 @@ WORKDIR /mnt/source
 # Business source is mounted read-only from opencode-source-pvc at deployment.
 RUN apt-get update && apt-get install -y --no-install-recommends util-linux libcap2 libselinux1 ca-certificates fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements-backend.lock /opt/build/requirements.lock
 COPY requirements-toolchain.lock /opt/build/toolchain.lock
 COPY vendor/wheels /opt/build/wheels
-RUN pip install --no-index --find-links=/opt/build/wheels --require-hashes -r /opt/build/requirements.lock \
-    && pip install --no-index --find-links=/opt/build/wheels --require-hashes -r /opt/build/toolchain.lock \
+RUN pip install --no-index --find-links=/opt/build/wheels --require-hashes -r /opt/build/toolchain.lock \
     && rm -rf /opt/build
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/toolchain/browsers
 RUN python -m playwright install --with-deps chromium
@@ -25,5 +23,5 @@ RUN echo '7a541ad9d12b23db7082ed3bf1f6d5253f23439cdfa7c28b4e022d0a602a19d6  /tmp
 RUN mkdir -p /opt/runtime-context /opt/opencode /data \
     && useradd --uid 10001 --create-home agent && chown agent:agent /data
 USER 0:0
-EXPOSE 8090
-CMD ["python", "-m", "bucket_runtime", "--config", "/mnt/common/frontends.json"]
+EXPOSE 4096
+CMD ["/opt/opencode/opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]

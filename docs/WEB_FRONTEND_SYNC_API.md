@@ -4,6 +4,8 @@ Base：`http://<节点地址>:30081`。参考环境为 `http://192.168.199.168:3
 
 集群内地址：`http://channel-gateway.opencode-sv.svc.cluster.local:8000`。
 
+调度及执行按 `frontend_id + user_id + chat_id` 隔离。同一用户的不同 chat 可在同一或不同 bucket 并行运行，不同用户同样并行。同一会话的请求按顺序执行。
+
 前端发送消息后，在同一个 HTTP 响应中接收 AI 最终回复，无需提供回调接口。超时后可查询或取消原请求。本文使用仓库配置中的 `web-test`，接入时应使用后端已注册的 frontend 标识。
 
 ## 1. 发送消息并等待 AI 回复
@@ -164,7 +166,7 @@ POST /requests/web-test/web-msg-20261028-001/cancel
 
 ### 4.1 发送附件
 
-入站文件由业务服务先上传至 MinIO，再把下载 URL 放入 `attachments`；Gateway 的入站接口只接收引用，不下载文件。AI 生成的出站文件则由 BU 调用 Gateway 内部统一上传接口处理，详见 [附件链路](ATTACHMENT_UPLOAD_API.md)。
+入站文件由业务服务先上传至 MinIO，再把下载 URL 放入 `attachments`；Gateway 的入站接口只接收引用，不下载文件。AI 生成的出站文件则由 OpenCode 插件直接调用 Gateway 内部统一上传接口处理，详见 [附件链路](ATTACHMENT_UPLOAD_API.md)。
 
 简单格式：
 
@@ -186,7 +188,7 @@ POST /requests/web-test/web-msg-20261028-001/cancel
 
 ### 4.2 接收附件
 
-AI 生成文件由 `publish_attachment` 经 BU 调用 Gateway，Gateway 将 Web 附件上传到该 frontend 配置的 MinIO。前端用 `filename` 展示、用 `url` 下载。
+AI 生成文件由 `publish_attachment` 由插件直接调用 Gateway，Gateway 将 Web 附件上传到该 frontend 配置的 MinIO。前端用 `filename` 展示、用 `url` 下载。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -353,13 +355,13 @@ data: {"request_id":"web-stream-001","status":"completed","content":"分析完�
 
 ### 7.2 原生事件范围
 
-BU 对流式请求绕过 `event_forwarding` 的事件类型和子会话过滤，向 Gateway 转发能够关联到本请求的所有 2.x 原生事件。Gateway 保存原生审计，通过独立适配器输出有 1.x 对应语义的文本、推理、工具、步骤、会话状态、权限和问题事件；没有对应旧语义的类型仅存审计。请求身份及工作目录校验仍然执行，不广播其他用户或其他请求的事件；无法关联的事件不猜测归属。普通请求使用配置的过滤规则。
+Gateway 直接读取 OpenCode 2.x 全局 SSE，并按 CU 登记的根会话/输入 ID 筛选请求事件。`legacy_events.py` 输出有 1.x 对应语义的文本、推理、工具、步骤、会话状态、权限和问题事件。普通与流式请求共用原生读取链路，没有 event_forwarding 配置。无法关联的事件不外发。
 
-流以 BU 有序发送的 `runtime.result` 为终态边界：Gateway 先发送已经持久化的前序原生事件，再发送整理后的 `gateway.result`。终态之后迟到的原生事件不会追加到已结束的 SSE 日志。不能把一条消息完成、工具完成或子会话 idle 当成整个请求完成。
+Gateway 从原生消息边界与结束状态确定最终回复，先持久化前序投影事件，再写入 `gateway.result`。终态之后迟到的事件不追加到已结束 SSE。子会话 idle 或单个工具完成不代表整个请求完成；连续排队输入按原生已消费消息边界区分回复。
 
 适配器持久化文本和工具状态，生成稳定的 part ID；原生事件去重、投影更新和 SSE 序号在同一事务提交，重放不会重复追加 delta。OpenCode 全局心跳不转发；Gateway 空闲时约每 15 秒发送 `: ping` 注释保活，注释没有序号，前端忽略即可。
 
-BU → Gateway 仍使用可靠 WebSocket。大事件在 Gateway 完整重组后才输出一个 SSE 事件。Gateway 已接收的事件可以重放；OpenCode → BU 的 SSE 断线仍可能丢事件，新增出口不补齐该段缺失。
+Gateway 与 OpenCode 直接通过原生 SSE/HTTP 通信。断线重连后读取原生持久化消息补齐完整正文、工具结果与用量，不能恢复丢失的每一段 token delta。Gateway 已持久化的 Web SSE 可以按 Last-Event-ID 重放。
 
 ### 7.3 断线续传和去重
 
@@ -387,8 +389,8 @@ SSE 开始前的错误仍使用第 6 节的 HTTP 错误。开始发送后不能�
 | `REQUEST_REJECTED` | 已入队请求在后台恢复提交时被明确拒绝 |
 | `STREAM_ERROR` | 事件流读取出现异常；查询或续传原请求 |
 
-等待上限按每次 HTTP 订阅计算，重连不重置 BU 的执行截止时间。客户端断开只移除订阅，不自动取消任务；停止执行仍调用第 3 节的取消接口。反向代理应关闭响应缓冲，并允许长连接；读取超时应覆盖心跳间隔。
+等待上限按每次 HTTP 订阅计算，重连不重置原生输入绑定的业务截止时间。客户端断开只移除订阅，不自动取消任务；停止执行仍调用第 3 节的取消接口。反向代理应关闭响应缓冲，并允许长连接；读取超时应覆盖心跳间隔。
 
 此协议不是 `useChatRuntime` 默认接受的 UI Message Stream，assistant-ui 前端仍需要将 1.x 事件适配为 UI 消息。Gateway 的状态投影仅负责 2.x → 1.x 协议转换。
 
-上线时同步更新 Gateway、CU 和 BU，确保 `stream` 标记能通过内部提交协议传到 BU；旧 BU 不支持该字段。
+上线时同步更新 Gateway、CU、插件、桶镜像和 frontend 配置；桶直接启动原生 OpenCode server。旧执行适配服务的协调升级步骤见 [渠道层说明](CHANNEL_GATEWAY.md)。

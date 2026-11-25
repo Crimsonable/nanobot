@@ -30,6 +30,10 @@ class Identity(StrictModel):
         return digest(self.model_dump())
 
 
+def session_key(identity: Identity, chat_id: str) -> str:
+    return digest([identity.identity_id, chat_id])
+
+
 class Attachment(StrictModel):
     attachment_id: str = Field(default_factory=lambda: uid("att_"))
     url: str = ""
@@ -67,7 +71,7 @@ class Submit(StrictModel):
     stream: StrictBool = Field(default=False, exclude_if=lambda value: not value)
     @property
     def session_key(self) -> str:
-        return digest([self.identity.identity_id, self.chat_id])
+        return session_key(self.identity, self.chat_id)
 
 
 class Usage(StrictModel):
@@ -78,29 +82,8 @@ class Usage(StrictModel):
     cache_write_tokens: int = Field(default=0, ge=0)
 
 
-class NativeEvent(StrictModel):
-    type: Literal["opencode.event"]
-    event_id: str = Field(min_length=1, max_length=100)
-    directory: str = Field(min_length=1)
-    event: dict[str, Any]
-
-
-class OpenCodeEvent(NativeEvent):
-    session_id: str = ""
-    message_id: str = ""
-    input_message_id: str = ""
-    request_id: str = ""
-
-
-class OpenCodeEventChunk(StrictModel):
-    event_id: str = Field(min_length=1, max_length=100)
-    index: int = Field(ge=0)
-    count: int = Field(ge=1)
-    data: str
-
-
 class ExecutionStatus(StrictModel):
-    """BU-to-CU terminal control message, without channel reply content."""
+    """Gateway output acknowledgement or control-side cancellation, without reply content."""
 
     request_id: str
     status: Literal["completed", "failed", "cancelled"]
@@ -115,16 +98,3 @@ class Result(StrictModel):
     error: str | None = None
     partial: bool = False
     usage: Usage | None = None
-
-
-class Envelope(StrictModel):
-    protocol: Literal["agent-bucket/1", "agent-gateway/1"] = "agent-bucket/1"
-    event_id: str = Field(default_factory=lambda: uid("evt_"))
-    type: str
-    bucket_id: str
-    seq: int = Field(default=0, ge=0)
-    request_id: str = ""
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-TERMINAL = {"completed", "failed", "cancelled"}

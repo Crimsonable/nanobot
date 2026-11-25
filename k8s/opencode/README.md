@@ -31,4 +31,4 @@ Channel Gateway 与 CU 部署在同一个单副本 Pod 中，分别运行在 `ga
 
 当前清单的 Gateway NodePort 是 **30081**。CU 和动态 bucket 使用 **root + privileged**，Web 使用 UID/GID 10001。state 和 OpenCode 程序始终保存在唯一运行节点本地，使用 NFS 也不改变这一点。
 
-一个 CU 读取 `common/frontends.json` 接入多个 frontend；收到请求后创建 bucket，不手工部署固定 runtime。frontend 字段名是 `frontend_id`。各 frontend 的模型、权限和日志配置放在 `common/<frontend_id>/config`，公共资料放在 `app`，用户数据放在 `data/workspaces/<frontend_id>`。完整配置与隔离规则见 [实现说明](../../docs/OPENCODE_BACKEND_IMPLEMENTATION.md)，日志字段与会话历史行为见 [日志与 ID 约定](../../docs/SESSION_LOGGING.md)。
+一个 CU 读取 `common/frontends.json` 接入多个 frontend；收到请求后创建 bucket，桶内直接启动 opencode serve。frontend 字段名是 `frontend_id`。各 frontend 的模型、权限和日志配置放在 `common/<frontend_id>/config`，公共资料放在 `app`，用户数据放在 `data/workspaces/<frontend_id>`。完整配置与隔离规则见 [实现说明](../../docs/OPENCODE_BACKEND_IMPLEMENTATION.md)，日志字段与会话历史行为见 [日志与 ID 约定](../../docs/SESSION_LOGGING.md)。

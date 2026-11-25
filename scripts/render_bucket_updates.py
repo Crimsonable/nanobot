@@ -30,7 +30,11 @@ def render(config: FrontendConfig | FrontendsConfig, current: dict,
             raise ValueError(f"Deployment is not owned by this bucket pool: {name}")
         if owner and frontend_id and owner != frontend_id:
             continue
-        desired = manager.deployment(name, owner)
+        env = workload["spec"]["template"]["spec"]["containers"][0].get("env", [])
+        password = next((entry.get("value") for entry in env if entry["name"] == "OPENCODE_PASSWORD"), None)
+        if not password:
+            raise ValueError("Native bucket credentials missing; complete the coordinated upgrade first")
+        desired = manager.deployment(name, owner, password)
         desired["spec"]["replicas"] = workload["spec"].get("replicas", 1)
         items.append(desired)
     return {"apiVersion": "v1", "kind": "List", "items": items}

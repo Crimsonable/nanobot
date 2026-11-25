@@ -14,7 +14,7 @@
 | 节点标签 | `opencode-sv-formal=true`（166、168 都打） |
 | Gateway NodePort | **30080**（承接原 nanobot 入口） |
 | control Service | ClusterIP 8000 → `control-http`（仅集群内） |
-| 镜像 | `agent-container-up:opencode-2.3.2`、`agent-bucket-runtime:opencode-2.3.2-bwrap011` |
+| 镜像 | `agent-container-up:opencode-2.3.2`、`agent-opencode:opencode-2.3.2-bwrap011` |
 
 ## 本目录清单
 

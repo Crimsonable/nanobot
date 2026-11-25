@@ -25,7 +25,7 @@ Channel Gateway 与 CU 共用一个单副本 Pod，分别运行在 `gateway` 和
 
 ### 1.1 服务怎样运行
 
-`container-up` Deployment 固定运行一个副本，包含 Gateway 与 CU 两个容器。Gateway 是统一业务入口，CU 负责调度；两者读取 `common/frontends.json`，收到用户请求后由 CU 动态创建 bucket Deployment。每个 bucket 运行 runtime 和 OpenCode，仅服务一个 frontend。首次启动只有 Gateway/CU Pod、没有 bucket 是正常现象；无需手工启动 runtime，也没有固定 StatefulSet。
+`container-up` Deployment 固定运行一个副本，包含 Gateway 与 CU 两个容器。Gateway 是统一业务入口，CU 负责调度；两者读取 `common/frontends.json`，收到用户请求后由 CU 动态创建 bucket Deployment。每个 bucket 直接运行 OpenCode server，仅服务一个 frontend。首次启动只有 Gateway/CU Pod、没有 bucket 是正常现象；无需手工启动桶服务，也没有固定 StatefulSet。
 
 可选 `web-server` 用于 Web 代理和异步回调测试。模型服务和 MinIO 需提前可用：模型供 OpenCode 调用，MinIO 用于附件发布。当前 Gateway 入站、查询、取消接口不要求 Authorization 头；模型、渠道和 MinIO 各自仍需实际凭据。
 
@@ -42,7 +42,7 @@ Channel Gateway 与 CU 共用一个单副本 Pod，分别运行在 `gateway` 和
 
 当前仓库 CU 与 bucket 使用 **UID/GID 0 + privileged**；可选 Web 使用 UID/GID 10001。集群准入策略必须允许当前清单。不要再按旧文档假定所有进程都是 10001。privileged 权限较大，这是当前实现的部署条件；它也不能补齐旧内核缺失的系统调用。
 
-节点须支持 runtime 的 bwrap 隔离。启动时会实际探测，失败不会自动关闭沙箱。单 bucket 请求 1 CPU / 1Gi 内存、上限 4 CPU / 4Gi；还需给 CU、系统和可选服务留余量。
+节点须支持插件的 bwrap 隔离。部署后用真实 shell/权限测试验证，执行失败不会自动关闭沙箱。单 bucket 请求 1 CPU / 1Gi 内存、上限 4 CPU / 4Gi；还需给 CU、系统和可选服务留余量。
 
 ### 1.3 固定参数与需替换的值
 
@@ -59,7 +59,7 @@ Channel Gateway 与 CU 共用一个单副本 Pod，分别运行在 `gateway` 和
 | Gateway NodePort | **`30081`**，以 `backend.yaml` 为准 |
 | 节点标签 | `opencode-runtime=true`，仅一个节点 |
 | CU 镜像 | `agent-container-up:opencode-2.3.2` |
-| bucket 镜像 | `agent-bucket-runtime:opencode-2.3.2-bwrap011` |
+| bucket 镜像 | `agent-opencode:opencode-2.3.2-bwrap011` |
 
 在 kubectl 操作机设置实际节点名和地址；以下 REPLACE 值必须替换，节点名用 `kubectl get nodes` 返回的名字：
 
@@ -76,7 +76,7 @@ export GATEWAY_URL="http://${NODE_IP}:30081"
 export DEPLOY_ROOT=/data/opencode_backend_k8s
 ```
 
-新开终端要重新设置变量。集群中应能解析 Service DNS；CU 能访问 Kubernetes API，bucket 能访问 CU、Gateway、模型服务与实际入站附件 URL。Gateway 须能访问 Web frontend 的 MinIO 以及 QXT/飞书的令牌、上传和发送接口，出站附件统一由 Gateway 上传。操作机须能访问节点 30081；OpenCode 4096 和插件 RPC 4097 仅在桶内回环监听，不需要对外开放。
+新开终端要重新设置变量。集群中应能解析 Service DNS；CU 能访问 Kubernetes API，bucket 能访问 CU、Gateway、模型服务与实际入站附件 URL。Gateway 须能访问 Web frontend 的 MinIO 以及 QXT/飞书的令牌、上传和发送接口，出站附件统一由 Gateway 上传。操作机须能访问节点 30081；OpenCode 4096 监听 Pod 网络，供 CU/Gateway 原生 HTTP/SSE 直连；不对公网开放，不再使用插件 RPC 端口。
 
 ## 2. 节点配置
 
@@ -116,10 +116,9 @@ df -h /data
 ├── source/                         # 仓库源码，不是仅一个 Python 包
 │   ├── container_up/
 │   ├── channel_gateway/
-│   ├── bucket_runtime/
 │   ├── agent_backend/
 │   ├── web_server/
-│   └── opencode_plugin/            # 必须含 dist 和 package.json
+│   └── opencode_plugin/            # 必须含 dist、package.json 和 snapshot.py
 ├── common/
 │   ├── frontends.json              # 后端总表：渠道、镜像、调度、回调、MinIO
 │   └── web-test/
@@ -134,7 +133,7 @@ df -h /data
 ├── data/workspaces/web-test/       # 服务自动创建下级用户目录
 ├── state/                          # 必须在运行节点本地盘
 │   ├── control/                    # CU 数据库，自动生成
-│   └── runtime/                    # runtime/OpenCode 状态，自动生成
+│   └── runtime/                    # OpenCode 原生状态，沿用原状态路径
 └── opencode/opencode               # 运行节点上的独立可执行程序
 ```
 
@@ -261,14 +260,14 @@ npm --version
 docker version
 bash scripts/vendor_opencode_backend.sh
 docker build -f Dockerfile.container_up -t agent-container-up:opencode-2.3.2 .
-docker build -f Dockerfile.bucket_runtime -t agent-bucket-runtime:opencode-2.3.2-bwrap011 .
+docker build -f Dockerfile.opencode -t agent-opencode:opencode-2.3.2-bwrap011 .
 # 一并准备第 11 章异步回调测试使用的可选 Web 服务
 docker build -f Dockerfile.web_server -t agent-web-server:opencode-2.3.2 .
 
 mkdir -p ../opencode-delivery
 docker save -o ../opencode-delivery/agent-images.tar \
   agent-container-up:opencode-2.3.2 \
-  agent-bucket-runtime:opencode-2.3.2-bwrap011 \
+  agent-opencode:opencode-2.3.2-bwrap011 \
   agent-web-server:opencode-2.3.2
 tar -czf ../opencode-delivery/agent-source.tar.gz \
   --exclude=.git --exclude='.venv*' --exclude=node_modules --exclude=.opencode-reference \
@@ -281,7 +280,7 @@ cp vendor/opencode ../opencode-delivery/opencode
 交付包在仓库外的 `../opencode-delivery/`，避免 tar 把自己打进去。确认源码包包含插件产物与包入口：
 
 ```bash
-tar -tzf ../opencode-delivery/agent-source.tar.gz | grep -E 'opencode_plugin/(dist/index.mjs|dist/permissions.mjs|package.json)' | head
+tar -tzf ../opencode-delivery/agent-source.tar.gz | grep -E 'opencode_plugin/(dist/index.mjs|dist/permissions.mjs|package.json|snapshot.py)' | head
 ls -lh ../opencode-delivery/
 ```
 
@@ -368,6 +367,7 @@ sudo chmod -R u+rwX,go-rwx "$DEPLOY_ROOT/common" "$DEPLOY_ROOT/data"
 sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/dist/index.mjs"
 sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/dist/permissions.mjs"
 sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/package.json"
+sudo test -f "$DEPLOY_ROOT/source/opencode_plugin/snapshot.py"
 sudo test -r "$DEPLOY_ROOT/common/frontends.json"
 sudo test -r "$DEPLOY_ROOT/common/web-test/app/templates/AGENTS.md"
 ```
@@ -386,49 +386,16 @@ sudo test -w "$DEPLOY_ROOT/state"
 
 预期 OpenCode 版本为 2.3.2。原子 rename 避免直接覆盖运行中的可执行文件。
 
-### 5.4 可选：已有旧镜像的 bwrap 兼容修复
+### 5.4 bwrap 版本与原生桶镜像
 
-bucket 镜像现在固定使用 Debian `bubblewrap=0.11.0-2+deb13u1`，从 Debian Snapshot 下载并校验 SHA256，安装后设置 hold。完整构建和下面的快速修复都使用同一包。新版 `0.12.0-1~deb13u1` 关闭了旧内核兼容路径，4.19 节点可能报 `Can't mkdir parents for /proc: Function not implemented`；root/privileged 不能补齐这个系统调用。
-
-若已有原始 OpenCode bucket 镜像，无需重建 Python、Chromium 等依赖。在联网 Docker 构建机的源码根目录执行：
+`Dockerfile.opencode` 固定安装 Debian `bubblewrap=0.11.0-2+deb13u1`，使用 vendor_bubblewrap.sh 下载并校验。保留已有旧内核兼容约束；应在目标节点验证用户/文件隔离与命令取消。桶镜像只安装工具链依赖，不安装执行适配服务依赖。
 
 ```bash
-bash scripts/vendor_bubblewrap.sh
-docker build -f Dockerfile.bucket_runtime.compat \
-  --build-arg RUNTIME_IMAGE=agent-bucket-runtime:opencode-2.3.2 \
-  -t agent-bucket-runtime:opencode-2.3.2-bwrap011 .
-docker run --rm --entrypoint sh agent-bucket-runtime:opencode-2.3.2-bwrap011 \
+docker run --rm --entrypoint sh agent-opencode:opencode-2.3.2-bwrap011 \
   -c 'id; bwrap --version; dpkg-query -W bubblewrap; apt-mark showhold'
-docker save -o bucket-bwrap011.tar agent-bucket-runtime:opencode-2.3.2-bwrap011
 ```
 
-预期用户为 root，bwrap 显示 0.11.0，Debian 包版本为 0.11.0-2+deb13u1，hold 列表包含 bubblewrap。镜像包传到实际运行节点后导入（K3s 使用 `k3s ctr`）：
-
-```bash
-sudo ctr -n k8s.io images import bucket-bwrap011.tar
-```
-
-修改服务器 `/data/opencode_backend_k8s/common/frontends.json` 中 `control.bucket_pool.image` 为下面的值；只改 image，不要覆盖现有模型/渠道/存储配置：
-
-```json
-"image": "agent-bucket-runtime:opencode-2.3.2-bwrap011"
-```
-
-暂停业务提交后更新服务。CU 重启读取新镜像配置；已有 bucket 使用 set image 更新，不能只 rollout restart 旧镜像：
-
-```bash
-kubectl -n opencode-sv rollout restart deployment/container-up
-kubectl -n opencode-sv rollout status deployment/container-up --timeout=180s
-kubectl -n opencode-sv set image deployment -l app=opencode-bucket \
-  runtime=agent-bucket-runtime:opencode-2.3.2-bwrap011
-kubectl -n opencode-sv get pods -l app=opencode-bucket
-kubectl -n opencode-sv logs -f -l app=opencode-bucket \
-  --all-containers=true --prefix=true --tail=100 --max-log-requests=20
-```
-
-2026-10-14 本地验证：在 WSL Docker 中对 openat2 返回 ENOSYS（模拟旧内核缺少该调用），原 0.12.0 包复现相同 `/proc: Function not implemented` 错误，0.11.0 包通过项目实际 `SandboxExecutor.probe`。该对照不是目标 4.19 节点的完整验收，部署后仍须运行第 11 章接口测试。
-
-旧版不包含 0.12.0 的符号链接遍历安全修复；本版本按当前旧内核兼容需求固定，不应将其视为最新版安全基线。包记录见 [Debian](https://tracker.debian.org/news/1790935/accepted-bubblewrap-0120-1deb13u1-source-into-stable-security/)。
+从旧执行适配服务升级时使用完整的新桶镜像，并按 [协调升级步骤](CHANNEL_GATEWAY.md#从旧执行适配服务升级) 停服排空后更新；不能只替换旧进程的镜像标签。
 
 ## 6. 启动服务
 
@@ -562,9 +529,11 @@ kubectl apply -f /tmp/opencode-bucket-updates.yaml
 kubectl apply -f k8s/opencode/backend.yaml
 ```
 
-工具要求 bucket 有明确的 `opencode.io/frontend-id` annotation，保留当前副本数。旧统一启动器升级也需要重新生成模板；CU 启动入口是 `python -m container_up`，bucket 是 `python -m bucket_runtime`，`agent_backend` 仅为库。
+工具要求 bucket 有明确的 `opencode.io/frontend-id` annotation，保留当前副本数与原生认证信息。CU 启动入口是 `python -m container_up`，bucket 命令为 `opencode serve`，`agent_backend` 仅为库。旧执行适配服务的首次升级使用协调停服步骤，不使用此工具套用旧模板。
 
-用户权限配置由 runtime 启动时读取；更新文件后滚动重启 bucket。每轮复用会话时按当前用户策略更新原生 permissions 并回读校验，无需丢弃会话历史。会话迁移与历史保留限制见 [日志与会话说明](SESSION_LOGGING.md)。
+调度容量配置为 `control.bucket_pool.max_sessions_per_bucket`，按活动会话计数。同一用户不同 chat 独立占用名额。原生 inbox 管理排队，不再设置额外执行 active/queued 上限。
+
+用户权限文件由插件按次读取，修改后对后续工具调用生效；工作区与会话历史保持不变。会话迁移使用原生 API，见 [日志与会话说明](SESSION_LOGGING.md)。
 
 ### 8.4 OpenCode 配置热加载
 
@@ -574,7 +543,7 @@ kubectl apply -f k8s/opencode/backend.yaml
 
 此热加载只覆盖 OpenCode 管理的配置/插件/技能注册表。修改 frontend 总表、用户权限、日志配置、Python 代码或升级二进制时，仍需按相应服务的部署流程处理。
 
-首次从 1.x 升级应停止入站并完成旧请求，备份状态，统一替换 OpenCode 2.3.2、Python 源码、原生配置、插件包和 frontend 总表。让所有保留历史的旧桶（包括闲置桶）启动新版，等 OpenCode 自带升级器完成数据库转换、BU 就绪后再恢复入站和跨桶调度。BU 启动会等待原生迁移状态完成；跨桶迁移通过 2.x 原生 export/import API 转移已完成历史，后端不读取原生内部表；inbox 和后台任务清空后才允许迁移。
+首次从 1.x 升级应停服排空、备份状态，并统一更新 OpenCode、原生配置和插件。CU 等待 OpenCode 自带升级器完成后才接单，后端不访问原生内部表。从旧执行适配服务升级还需把 frontend.runtime 改为 frontend.bucket，并清理旧 WS/RPC/event_forwarding 配置，步骤见 [渠道层说明](CHANNEL_GATEWAY.md#从旧执行适配服务升级)。
 
 ## 9. 删除命名空间与重装
 
@@ -626,13 +595,13 @@ kubectl -n opencode-sv logs -f deployment/container-up -c control --tail=100 --t
 # Gateway 渠道接入与外发日志
 kubectl -n opencode-sv logs -f deployment/container-up -c gateway --tail=100 --timestamps
 # 所有当前 bucket；首次未建桶或全部回收时可能没有匹配项
-kubectl -n opencode-sv logs -f -l app=opencode-bucket -c runtime \
+kubectl -n opencode-sv logs -f -l app=opencode-bucket -c opencode \
   --prefix=true --timestamps --tail=100 --max-log-requests=20
 # 可选异步回调接收器
 kubectl -n opencode-sv logs deployment/web-server --tail=100 --timestamps
 ```
 
-bucket 的 runtime stdout 包含 OpenCode 与会话过程日志；日志开关在 frontend 的 `config/session-logging.json`，字段说明见 [SESSION_LOGGING.md](SESSION_LOGGING.md)。超过 20 个 Pod 时调整 max-log-requests，或直接选单个 Pod。
+bucket 的 opencode stdout 是原生服务日志；会话过程日志由 Gateway 输出，开关位于 frontend 的 `config/session-logging.json`，字段说明见 [SESSION_LOGGING.md](SESSION_LOGGING.md)。超过 20 个 Pod 时调整 max-log-requests，或直接选单个 Pod。
 
 ### 10.2 单个 Pod、崩溃日志与事件
 
@@ -657,7 +626,7 @@ kubectl get nodes -L opencode-runtime
 | FailedMount | hostPath/subPath 是否存在；NFS server/path、客户端、网络及导出权限 |
 | ImagePullBackOff | 镜像是否导入实际运行时；镜像名称、标签和仓库认证 |
 | Permission denied | 本地 state 可写、二进制执行位；NFS root_squash 映射与服务端 UID |
-| CU Ready 但建桶失败 | runtime 日志、插件 package.json + dist、OpenCode 二进制、bwrap 探测 |
+| CU Ready 但建桶失败 | opencode 日志、插件 package.json + dist、原生端口与版本、Kubernetes Pod IP |
 | bwrap Function not implemented | 旧内核与 bwrap 版本，见第 5.4 节；privileged 不能补系统调用 |
 | 404 frontend is not registered | 总表 frontend_id 与请求路径是否一致 |
 | 422 | chat_id 缺失/为空、旧 raw 字段、未知字段或类型错误 |
@@ -708,7 +677,7 @@ curl -i -sS --max-time 660 -X POST 'http://192.168.199.168:30081/inbound-sync/we
   }'
 ```
 
-预期回复包含蓝鲸472。更换 chat_id 开始另一会话，但仍共享同一用户工作目录。chat_id 必填，不要传旧 raw 字段。
+预期回复包含蓝鲸472。更换 chat_id 开始另一会话，仍共享同一用户工作目录；不同 chat 可在同一或不同 bucket 并行执行。chat_id 必填，不要传旧 raw 字段。
 
 ### 11.2 查询、去重和冲突
 
@@ -851,7 +820,7 @@ curl -i -sS --max-time 660 -X POST 'http://192.168.199.168:30081/inbound-sync/we
   }'
 ```
 
-CU/runtime 只转发附件引用，模型需要通过获准工具获取 URL，桶网络须能够访问下载地址。
+CU 只转发附件引用，模型需要通过获准工具获取 URL，桶网络须能够访问下载地址。
 
 ### 11.6 开发侧回归测试
 

@@ -3,9 +3,9 @@
     "bucket_pool": {
       "namespace": "opencode-sv-formal",
       "name_prefix": "opencode-bucket",
-      "image": "agent-bucket-runtime:opencode-2.3.2-bwrap011",
+      "image": "agent-opencode:opencode-2.3.2-bwrap011",
       "image_pull_policy": "IfNotPresent",
-      "max_users_per_bucket": 16,
+      "max_sessions_per_bucket": 16,
       "opencode_host_path": "/data/mnt/opencode-sv-formal/opencode",
       "data_pvc": "opencode-formal-data-pvc",
       "source_pvc": "opencode-formal-source-pvc",
@@ -38,35 +38,8 @@
         "presign_expiry_seconds": 86400
       },
       "instance_idle_ttl_seconds": 86400,
-      "runtime": {
+      "bucket": {
         "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
-      },
-      "event_forwarding": {
-        "include_types": [
-          "session.created",
-          "session.metadata.updated",
-          "session.inbox.enqueued",
-          "session.inbox.delivered",
-          "session.execution.started",
-          "session.execution.succeeded",
-          "session.execution.failed",
-          "session.execution.interrupted",
-          "session.step.started",
-          "session.step.ended",
-          "session.step.failed",
-          "session.text.started",
-          "session.text.delta",
-          "session.text.ended",
-          "session.tool.input.started",
-          "session.tool.input.delta",
-          "session.tool.input.ended",
-          "session.tool.called",
-          "session.tool.progress",
-          "session.tool.success",
-          "session.tool.failed",
-          "session.retry.scheduled"
-        ],
-        "include_child_sessions": false
       }
     },
     {
@@ -90,35 +63,8 @@
         "presign_expiry_seconds": 86400
       },
       "instance_idle_ttl_seconds": 86400,
-      "runtime": {
+      "bucket": {
         "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
-      },
-      "event_forwarding": {
-        "include_types": [
-          "session.created",
-          "session.metadata.updated",
-          "session.inbox.enqueued",
-          "session.inbox.delivered",
-          "session.execution.started",
-          "session.execution.succeeded",
-          "session.execution.failed",
-          "session.execution.interrupted",
-          "session.step.started",
-          "session.step.ended",
-          "session.step.failed",
-          "session.text.started",
-          "session.text.delta",
-          "session.text.ended",
-          "session.tool.input.started",
-          "session.tool.input.delta",
-          "session.tool.input.ended",
-          "session.tool.called",
-          "session.tool.progress",
-          "session.tool.success",
-          "session.tool.failed",
-          "session.retry.scheduled"
-        ],
-        "include_child_sessions": false
       }
     },
     {
@@ -137,35 +83,8 @@
         "presign_expiry_seconds": 3600
       },
       "instance_idle_ttl_seconds": 3600,
-      "runtime": {
+      "bucket": {
         "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
-      },
-      "event_forwarding": {
-        "include_types": [
-          "session.created",
-          "session.metadata.updated",
-          "session.inbox.enqueued",
-          "session.inbox.delivered",
-          "session.execution.started",
-          "session.execution.succeeded",
-          "session.execution.failed",
-          "session.execution.interrupted",
-          "session.step.started",
-          "session.step.ended",
-          "session.step.failed",
-          "session.text.started",
-          "session.text.delta",
-          "session.text.ended",
-          "session.tool.input.started",
-          "session.tool.input.delta",
-          "session.tool.input.ended",
-          "session.tool.called",
-          "session.tool.progress",
-          "session.tool.success",
-          "session.tool.failed",
-          "session.retry.scheduled"
-        ],
-        "include_child_sessions": false
       }
     },
     {
@@ -184,35 +103,8 @@
         "presign_expiry_seconds": 3600
       },
       "instance_idle_ttl_seconds": 86400,
-      "runtime": {
+      "bucket": {
         "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
-      },
-      "event_forwarding": {
-        "include_types": [
-          "session.created",
-          "session.metadata.updated",
-          "session.inbox.enqueued",
-          "session.inbox.delivered",
-          "session.execution.started",
-          "session.execution.succeeded",
-          "session.execution.failed",
-          "session.execution.interrupted",
-          "session.step.started",
-          "session.step.ended",
-          "session.step.failed",
-          "session.text.started",
-          "session.text.delta",
-          "session.text.ended",
-          "session.tool.input.started",
-          "session.tool.input.delta",
-          "session.tool.input.ended",
-          "session.tool.called",
-          "session.tool.progress",
-          "session.tool.success",
-          "session.tool.failed",
-          "session.retry.scheduled"
-        ],
-        "include_child_sessions": false
       }
     },
     {
@@ -231,35 +123,8 @@
         "presign_expiry_seconds": 86400
       },
       "instance_idle_ttl_seconds": 3600,
-      "runtime": {
+      "bucket": {
         "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
-      },
-      "event_forwarding": {
-        "include_types": [
-          "session.created",
-          "session.metadata.updated",
-          "session.inbox.enqueued",
-          "session.inbox.delivered",
-          "session.execution.started",
-          "session.execution.succeeded",
-          "session.execution.failed",
-          "session.execution.interrupted",
-          "session.step.started",
-          "session.step.ended",
-          "session.step.failed",
-          "session.text.started",
-          "session.text.delta",
-          "session.text.ended",
-          "session.tool.input.started",
-          "session.tool.input.delta",
-          "session.tool.input.ended",
-          "session.tool.called",
-          "session.tool.progress",
-          "session.tool.success",
-          "session.tool.failed",
-          "session.retry.scheduled"
-        ],
-        "include_child_sessions": false
       }
     },
     {
@@ -278,35 +143,8 @@
         "presign_expiry_seconds": 3600
       },
       "instance_idle_ttl_seconds": 3600,
-      "runtime": {
+      "bucket": {
         "logging_file": "/mnt/common/{frontend_id}/config/session-logging.json"
-      },
-      "event_forwarding": {
-        "include_types": [
-          "session.created",
-          "session.metadata.updated",
-          "session.inbox.enqueued",
-          "session.inbox.delivered",
-          "session.execution.started",
-          "session.execution.succeeded",
-          "session.execution.failed",
-          "session.execution.interrupted",
-          "session.step.started",
-          "session.step.ended",
-          "session.step.failed",
-          "session.text.started",
-          "session.text.delta",
-          "session.text.ended",
-          "session.tool.input.started",
-          "session.tool.input.delta",
-          "session.tool.input.ended",
-          "session.tool.called",
-          "session.tool.progress",
-          "session.tool.success",
-          "session.tool.failed",
-          "session.retry.scheduled"
-        ],
-        "include_child_sessions": false
       }
     }
   ]

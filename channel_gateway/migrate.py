@@ -14,7 +14,8 @@ def migrate(source: Path, destination: Path) -> int:
         rows = [json.loads(r[0]) for r in old.execute("SELECT value FROM records WHERE kind='request'")]
         if any(not row.get("result") for row in rows):
             raise ValueError("finish or cancel all legacy requests before migration")
-        if old.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]:
+        if (old.execute("SELECT 1 FROM sqlite_master WHERE name='outbox'").fetchone()
+                and old.execute("SELECT 1 FROM outbox LIMIT 1").fetchone()):
             raise ValueError("drain legacy CU outbox before migration")
     db = Journal(destination)
     imported = 0

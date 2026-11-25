@@ -1,7 +1,6 @@
-"""Single-writer SQLite journal. Transactions contain state changes AND outbox writes."""
+"""Single-writer business journal and event deduplication for CU and Gateway."""
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sqlite3
@@ -9,11 +8,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from agent_backend.models import Envelope
-
 
 class Journal:
-    def __init__(self, path: Path, max_outbox: int = 10000):
+    def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.lockfile = path.with_suffix(path.suffix + ".lock").open("a+b")
         try:
@@ -38,18 +35,9 @@ class Journal:
             CREATE TABLE IF NOT EXISTS records (
                 kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
                 PRIMARY KEY(kind,key));
-            CREATE TABLE IF NOT EXISTS outbox (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL,
-                event TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS inbox (
                 peer TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(peer,event_id));
         """)
-        self.max_outbox = max_outbox
-        self.changed: dict[str, asyncio.Event] = {}
-
-    def notification(self, peer: str) -> asyncio.Event:
-        return self.changed.setdefault(peer, asyncio.Event())
-
     @contextmanager
     def transaction(self):
         if self.db.in_transaction:
@@ -78,24 +66,6 @@ class Journal:
 
     def delete(self, kind: str, key: str) -> None:
         self.db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
-
-    def enqueue(self, peer: str, event: Envelope, reserve: int = 0) -> None:
-        if self.db.execute("SELECT COUNT(*) FROM outbox WHERE peer=?", (peer,)).fetchone()[0] >= self.max_outbox + reserve:
-            raise RuntimeError("OUTBOX_FULL")
-        self.db.execute("INSERT INTO outbox(peer,event) VALUES (?,?)",
-                        (peer, event.model_dump_json()))
-        self.notification(peer).set()
-
-    def pending(self, peer: str, after: int = 0) -> list[Envelope]:
-        return [Envelope.model_validate_json(row["event"]).model_copy(update={"seq": row["seq"]})
-                for row in self.db.execute("SELECT * FROM outbox WHERE peer=? AND seq>? ORDER BY seq LIMIT 128",
-                                           (peer, after))]
-
-    def ack(self, peer: str, seq: int, event_id: str) -> None:
-        row = self.db.execute("SELECT event FROM outbox WHERE peer=? AND seq=?",
-                              (peer, seq)).fetchone()
-        if row and json.loads(row[0])["event_id"] == event_id:
-            self.db.execute("DELETE FROM outbox WHERE peer=? AND seq=?", (peer, seq))
 
     def seen(self, peer: str, event_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM inbox WHERE peer=? AND event_id=?",

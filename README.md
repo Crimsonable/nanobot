@@ -1,33 +1,31 @@
 # opencode_sv
 
 
-渠道分层：入站 `Gateway → CU → BU`，内容出站 `BU → Gateway`，CU↔BU 保留双向控制 WS。渠道最终外发字段保持不变。部署及旧状态迁移见 [渠道分层说明](docs/CHANNEL_GATEWAY.md)。
-
-以 OpenCode server 为执行后端的多用户渠道服务，每个 bucket 运行一个 OpenCode 实例。
+以 OpenCode 2.3.2 server 为执行后端的多用户渠道服务。每个 bucket 容器直接运行一个 `opencode serve`，没有独立的执行适配服务。
 
 ```text
-入站：渠道 → channel_gateway → container_up ↔ 控制 WS ↔ bucket_runtime → OpenCode
-出站：OpenCode SSE → bucket_runtime → 事件 WS → channel_gateway → 渠道
-                                              └─ bwrap / publish_attachment
+入站：渠道 → Gateway → CU → OpenCode 原生 HTTP / inbox
+回复：OpenCode 原生 SSE / messages → Gateway → 渠道
+附件：OpenCode 插件 → Gateway → 渠道上传接口 / MinIO
+权限：OpenCode 插件 → 挂载的用户策略 → 原生文件工具 / bwrap shell
 ```
 
-- `channel_gateway`：渠道接入、BU 事件消费、渠道最终回复与投递状态。
-- `container_up`：按 frontend 活跃桶容量分配用户、会话位置维护与跨桶历史迁移、控制命令和执行状态。
-- `bucket_runtime`：`BucketRuntimeAdapter` 负责业务请求、事件归属、用户权限、调用 Gateway 发布附件及 `/cancel`；`OpenCodeServer` 统一封装进程、HTTP API、事件订阅和配置重置。插件查询 BU 后校验文件操作并封装沙箱命令。
-- `agent_backend`：CU 与 runtime 共用的配置、协议和持久化工具库，不包含服务启动器。
-- `opencode_plugin`：工具调用 hook、权限查询与命令封装、附件发布工具。原生事件由 BU 订阅 OpenCode server 的 SSE，再附加用户与 chat_id 后经过 frontend 过滤后通过独立 WebSocket 转发 Gateway；会话日志由 BU 输出。
+- `channel_gateway`：渠道接入、直接读取原生输出、Web SSE 投影、附件上传、回复与投递状态。
+- `container_up`：按 frontend 分配桶，维护 user_id + chat_id 与原生 session/input ID 的对应关系，通过原生 API 提交、取消和迁移会话。
+- `agent_backend`：共享配置、业务记录和薄原生 HTTP 客户端；没有执行循环、工具执行器或内部 WebSocket 协议。
+- `opencode_plugin`：读取用户权限，校验文件范围，给原生 shell 包装 bwrap，直接向 Gateway 发布附件。会话执行、排队、取消、历史存储与模型配置加载由 OpenCode 负责。
 - `config/opencode/<frontend_id>/app/skills`：frontend 的技能与报告脚本。
 - `engineering_scene_mcp`：可选的工程场景分析服务。
 - `hazard_expert_mcp`：供业务客户端上传附件、调用 OpenCode 隐患分析的入口。
 
 ## 配置
 
-- [CU 与 bucket runtime 统一配置](config/opencode/frontends.json)
+- [CU 与原生 bucket 配置](config/opencode/frontends.json)
 - [OpenCode server](config/opencode/web-test/config/opencode-server.json)
 - [用户权限与目录范围](config/opencode/web-test/config/user-permissions.yaml)
 - [会话日志配置](config/opencode/web-test/config/session-logging.json)：按 frontend 控制思考、回复和工具日志，详见 [日志与 ID 约定](docs/SESSION_LOGGING.md)。
 
-`common/frontends.json` 是统一入口总表，Gateway/CU 可同时服务多个 frontend。每个条目的渠道、回调、MinIO、runtime 配置 和闲置 TTL 仅作用于该 frontend；基础设施参数放在总表的 control 中。每个 frontend 的配置统一放在 `common/<frontend_id>/config/`：`opencode-server.json` 配置模型/provider/MCP，`user-permissions.yaml` 配置用户权限。业务资料、skills 和模板分别放在同级 `app/` 下。权限 defaults 只影响该 frontend 的用户。
+`common/frontends.json` 是统一入口总表，Gateway/CU 可同时服务多个 frontend。每个条目的渠道、回调、MinIO、bucket 配置 和闲置 TTL 仅作用于该 frontend；基础设施参数放在总表的 control 中。每个 frontend 的配置统一放在 `common/<frontend_id>/config/`：`opencode-server.json` 配置模型/provider/MCP，`user-permissions.yaml` 配置用户权限。业务资料、skills 和模板分别放在同级 `app/` 下。权限 defaults 只影响该 frontend 的用户。
 
 初始启动一个 Pod，包含 CU（8001）与 Gateway（8000）两个容器，固定单副本；请求到达后创建/复用所属 frontend 的 bucket，不同 frontend 不共享一个 OpenCode 进程。Gateway 入站、查询、取消和 Web 代理不需要 API key；仍校验 frontend 已注册、请求归属和 bucket 身份映射。
 
@@ -37,7 +35,7 @@
 python -m channel_gateway --config config/opencode/frontends.json
 python -m container_up --config config/opencode/frontends.json
 
-# Kubernetes 部署下 runtime 由 CU 自动创建，不手动启动。
+# Kubernetes 部署下 bucket 由 CU 自动创建，不手动启动。
 ```
 
 发布镜像、离线资源、权限开关、附件链路、HTTP 接口与部署细节见 [运行说明](docs/OPENCODE_BACKEND_IMPLEMENTATION.md)。

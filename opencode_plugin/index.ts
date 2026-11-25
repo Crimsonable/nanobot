@@ -1,4 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
+import { configuration, scopeFor } from "./policy.js"
+import { publication } from "./publication.js"
+import * as path from "node:path"
 import { applyPermissions, visibleSkill, workspaceInstructions } from "./permissions.js"
 
 function quote(value: string): string {
@@ -33,40 +36,37 @@ function unwrap(command: unknown): { command: string; workdir: string } | undefi
 }
 
 export default {
-  id: "bucket-runtime",
+  id: "managed-bucket",
   async setup(ctx) {
     const directory = ctx.location.directory
-    const url = process.env.BUCKET_RPC_URL
-    const token = process.env.BUCKET_RPC_TOKEN
-    const publicRoot = process.env.BUCKET_PUBLIC_ROOT
-    if (!url || !token || !publicRoot) throw new Error("Missing trusted runtime configuration")
-    if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(url)) throw new Error("Runtime RPC must be loopback")
-
-    async function rpc(path: string, body: unknown, signal?: AbortSignal) {
-      const response = await fetch(url + path, {
-        method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json",
-          connection: "close" },
-        body: JSON.stringify(body), signal: signal ?? AbortSignal.timeout(650_000),
-      })
-      if (!response.ok) throw new Error(`Runtime rejected ${path}: ${response.status}`)
-      return response.json()
-    }
+    const config = configuration()
+    const publicRoot = path.join(config.common_root, config.frontend_id, "app")
 
     await ctx.skill.transform(editor => {
       for (const skill of editor.list()) {
         if (!visibleSkill(skill.path, directory, publicRoot)) editor.remove(skill.id)
       }
     })
-    await ctx.session.hook("experimental.idle", async event => {
-      // V2 may finish a foreground execution while background children still work.
-      // Their notices resume native execution; Gateway must wait for that final turn.
-      await rpc("/session/idle", {session_id: event.sessionID, directory,
-        background: event.background.length > 0})
+    await ctx.session.hook("prompt", async event => {
+      const info = await ctx.session.get({sessionID: event.sessionID})
+      if (!info.parentID) return
+      const scope = await scopeFor(ctx, config, info.parentID)
+      // Native subagent prompts carry the caller's request context, including
+      // follow-ups to an existing child. This metadata is never model text.
+      event.metadata = {...event.metadata, managed: {request_id: scope.request_id, deadline_at: scope.deadline_at}}
     })
     for (const hook of ["context", "compaction", "generate"] as const) {
-      await ctx.session.hook(hook, event => {
-        const instructions = workspaceInstructions(directory)
+      await ctx.session.hook(hook, async event => {
+        const scope = await scopeFor(ctx, config, event.sessionID)
+        const readable = scope.policy.filesystem.workspace !== "none" &&
+          (scope.policy.session.tools.read ?? scope.policy.session.default_tools)
+        const instructions = readable ? workspaceInstructions(directory) : undefined
         if (instructions) event.system.push({type: "text", text: instructions})
+        for (const name of Object.keys(event.tools)) {
+          if (!(scope.policy.session.tools[name] ?? scope.policy.session.default_tools) ||
+              (scope.policy.filesystem.workspace !== "read_write" && ["write", "edit", "patch"].includes(name)) ||
+              (scope.policy.filesystem.workspace === "none" && name === "publish_attachment")) delete event.tools[name]
+        }
       })
     }
     await ctx.session.hook("context", event => {
@@ -80,10 +80,19 @@ export default {
         }),
       }))
     })
+    await ctx.permission.hook("evaluate", async event => {
+      try {
+        const scope = await scopeFor(ctx, config, event.sessionID)
+        const policy = scope.policy.session
+        const enabled = event.action === "external_directory" || event.action === "edit"
+          ? true : (policy.tools[event.action] ?? policy.default_tools)
+        event.effect = enabled && !event.action.startsWith("opencode_") ? "allow" : "deny"
+      } catch { event.effect = "deny" }
+    })
     await ctx.tool.hook("execute.before", async event => {
       if (event.tool === "publish_attachment") return
       const args = structuredClone(event.input) as Record<string, any>
-      const scope = await rpc("/permissions", {session_id: event.sessionID, directory})
+      const scope = await scopeFor(ctx, config, event.sessionID, event.messageID)
       const authorized = applyPermissions(scope, event.tool, args)
       if (event.tool === "shell") {
         // Native shell owns execution/cancellation; a hard deadline ends the sandbox
@@ -113,12 +122,11 @@ export default {
           items: {type: "object", properties: {path: {type: "string"}, filename: {type: "string"}},
             required: ["path"], additionalProperties: false}}}, required: ["files"], additionalProperties: false},
         async execute(input, context) {
-          const result = await rpc("/publish", {session_id: context.sessionID, directory,
-            message_id: context.messageID, files: (input as {files: unknown[]}).files}, context.signal)
+          const scope = await scopeFor(ctx, config, context.sessionID, context.messageID)
+          const result = await publication(config, scope, (input as {files: unknown[]}).files, context)
           return {content: JSON.stringify(result)}
         },
       })
     })
-    await rpc("/plugin/ready", {version: "10"})
   },
 } satisfies Plugin.Plugin

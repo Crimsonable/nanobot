@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.check_config:
         for entry in frontends.frontends:
             bucket_id = frontends.control.bucket_pool.name_prefix + "-000000000000"
-            frontends.runtime_config(args.config, bucket_id, entry.frontend_id)
+            frontends.bucket_config(args.config, bucket_id, entry.frontend_id)
         print("Configuration schema valid (credentials and runtime capabilities not probed).")
         return
 

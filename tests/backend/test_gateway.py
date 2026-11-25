@@ -1,210 +1,182 @@
 import asyncio
-import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from support import LocalControl, emit_answer, native
+import pytest_asyncio
+from support import LocalControl
 
-from agent_backend.config import ControlConfig, EventForwarding, GatewaySettings, RuntimeConfig
+from agent_backend.config import ControlConfig, GatewaySettings
 from agent_backend.ingress import Inbound
-from agent_backend.models import Envelope, Result, Submit, digest
-from agent_backend.wire import Peer
-from bucket_runtime.adapter import BucketRuntimeAdapter
+from agent_backend.journal import Journal
+from channel_gateway.event_stream import RequestStreams
 from channel_gateway.server import create_app
 
 
-@pytest.fixture
-def system(tmp_path):
+@pytest_asyncio.fixture
+async def system(tmp_path):
     config = ControlConfig(state_root=tmp_path / "cu", frontends={"web": {"provider": "web"}})
     control = LocalControl(config)
-    channels = SimpleNamespace(deliver=AsyncMock())
+    channels = SimpleNamespace(deliver=AsyncMock(), parsers={})
     app = create_app(config, GatewaySettings(state_root=tmp_path / "gw"), channels, control)
-    common = tmp_path / "common"
-    (common / "web/app").mkdir(parents=True)
-    runtime = BucketRuntimeAdapter(RuntimeConfig(frontend_id="web", bucket_id="b", common_root=common,
-        state_root=tmp_path / "bu", workspace_root=tmp_path / "users"), SimpleNamespace(session_tree=AsyncMock(return_value=[{"id": "s"}]),
-            sessions_idle=AsyncMock(return_value=True)), SimpleNamespace())
-    yield app, control.service, runtime
+    native = await control.service.pool.client("b")
+    app.state.service.native.watch = Mock()
+    app.state.service.native.connection = AsyncMock(
+        return_value={"http": native.http, "native": native, "events": []}
+    )
+    yield app, control.service, native
     app.state.service.db.close()
-    control.service.db.close()
-    runtime.db.close()
+    await control.close()
 
 
 async def accept(system, request_id="r", sync=False, stream=False):
-    app, cu, bu = system
-    gw = app.state.service
-    row = await gw.submit("web", Inbound(user_id="alice", chat_id="chat", content="hello", request_id=request_id,
-        metadata={"reply_target": {"to_group_id": "group"}, "frontend_id": "forged", "provider": "forged"}, stream=stream), sync=sync)
-    submit = Submit.model_validate(cu.db.get("request", request_id)["submit"])
-    bu.db.put("run", request_id, {"request_id": request_id, "status": "running", "session_id": "s",
-        "message_id": "input", "directory": str(bu.workspace(submit)), "submit": submit.model_dump(mode="json"),
-        "artifacts": [], "event_forwarding": bu.config.event_forwarding.model_dump()})
-    return row
+    return await system[0].state.service.submit(
+        "web",
+        Inbound(
+            user_id="alice",
+            chat_id="chat",
+            content="hello",
+            request_id=request_id,
+            stream=stream,
+            metadata={"frontend_id": "forged", "provider": "forged"},
+        ),
+        sync=sync,
+    )
 
 
-async def answer(bu):
-    emit_answer(bu, "s", "input", bu.db.get("run", "r")["directory"])
-    await bu.settle_requests()
-
-
-async def transfer(gw, cu, bu):
-    for event in bu.db.pending("b"):
-        await cu.on_event("b", event)
-        bu.db.ack("b", event.seq, event.event_id)
-    for event in bu.db.pending("gateway"):
-        await gw.on_event("b", event, "web")
-        bu.db.ack("gateway", event.seq, event.event_id)
+async def answer(system, request_id="r", **kwargs):
+    system[2].answer(system[1].db.get("request", request_id), **kwargs)
+    await system[0].state.service.native.poll(request_id)
 
 
 @pytest.mark.asyncio
-async def test_final_external_fields_unchanged_and_cu_has_no_content(system):
-    app, cu, bu = system
-    gw = app.state.service
-    await accept(system)
-    await answer(bu)
-    await transfer(gw, cu, bu)
-    assert not cu.db.records("opencode_event")
-    assert cu.db.get("request", "r")["result"] == {"request_id": "r", "status": "completed", "error": None}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
-        body = (await client.get("/requests/web/r")).json()
-    assert set(body) == {"request_id", "status", "frontend_id", "user_id", "chat_id", "bucket_id", "identity_id",
-                         "metadata", "delivery_state", "content", "attachments", "error", "partial", "usage"}
-    assert body["content"] == "done" and body["usage"]["output_tokens"] == 4
-    from channel_gateway.channel_service import ChannelService
-    channels = ChannelService(gw.config)
-    send = AsyncMock()
-    channels.parsers["web"] = SimpleNamespace(post_message=send)
-    await channels.deliver(gw.db.get("request", "r"), Result.model_validate(gw.db.get("request", "r")["result"]))
-    assert send.call_args.kwargs["payload"] == {
-        "chat_id": "chat", "content": "done", "attachments": [], "metadata": {
-            "reply_target": {"to_group_id": "group"}, "frontend_id": "web", "provider": "web", "user_id": "alice", "request_id": "r",
-            "usage": {"input_tokens": 12, "output_tokens": 4, "reasoning_tokens": 0,
-                      "cache_read_tokens": 0, "cache_write_tokens": 0}}}
-
-
-@pytest.mark.asyncio
-async def test_missing_worker_result_reaches_gateway_without_worker_events(system):
+async def test_direct_native_reply_and_output_ack(system):
     app, cu, _ = system
     gw = app.state.service
+    await accept(system)
+    await answer(system)
+    row = gw.db.get("request", "r")
+    assert row["result"]["content"] == "done" and row["result"]["usage"]["output_tokens"] == 4
+    assert cu.pool.busy("b") and not cu.db.get("request", "r").get("result")
+    assert await gw.native.poll("r")
+    assert not cu.pool.busy("b")
+    assert cu.db.get("request", "r")["result"] == {
+        "request_id": "r",
+        "status": "completed",
+        "error": None,
+    }
+    body = gw.response(row)
+    assert set(body) == {
+        "request_id",
+        "status",
+        "frontend_id",
+        "user_id",
+        "chat_id",
+        "bucket_id",
+        "identity_id",
+        "metadata",
+        "delivery_state",
+        "content",
+        "attachments",
+        "error",
+        "partial",
+        "usage",
+    }
+    assert body["metadata"]["frontend_id"] == "web" and body["metadata"]["provider"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_disconnect_retries_and_ack_failure_never_rebuilds_final(system):
+    app, cu, native = system
+    gw = app.state.service
+    await accept(system)
+    native.answer(cu.db.get("request", "r"))
+    original = native.http
+    async with httpx.AsyncClient(
+        base_url="http://native", transport=httpx.MockTransport(lambda _: httpx.Response(503))
+    ) as bad:
+        gw.native.connection.return_value = {"http": bad, "native": native, "events": []}
+        with pytest.raises(httpx.HTTPStatusError):
+            await gw.native.poll("r")
+    assert not gw.db.get("request", "r").get("result")
+    gw.native.connection.return_value = {"http": original, "native": native, "events": []}
+    await gw.native.poll("r")
+    gw.control.collected = AsyncMock(side_effect=httpx.ConnectError("offline"))
+    with pytest.raises(httpx.ConnectError):
+        await gw.native.poll("r")
+    assert cu.pool.busy("b") and gw.db.get("request", "r")["result"]["content"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_background_jobs_delay_final_response(system):
+    app, cu, native = system
+    gw = app.state.service
+    await accept(system)
+    native.jobs = [{"status": "completed"}]
+    await answer(system)
+    assert not gw.db.get("request", "r").get("result")
+    native.jobs = []
+    await gw.native.poll("r")
+    assert gw.db.get("request", "r")["result"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_restart_recovers_snapshot_without_duplicate_usage_or_stream_events(system):
+    app, cu, native = system
+    gw = app.state.service
     await accept(system, sync=True, stream=True)
+    native.active = True
+    await answer(system)
+    before = gw.streams.last_seq("r")
+    gw.db.close()
+    gw.db = Journal(gw.settings.state_root / "gateway.sqlite")
+    gw.native.db = gw.artifacts.journal = gw.db
+    gw.streams = RequestStreams(gw.db)
+    native.active = False
+    await gw.native.poll("r")
+    assert gw.streams.last_seq("r") == before + 1
+    assert gw.db.get("request", "r")["result"]["usage"]["output_tokens"] == 4
+
+
+@pytest.mark.asyncio
+async def test_missing_bucket_finishes_without_native_connection(system):
+    app, cu, _ = system
+    gw = app.state.service
+    await accept(system)
     await cu.pool.missing("b")
-    row = await gw.query("web", "r")
-    assert row["status"] == "failed"
-    assert row["result"]["error"] == "BUCKET_MISSING_EXECUTION_INTERRUPTED"
-    assert gw.completed["r"].is_set()
-    assert row["result"]["content"] == ""
+    gw.native.connection = AsyncMock(
+        side_effect=AssertionError("missing bucket must not be queried")
+    )
+    await gw.native.poll("r")
+    assert gw.db.get("request", "r")["result"]["error"] == "BUCKET_MISSING_EXECUTION_INTERRUPTED"
 
 
 @pytest.mark.asyncio
-async def test_execution_terminal_is_required_and_drain_waits_for_gateway_ack(system):
-    app, cu, bu = system
-    await accept(system)
-    native(bu, "s", "session.step.ended", {"assistantMessageID": "answer", "finish": "stop"})
-    assert bu.db.get("run", "r")["status"] == "running"
-    await answer(bu)
-    with pytest.raises(RuntimeError, match="events still pending"):
-        await bu.session_operation({"operation": "drain", "session_id": "b"})
-    await transfer(app.state.service, cu, bu)
-    await bu.session_operation({"operation": "drain", "session_id": "b"})
-    assert bu.intake_closed
-
-
-@pytest.mark.asyncio
-async def test_filter_applies_to_deltas_and_child_terminal_does_not_end_parent(system):
-    _, _, bu = system
-    await accept(system)
-    row = bu.db.get("run", "r")
-    native(bu, "s", "session.reasoning.ended", {"assistantMessageID": "answer", "ordinal": 0, "text": "private"})
-    native(bu, "s", "session.reasoning.delta", {"assistantMessageID": "answer", "ordinal": 0, "delta": " secret"})
-    native(bu, "child", "session.created", {"parentID": "s", "location": {"directory": row["directory"]}})
-    native(bu, "child", "session.execution.succeeded")
-    assert not bu.db.pending("gateway")
-    assert bu.db.get("run", "r")["status"] == "running"
-    assert not bu.db.pending("b")
-    assert not bu.db.records("native_failed")
-    with pytest.raises(ValueError):
-        EventForwarding(include_types=["message.part.delta"])
-
-
-class Socket:
-    def __init__(self):
-        self.queue = asyncio.Queue()
-        self.other = None
-        self.drop_ack = False
-
-    async def send(self, packet):
-        if not (self.drop_ack and json.loads(packet)["type"] == "ack"):
-            await self.other.queue.put(packet)
-
-    async def recv(self):
-        return await self.queue.get()
-
-
-@pytest.mark.asyncio
-async def test_independent_gateway_ws_replay_does_not_repeat_delivery(system):
-    app, cu, bu = system
+async def test_uncertain_submission_keeps_id_and_cancel_is_forwarded_after_recovery(system):
+    app, cu, native = system
     gw = app.state.service
-    await accept(system)
-    await answer(bu)
-    async def reject(event):
-        raise AssertionError("gateway must not issue commands")
-    async def receive(event):
-        await gw.on_event("b", event, "web")
-    async def roundtrip(drop):
-        a, b = Socket(), Socket()
-        a.other, b.other, b.drop_ack = b, a, drop
-        peers = [Peer(a, bu.db, "b", reject, journal_peer="gateway", protocol="agent-gateway/1"),
-                 Peer(b, gw.db, "b", receive, protocol="agent-gateway/1")]
-        tasks = [asyncio.create_task(p.run()) for p in peers]
-        try:
-            async with asyncio.timeout(3):
-                while not gw.db.get("request", "r").get("result") or (not drop and bu.db.pending("gateway")):
-                    for task in tasks:
-                        if task.done():
-                            task.result()
-                    await asyncio.sleep(0.01)
-        finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-    await roundtrip(True)
-    assert bu.db.pending("gateway") and bu.db.pending("b")
-    records = len(gw.db.records("opencode_event"))
-    await roundtrip(False)
-    assert not bu.db.pending("gateway") and bu.db.pending("b")
-    assert len(gw.db.records("opencode_event")) == records
-    delivery = asyncio.create_task(gw.deliveries())
-    try:
-        async with asyncio.timeout(3):
-            while gw.db.get("request", "r")["delivery"] != "sent":
-                await asyncio.sleep(0.01)
-        assert gw.channels.deliver.await_count == 1
-    finally:
-        delivery.cancel()
-        await asyncio.gather(delivery, return_exceptions=True)
+    original = gw.control.submit
+
+    async def uncertain(frontend, body):
+        await original(frontend, body)
+        raise httpx.ReadTimeout("lost reply")
+
+    gw.control.submit = uncertain
+    row = await accept(system)
+    assert not row["bucket_id"] and len(native.inputs) == 1
+    gw.db.put("request", "r", {**row, "cancel_requested": True})
+    gw.control.submit = original
+    await gw.dispatch(gw.db.get("request", "r"))
+    assert cu.db.get("request", "r")["result"]["status"] == "cancelled" and len(native.inputs) == 1
 
 
 @pytest.mark.asyncio
-async def test_gateway_rejects_foreign_bucket_and_frontend(system):
+async def test_recovery_does_not_resend_uncertain_channel_delivery(system):
     app, _, _ = system
-    await accept(system)
-    event = Envelope(type="runtime.result", bucket_id="other", request_id="r",
-                     payload={"request_id": "r", "status": "completed"})
-    with pytest.raises(PermissionError):
-        await app.state.service.on_event("other", event, "web")
-    with pytest.raises(PermissionError):
-        await app.state.service.on_event("other", event, "foreign")
-
-
-@pytest.mark.asyncio
-async def test_recovery_keeps_uncertain_delivery_unknown(system):
-    app, _, bu = system
-    await accept(system)
-    await answer(bu)
-    await transfer(app.state.service, system[1], bu)
     gw = app.state.service
+    await accept(system)
+    await answer(system)
     row = gw.db.get("request", "r")
     gw.db.put("request", "r", {**row, "delivery": "sending"})
     task = asyncio.create_task(gw.deliveries())
@@ -218,91 +190,16 @@ async def test_recovery_keeps_uncertain_delivery_unknown(system):
 
 
 @pytest.mark.asyncio
-async def test_migration_preserves_delivery_and_idempotency(system, tmp_path):
-    from agent_backend.journal import Journal
-    from channel_gateway.migrate import migrate
-    app, cu, _ = system
-    body = Inbound(user_id="alice", chat_id="chat", content="legacy", request_id="old")
-    row = await cu.submit("web", body)
-    with pytest.raises(ValueError, match="finish or cancel"):
-        migrate(cu.config.state_root / "control.sqlite", tmp_path / "import.sqlite")
-    cu.db.put("request", "old", {**row, "status": "completed", "delivery": "sending",
-        "metadata": body.metadata, "sync": False,
-        "hash": digest({"identity": {"frontend_id": "web", "user_id": "alice"},
-                        "input": body.model_dump(exclude={"request_id"}), "sync": False}),
-        "result": Result(request_id="old", status="completed", content="legacy result").model_dump()})
-    for event in cu.db.pending("b"):
-        cu.db.ack("b", event.seq, event.event_id)
-    gw = app.state.service
-    target = gw.settings.state_root / "gateway.sqlite"
-    gw.db.close()
-    try:
-        assert migrate(cu.config.state_root / "control.sqlite", target) == 1
-        assert migrate(cu.config.state_root / "control.sqlite", target) == 0
-    finally:
-        gw.db = Journal(target)
-    restored = await gw.submit("web", body)
-    assert restored["delivery"] == "unknown"
-    assert restored["result"]["content"] == "legacy result"
-
-
-@pytest.mark.asyncio
-async def test_runtime_control_remains_writable_when_gateway_outbox_full(system):
-    _, _, bu = system
-    await accept(system)
-    bu.db.max_outbox = 1
-    bu.gateway_emit(Envelope(type="opencode.event", bucket_id="b", request_id="r", payload={}))
-    assert not bu.accepting()
-    bu.finish(Result(request_id="r", status="failed", error="REQUEST_TIMEOUT"))
-    assert bu.db.pending("b")[0].payload["error"] == "REQUEST_TIMEOUT"
-    assert [e.type for e in bu.db.pending("gateway")] == ["opencode.event", "runtime.result"]
-
-
-@pytest.mark.asyncio
-async def test_uncertain_submission_keeps_id_and_recovers_without_duplicate(system):
-    app, cu, _ = system
-    gw = app.state.service
-    original = gw.control.submit
-    calls = []
-    async def uncertain(frontend, body):
-        calls.append(body["request_id"])
-        await original(frontend, body)
-        raise httpx.ReadTimeout("lost accepted response")
-    gw.control.submit = uncertain
-    row = await gw.submit("web", Inbound(user_id="alice", chat_id="chat", content="hello", request_id="r"))
-    assert row["request_id"] == "r" and not row["bucket_id"]
-    assert len(cu.db.records("request")) == 1
-    gw.control.submit = original
-    await gw.dispatch(row)
-    assert gw.db.get("request", "r")["bucket_id"] == "b"
-    assert len(cu.db.pending("b")) == 1
-    assert calls == ["r"]
-
-
-@pytest.mark.asyncio
-async def test_channel_callback_message_id_is_idempotent(system):
-    app, cu, _ = system
-    payload = {"event": {"user_id": "alice", "chat_id": "chat", "content": "hello",
-                         "metadata": {"message_id": "native-1", "reply_target": {"to_group_id": "group"}}}}
+async def test_channel_callback_idempotency(system):
+    app, cu, native = system
+    payload = {
+        "event": {
+            "user_id": "alice",
+            "chat_id": "chat",
+            "content": "hi",
+            "metadata": {"message_id": "native-1"},
+        }
+    }
     await app.state.service.dispatch_channel("web", payload)
     await app.state.service.dispatch_channel("web", payload)
-    assert len(cu.db.records("request")) == 1
-    assert len(cu.db.pending("b")) == 1
-
-
-@pytest.mark.asyncio
-async def test_cancel_during_uncertain_submission_is_forwarded_after_recovery(system):
-    app, _, _ = system
-    gw = app.state.service
-    original = gw.control.submit
-    gw.control.submit = AsyncMock(side_effect=httpx.ConnectError("offline"))
-    gw.control.cancel = AsyncMock()
-    await gw.submit("web", Inbound(user_id="alice", chat_id="chat", content="hello", request_id="r"))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
-        assert (await client.post("/requests/web/r/cancel")).status_code == 200
-    assert gw.db.get("request", "r")["cancel_requested"]
-    gw.control.cancel.assert_not_awaited()
-    gw.control.submit = original
-    await gw.dispatch(gw.db.get("request", "r"))
-    gw.control.cancel.assert_awaited_once_with("web", "r")
-    assert gw.db.get("request", "r")["cancel_forwarded"]
+    assert len(cu.db.records("request")) == len(native.inputs) == 1

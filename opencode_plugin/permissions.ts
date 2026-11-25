@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-// BU returns the current scope; the plugin validates paths and builds commands.
+// Policy loading, path checks and shell isolation all run inside this plugin.
 function inside(target: string, root: string) {
   const relative = path.relative(root, target)
   return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative))
