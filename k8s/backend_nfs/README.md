@@ -104,3 +104,13 @@ curl -s -X POST http://192.168.199.166:30080/api/chat \
 - **凭证不要进仓库**：`common/frontends.json` 含 QXT `app_secret` 和 MinIO 密钥，只放 NFS，本目录只保留 `frontends.json.sample`。
 - 更新源码走 [部署与运维手册](../../docs/DEPLOYMENT_MANUAL.md) 第 8 章；改完 `source/` 需要 `rollout restart`，并注意重建已有 bucket。
 - 删除命名空间不会删除 PV 数据（`Retain`），但会留下 `Released` 状态的 PV，重装前需手工清理。
+
+## 6. skill / MCP 定时同步（可选）
+
+`asset-sync.yaml` 提供默认暂停的 CronJob，每天 03:00 Asia/Shanghai 运行。只需将 `frontends.json` 中对应 frontend 的 `asset_sync` 设为 `true`。资产列表通过 SDK 自动发现。
+
+Skill 先比较本地原始字节 SHA-256 与 `list_version_files()` 的校验值，变化时才下载。MCP 从 catalog 接口读取连接配置，转换后与 frontend 的 `mcp.servers[name]` 比较，相同则保留文件和 mtime。具体接口、版本选择和运行命令见 [部署手册第 8.5 节](../../docs/DEPLOYMENT_MANUAL.md#85-skill--mcp-定时同步)。
+
+镜像构建使用 `vendor/zhicheng_sdk-0.14.5-py3-none-any.whl`，执行 `docker build -f Dockerfile.asset_sync -t agent-asset-sync:0.1.0 .`，随后导入两台节点。Secret `zhicheng-asset-sync` 需预先配置 `ZHICHENG_DOMAIN` 和 `ZHICHENG_TOKEN`。CronJob 引用已有 Secret。
+
+先发布支持 `asset_sync` 字段的 CU/Gateway 代码，再更新实际总表。确认手动同步通过后，设置 CronJob 的 `suspend: false` 并应用。

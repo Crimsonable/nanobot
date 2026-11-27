@@ -1,0 +1,75 @@
+# opencode-sv-formal：按 frontends.json 中 asset_sync: true 的开关，定时把智诚平台上的
+# skill 包与 MCP 配置同步到 /mnt/common/<frontend_id>/{app/skills,config/opencode-server.json}。
+#
+# 资产清单通过 SDK 获取，frontends.json 中的开关决定接收方。
+# 未开启开关的 frontend 不会被读取、下载或改写。
+#
+# hostPath 直接指向本目录约定的 common 路径（166 local / 168 NFS 同一份），
+# 避开现有 common PV 的 ReadOnlyMany 限制。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: asset-sync
+  namespace: opencode-sv-formal
+spec:
+  schedule: "0 3 * * *"
+  timeZone: Asia/Shanghai
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: asset-sync
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          nodeSelector:
+            opencode-sv-formal: "true"
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+          containers:
+          - name: asset-sync
+            image: agent-asset-sync:0.1.0
+            imagePullPolicy: IfNotPresent
+            args:
+            - --frontends
+            - /mnt/common/frontends.json
+            envFrom:
+            - secretRef:
+                name: zhicheng-asset-sync
+            volumeMounts:
+            - name: common
+              mountPath: /mnt/common
+            - name: tmp
+              mountPath: /tmp
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: "1"
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+          volumes:
+          - name: common
+            hostPath:
+              path: /data/mnt/opencode-sv-formal/common
+              type: Directory
+          - name: tmp
+            emptyDir: {}

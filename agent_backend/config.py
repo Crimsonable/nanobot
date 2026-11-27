@@ -7,7 +7,7 @@ from typing import Literal, TypeVar
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, StrictBool, field_validator, model_validator
 
 from agent_backend.common import frontend_common_root, frontend_segment, scoped_public_path
 from agent_backend.models import Identity, StrictModel, digest
@@ -277,6 +277,7 @@ class FrontendSettings(StrictModel):
     frontend_id: str = Field(min_length=1)
     provider: Literal["web", "qxt", "feishu"]
     send_msg_url: str = ""
+    asset_sync: StrictBool = False
     attachment_storage: StorageConfig | None = None
     instance_idle_ttl_seconds: int = Field(default=3600, ge=0)
     attachment_url_prefix: str = ""
@@ -393,6 +394,9 @@ class FrontendsConfig(StrictModel):
         if entry is None:
             raise ValueError("--frontend-id must identify a registered frontend")
         return FrontendConfig.model_validate({**entry.model_dump(), "control": self.control.model_dump()})
+
+    def enabled_asset_sync_frontends(self) -> list[str]:
+        return [frontend.frontend_id for frontend in self.frontends if frontend.asset_sync]
 
     def control_config(self) -> ControlConfig:
         selected = [self.frontend(f.frontend_id) for f in self.frontends]

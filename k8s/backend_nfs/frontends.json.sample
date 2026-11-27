@@ -20,6 +20,7 @@
     {
       "frontend_id": "qxt-main",
       "provider": "qxt",
+      "asset_sync": false,
       "send_msg_url": "https://im.chidi.com.cn:8888/v2/message/bot_send_to_conversation",
       "channel": {
         "app_id": "14781834433937184",
@@ -45,6 +46,7 @@
     {
       "frontend_id": "qxt-zb",
       "provider": "qxt",
+      "asset_sync": false,
       "send_msg_url": "https://im2test.chidi.com.cn:8888/v2/message/bot_send_to_conversation",
       "channel": {
         "app_id": "14781834408503489",
@@ -70,6 +72,7 @@
     {
       "frontend_id": "web-main",
       "provider": "web",
+      "asset_sync": false,
       "send_msg_url": "http://192.168.199.166:48080/app-api/ai/llm/callback",
       "channel": {},
       "attachment_storage": {
@@ -90,6 +93,7 @@
     {
       "frontend_id": "web-wd",
       "provider": "web",
+      "asset_sync": false,
       "send_msg_url": "http://192.168.186.13:51000/anon/znjz/ai-inbound/callback",
       "channel": {},
       "attachment_storage": {
@@ -110,6 +114,7 @@
     {
       "frontend_id": "web-stream",
       "provider": "web",
+      "asset_sync": false,
       "send_msg_url": "http://192.168.48.104:8090/outbound",
       "channel": {},
       "attachment_storage": {
@@ -130,6 +135,7 @@
     {
       "frontend_id": "web-yk",
       "provider": "web",
+      "asset_sync": false,
       "send_msg_url": "http://192.168.48.104:8090/outbound",
       "channel": {},
       "attachment_storage": {

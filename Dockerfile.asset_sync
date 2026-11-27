@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HOME=/tmp
+
+WORKDIR /app
+
+ARG ZHICHENG_SDK_WHEEL=vendor/zhicheng_sdk-0.14.5-py3-none-any.whl
+COPY ${ZHICHENG_SDK_WHEEL} /tmp/wheels/
+RUN pip install --no-cache-dir /tmp/wheels/*.whl && rm -rf /tmp/wheels
+
+COPY agent_backend /app/agent_backend
+COPY asset_sync /app/asset_sync
+
+USER 10001:10001
+ENTRYPOINT ["python", "-m", "asset_sync"]

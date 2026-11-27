@@ -9,6 +9,7 @@
     {
       "frontend_id": "web-test",
       "provider": "web",
+      "asset_sync": false,
       "send_msg_url": "http://your-frontend:8090/outbound",
       "attachment_storage": {
         "provider": "minio",

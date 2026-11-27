@@ -13,6 +13,7 @@
 - `channel_gateway`：渠道接入、直接读取原生输出、Web SSE 投影、附件上传、回复与投递状态。
 - `container_up`：按 frontend 分配桶，维护 user_id + chat_id 与原生 session/input ID 的对应关系，通过原生 API 提交、取消和迁移会话。
 - `agent_backend`：共享配置、业务记录和薄原生 HTTP 客户端；没有执行循环、工具执行器或内部 WebSocket 协议。
+- `asset_sync`：按 frontend 的 `asset_sync` 开关，定时从智诚平台同步 skill 包与 MCP 配置；内容一致时不写文件。
 - `opencode_plugin`：pool 下读取用户权限、校验文件范围并包装 bwrap；individual 下不改写 shell 命令，文件权限由挂载执行。两种模式共用请求上下文和附件发布。会话执行、排队、取消、历史存储与模型配置加载由 OpenCode 负责。
 - `config/opencode/<frontend_id>/app/skills`：frontend 的技能与报告脚本。
 - `engineering_scene_mcp`：可选的工程场景分析服务。

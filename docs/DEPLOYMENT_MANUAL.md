@@ -545,6 +545,34 @@ frontend 的 `bucket.behavior` 默认 pool，也可以配置为 individual。poo
 
 OpenCode、原生配置和插件使用仓库固定的同一版本。CU 等待 OpenCode 就绪后才接单，后端不访问原生内部表。
 
+### 8.5 skill / MCP 定时同步
+
+`frontends.json` 每个条目的严格布尔开关 `asset_sync` 控制是否接收同步，缺省 `false`。先发布支持此字段的 CU/Gateway 代码，再在总表中启用。同步时通过 SDK 发现 Skill 与 MCP 应用，所有开启的 frontend 接收同一资产列表。
+
+Skill 使用 `ZhichengPublicClient.list_skills()` 返回的仓库路径和 `repository_id`。通过 `ZhichengAssetClient.list_asset_versions()` 翻页获取版本，选取 `publish_status == "published"` 中 `created_at` 最新的版本，以 `version_name` 调用 `list_version_files()`。完整同步清单中的所有文件，不按文件名、后缀或目录过滤，包含 `.pyc`、`.pyo`、`__pycache__`、`.DS_Store` 和 `.git`。对本地文件的原始字节计算 SHA-256 小写十六进制字符串，与清单中每个文件的 `sha256` 比较。内容相同就跳过下载；变化时调用 `snapshot_download(repo_type="skill", revision=version_name, allow_patterns=变化文件)`，再次校验下载内容，随后发布到 `common/<frontend>/app/skills/<仓库名>`。本地多于远端清单的文件会从该 Skill 目录清除。不要在受同步管理的 Skill 目录保存本地编辑。
+
+MCP 使用 `ZhichengAssetClient.list_apps(kind="mcp")` 发现应用，通过 GET `/asset/api/v1/catalog/apps/{id}` 获取 `mcp_config`。SDK 的 `get_app()` 使用 admin 路由，返回字段与此不同。当前转换支持 HTTP/SSE 传输，统一忽略 `mcp_config.auth`（包括 `bearer` 或缺失标记），按无鉴权连接写成 `{"type":"remote","url":endpoint,"oauth":false}`，不添加鉴权请求头；同名受同步管理节点原有的鉴权配置会被替换。未知传输仍报错并保留原配置。平台 API 请求继续使用 `ZHICHENG_TOKEN`。能力描述、工具列表和客户端示例由 MCP 服务提供，无需写入 OpenCode 的连接节点。
+
+同步按 frontend 的 `bucket.common_root` 与 `bucket.opencode.config_file` 定位文件，缺省配置路径为 `common/<frontend>/config/opencode-server.json`。按应用名比较 `mcp.servers[name]`，相同就保持文件和 mtime，有变化才合并替换，其他配置节点保留。OpenCode 负责加载更新；跨节点 NFS 的热加载仍需在目标部署中验证。
+
+定时由 `k8s/backend_nfs/asset-sync.yaml` 中的 CronJob 执行，默认暂停，每天 03:00 Asia/Shanghai。Job 失败由 Kubernetes 重试。每个 frontend 使用文件锁串行发布，临时下载目录独立，Skill 发布中断后可从临时旧目录恢复。关闭开关只影响后续运行，已发布的内容保留。资产从平台列表移除后，本地已安装资产保留。
+
+凭据通过已有 Secret `zhicheng-asset-sync` 提供，包含 `ZHICHENG_DOMAIN` 和 `ZHICHENG_TOKEN`。使用能够读取 Skill、版本清单和 catalog MCP 配置的凭据。CronJob 清单只引用该 Secret。
+
+`python -m asset_sync --check-config --frontends /mnt/common/frontends.json` 离线检查开关和目标路径。`--dry-run` 访问 SDK 获取清单、比较本地文件与 MCP 配置，保留目标内容。`--frontend <id>` 可将本次运行限制到一个已开启同步的 frontend。
+
+完成凭据配置和镜像导入后，可先手动运行验证。
+
+```bash
+kubectl apply -f k8s/backend_nfs/asset-sync.yaml
+kubectl -n opencode-sv-formal create job --from=cronjob/asset-sync asset-sync-check-1
+kubectl -n opencode-sv-formal logs -f job/asset-sync-check-1
+kubectl -n opencode-sv-formal create job --from=cronjob/asset-sync asset-sync-check-2
+kubectl -n opencode-sv-formal logs -f job/asset-sync-check-2
+```
+
+确认第二次内容一致时无 Skill 下载且目标 mtime 保持后，设置 CronJob 的 `suspend: false` 并应用。SDK 真实鉴权、返回值和跨节点运行尚需部署环境验证。本地测试使用提供的接口字段和 mocks。
+
 ## 9. 删除命名空间与重装
 
 ### 9.1 整套卸载
